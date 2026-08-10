@@ -93,7 +93,6 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
       roleId: "rl-executor",
       prompt: "Need decisions and review",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; task?: { id?: string } };
     const taskPath = dispatched.taskPath;

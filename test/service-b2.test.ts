@@ -718,7 +718,6 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
 
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -1126,7 +1125,6 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
       connectionId: "fake-default",
       prompt: "seed dead session reconciliation",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const dispatchedResult = dispatched.result as {

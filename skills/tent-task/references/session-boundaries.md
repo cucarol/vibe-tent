@@ -2,7 +2,7 @@
 
 Service starts a temporary managed ACP Session only through a machine Agent
 Connection. The Connection is non-secret launch configuration; durable
-responsibility remains with the Task's Role and parent reviewer chain.
+responsibility remains with the Task's Role and `parentActor` chain.
 
 | Boundary | Contract |
 | --- | --- |
@@ -43,6 +43,6 @@ wins before final binding, Service stops the unbound child and reports
 - Tent does not replace the host application's tool-approval UI. Managed ACP
   tool approval remains a separate runtime path.
 
-Context Card v2 supplies Task refs; authority comes from the persisted parent
-reviewer, exact Node occupation, Task lifecycle, and integration lane. A valid
+Context Card v2 supplies Task refs; authority comes from persisted `parentActor`,
+exact Node occupation, Task lifecycle, and integration lane. A valid
 Agent Connection proves machine availability only.

@@ -11,16 +11,12 @@ import {
 import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
-  assertParentReviewerEqual,
   DEFAULT_ACCEPT_MODE,
   isAcceptMode,
   isTaskId,
   makeTaskId,
   allowsNonReviewAcceptMode,
   parseTaskActorRef,
-  resolveParentReviewerPair,
-  roleTaskActors,
-  userTaskActors,
   type AcceptMode,
   type TaskActorRef,
   type TaskOutcome,
@@ -68,7 +64,7 @@ export type BaseCommitCapture = {
   source: BaseCommitCaptureSource;
   /** Exact full SHA captured (same as Task.baseCommit). */
   baseCommit: string;
-  /** Authorizing actor (parent/reviewer for backfill; parentActor for first-claim). */
+  /** Authorizing parentActor for first-claim capture. */
   actor: TaskActorRef;
   /** ISO-8601 capture timestamp. */
   capturedAt: string;
@@ -88,18 +84,12 @@ export interface TaskEnvelopeInput {
   manifestPath: string;
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
-  /** Explicit parent actor. Required on every canonical write. */
+  /** Sole parent and review authority. Required on every canonical write. */
   parentActor: TaskActorRef;
-  /**
-   * Explicit Delivery reviewer (V0.2). Optional: when omitted, derived equal to
-   * parentActor once. When present, must match parentActor exactly (both
-   * fields are still persisted).
-   */
-  reviewer?: TaskActorRef;
   /**
    * Sub-dispatch Git lane flag. Missing on disk reads as false (peer).
    * When true, targetBranch is the parent role branch. Review authority uses
-   * parentActor/reviewer, not this flag. asSub is lane-only.
+   * parentActor, not this flag. asSub is lane-only.
    */
   asSub?: boolean;
   /** Full operational id (tk-…). Generated if omitted. */
@@ -120,15 +110,10 @@ export interface TaskEnvelope extends TaskNodeContext {
   /** Canonical persisted task id (tk-…). Synthetic in-memory fixtures may omit it. */
   id?: string;
   /**
-   * Explicit parent actor (V0.2). Required after disk migration / on new writes.
+   * Sole parent and review authority. Required on persisted Tasks.
    * Optional only on synthetic/partial fixtures before write.
    */
   parentActor?: TaskActorRef;
-  /**
-   * Explicit Delivery reviewer (V0.2). Required with parentActor; ordinary
-   * accept/reject authority equals this actor exactly.
-   */
-  reviewer?: TaskActorRef;
   /**
    * Peer vs sub Git lane. Missing field reads as false.
    * Persisted only when true; see taskAsSub(). Not used for review authority.
@@ -156,7 +141,7 @@ export interface TaskEnvelope extends TaskNodeContext {
    */
   baseCommitCapture?: BaseCommitCapture;
   /**
-   * Integration authority on the workspace lane (actor = parent/reviewer, mutator = service).
+   * Integration authority on the workspace lane (actor = parentActor, mutator = service).
    * Ordinary executors never mutate target; Service integrates after parent accept.
    */
   integrationAuthority?: IntegrationAuthority;
@@ -321,7 +306,7 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
     capturedAtRaw,
     "Task baseCommitCapture.capturedAt"
   );
-  // Reuse parent/reviewer wire shape; re-label errors for capture audit.
+  // Reuse parentActor wire shape; re-label errors for capture audit.
   let actor: TaskActorRef;
   try {
     actor = parseTaskActorRef(raw.actor, "parentActor");
@@ -333,24 +318,18 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
 }
 
 /**
- * Resolve parentActor + reviewer for a **new** dispatch write.
- * Requires explicit parentActor. Reviewer may be omitted and is then derived
- * equal to parentActor; when present it must match exactly (no Role A → Role B).
- * Equality is enforced only via resolveParentReviewerPair (shared with load/RPC).
+ * Resolve parentActor for a **new** dispatch write.
+ * There is no independent reviewer input or persisted reviewer field.
  */
-export function resolveDispatchActors(input: {
+export function resolveDispatchParentActor(input: {
   parentActor?: TaskActorRef;
-  reviewer?: TaskActorRef;
-}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+}): TaskActorRef {
   if (!input.parentActor) {
     throw new Error(
       "task.dispatch requires explicit parentActor { kind, id }."
     );
   }
-  return resolveParentReviewerPair({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer,
-  });
+  return parseTaskActorRef(input.parentActor, "parentActor");
 }
 
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
@@ -378,7 +357,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
   // Resolve actors before Context Card so actor mismatch errors are not masked
   // by missing-card errors.
-  const actors = resolveActorsFromDisk(data);
+  const parentActor = resolveParentActorFromDisk(data);
 
   // Complete Context Card v2 is the sole frozen Node context. Incomplete → fail loud.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
@@ -405,8 +384,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     manifest: data.manifest,
     state,
     id: data.id,
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
+    parentActor,
     prompt: body.trim() || undefined,
     contextCard,
     workNodeIds: contextCard.workNodeIds,
@@ -447,20 +425,18 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     task.baseCommitCapture = baseCommitCapture;
   }
   // Recorded lane truth: only set TaskEnvelope.integrationAuthority when the on-disk
-  // bag exists and validates against parent/reviewer + service mutator.
+  // bag exists and validates against parentActor + service mutator.
   // Absence stays absent so ensureTaskWorkspaceLane can detect and persist the
   // canonical derived bag (no in-memory phantom that skips the write).
   // Context / workspaceLane projections derive separately via deriveIntegrationAuthority.
   if (
     data.integrationAuthority !== undefined &&
     data.integrationAuthority !== null &&
-    task.parentActor &&
-    task.reviewer
+    task.parentActor
   ) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
-      task.parentActor,
-      task.reviewer
+      task.parentActor
     );
   }
   // Context Card v2 already loaded above from its sole nested wire.
@@ -477,28 +453,20 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 }
 
 /**
- * Resolve parentActor/reviewer from on-disk frontmatter.
- * Explicit fields are required.
+ * Resolve the sole parent/review authority from on-disk frontmatter.
+ * Retired authority fields are rejected rather than migrated or aliased.
  */
-function resolveActorsFromDisk(data: Record<string, unknown>): {
-  parentActor: TaskActorRef;
-  reviewer: TaskActorRef;
-} {
-  const hasParent = data.parentActor !== undefined && data.parentActor !== null;
-  const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
-  if (hasParent || hasReviewer) {
-    if (!hasParent || !hasReviewer) {
-      throw new Error(
-        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
-      );
-    }
-    // Shared pair resolver — equality enforced; never return unchecked pair.
-    return resolveParentReviewerPair({
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
-    });
+function resolveParentActorFromDisk(data: Record<string, unknown>): TaskActorRef {
+  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
+    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
   }
-  throw new Error("Invalid task envelope: missing parentActor/reviewer.");
+  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
+    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
+  }
+  if (data.parentActor === undefined || data.parentActor === null) {
+    throw new Error("Invalid task envelope: missing parentActor.");
+  }
+  return parseTaskActorRef(data.parentActor, "parentActor");
 }
 
 /**
@@ -551,9 +519,6 @@ function formatTaskPointers(task: TaskEnvelope): string {
     lines.push(
       `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
     );
-  }
-  if (task.reviewer) {
-    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   lines.push(`acceptMode: ${task.acceptMode}`);
   if (task.roleId) {
@@ -715,10 +680,7 @@ export async function writeTaskEnvelope(
   const path = await uniqueMarkdownPath(fs, dir, stem);
   input.onPathAllocated?.(path);
   const now = clock.now();
-  const actors = resolveDispatchActors({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer,
-  });
+  const parentActor = resolveDispatchParentActor({ parentActor: input.parentActor });
   const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
   if (!isAcceptMode(acceptMode)) {
     throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
@@ -729,12 +691,12 @@ export async function writeTaskEnvelope(
   if (
     acceptMode !== "review-required" &&
     !allowsNonReviewAcceptMode({
-      parentActor: actors.parentActor,
+      parentActor,
     })
   ) {
     throw new Error(
       `acceptMode=${acceptMode} is only legal for a user-facing Task; ` +
-        `downstream Task Agent → parent must use review-required (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+        `downstream Task Agent → parent must use review-required (parent=${parentActor.kind}:${parentActor.id}).`
     );
   }
 
@@ -750,8 +712,7 @@ export async function writeTaskEnvelope(
     state: "queued",
     ...(roleId ? { roleId } : {}),
     ...(sessionId ? { sessionId } : {}),
-    parentActor: serializeTaskActorRef(actors.parentActor),
-    reviewer: serializeTaskActorRef(actors.reviewer),
+    parentActor: serializeTaskActorRef(parentActor),
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     acceptMode,
@@ -812,7 +773,6 @@ export interface TaskEnvelopePatch {
   wait?: TaskWait | null;
   activeDeliveryId?: string | null;
   parentActor?: TaskActorRef;
-  reviewer?: TaskActorRef;
   lastOutcome?: TaskOutcome | null;
   updatedAt?: string;
   /** Role WorkspaceLane fields (real workspace Git only). */
@@ -861,6 +821,12 @@ export async function patchTaskEnvelope(
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path}.`);
+  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
+    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
+    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
+  }
 
   if (patch.state) {
     data.state = patch.state;
@@ -886,36 +852,11 @@ export async function patchTaskEnvelope(
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
 
-  if (patch.parentActor || patch.reviewer) {
-    // Keep parent/reviewer equal on every write via shared pair resolver.
-    const nextParent = patch.parentActor
-      ? parseTaskActorRef(patch.parentActor, "parentActor")
-      : data.parentActor !== undefined && data.parentActor !== null
-        ? parseTaskActorRef(data.parentActor, "parentActor")
-        : undefined;
-    if (!nextParent) {
-      throw new Error(
-        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
-      );
-    }
-    const nextReviewer = patch.reviewer
-      ? parseTaskActorRef(patch.reviewer, "reviewer")
-      : patch.parentActor
-        ? undefined // derive equal to parent
-        : data.reviewer !== undefined && data.reviewer !== null
-          ? parseTaskActorRef(data.reviewer, "reviewer")
-          : undefined;
-    const pair = resolveParentReviewerPair({
-      parentActor: nextParent,
-      reviewer: nextReviewer,
-    });
-    data.parentActor = serializeTaskActorRef(pair.parentActor);
-    data.reviewer = serializeTaskActorRef(pair.reviewer);
-    // Authority is a projection of parent/reviewer + service — re-derive on actor write.
-    const derived = deriveIntegrationAuthority({
-      parentActor: pair.parentActor,
-      reviewer: pair.reviewer,
-    });
+  if (patch.parentActor) {
+    const nextParent = parseTaskActorRef(patch.parentActor, "parentActor");
+    data.parentActor = serializeTaskActorRef(nextParent);
+    // Authority is a projection of parentActor + service — re-derive on actor write.
+    const derived = deriveIntegrationAuthority({ parentActor: nextParent });
     data.integrationAuthority = {
       actor: { kind: derived.actor.kind, id: derived.actor.id },
       mutator: "service",
@@ -955,22 +896,16 @@ export async function patchTaskEnvelope(
 
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
-    // Persist only after validating against envelope parent/reviewer (already
-    // equal-resolved above when actors were patched). Reject forged bags.
+    // Persist only after validating against envelope parentActor. Reject forged bags.
     if (data.parentActor === undefined || data.parentActor === null) {
       throw new Error(
-        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+        "patchTaskEnvelope integrationAuthority requires parentActor on the envelope."
       );
     }
     const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
-    const reviewerForAuth =
-      data.reviewer !== undefined && data.reviewer !== null
-        ? parseTaskActorRef(data.reviewer, "reviewer")
-        : parentForAuth;
     const validated = assertIntegrationAuthorityMatchesParent(
       patch.integrationAuthority,
-      parentForAuth,
-      reviewerForAuth
+      parentForAuth
     );
     data.integrationAuthority = {
       actor: { kind: validated.actor.kind, id: validated.actor.id },
@@ -1021,11 +956,8 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
   // otherwise derive for Context projection only (does not invent envelope truth).
   const integrationAuthority = task.integrationAuthority
     ? task.integrationAuthority
-    : task.parentActor && task.reviewer
-      ? deriveIntegrationAuthority({
-          parentActor: task.parentActor,
-          reviewer: task.reviewer,
-        })
+    : task.parentActor
+      ? deriveIntegrationAuthority({ parentActor: task.parentActor })
       : undefined;
   return {
     workspace: task.workspace,

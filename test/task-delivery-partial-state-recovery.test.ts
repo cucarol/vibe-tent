@@ -92,7 +92,6 @@ async function runningTask(
     contextNodeIds: [],
     userPrompt: "fault-injected lifecycle",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode,
   });
   await taskClaim(env as never, dispatched.taskPath);
@@ -146,7 +145,6 @@ async function dispatchSecondRoleTask(env: unknown): Promise<string> {
     contextNodeIds: [],
     userPrompt: "second exact Task",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "review-required",
   });
   await taskClaim(env as never, second.taskPath);
@@ -742,7 +740,6 @@ test("recovery ignores another Task's Delivery in the same Role namespace", asyn
     contextNodeIds: [],
     userPrompt: "second task",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "review-required",
   });
   await taskClaim(env as never, second.taskPath);

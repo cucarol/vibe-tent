@@ -45,7 +45,6 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
       workNodeIds: [nodeId],
       contextNodeIds: [],
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       ...(typeof input === "string" ? { userPrompt: input } : input),
     });
 }
@@ -397,7 +396,6 @@ test("dispatch: corrupt Role registry is quarantined and exact missing roleId fa
       contextNodeIds: [],
       userPrompt: "请只处理表达式任务书。",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     }),
     /Role not found in registry: rl-analyst/
   );
@@ -436,7 +434,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].state, "queued");
   assert.equal(tasks[0].parentActor?.kind, "user");
   assert.equal(tasks[0].parentActor?.id, "user");
-  assert.equal(tasks[0].reviewer?.id, "user");
+  assert.doesNotMatch(await env.fs.readFile(tasks[0].path), /^reviewer:/m);
   assert.equal(tasks[0].acceptMode, "review-required");
   assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
@@ -483,7 +481,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(bootstrap, /Task envelope:/);
   assert.match(bootstrap, /Manifest:/);
   assert.match(bootstrap, /workNodeIds:/);
-  assert.match(bootstrap, /parentActor:|reviewer:/);
+  assert.match(bootstrap, /parentActor:/);
+  assert.doesNotMatch(bootstrap, /reviewer(?:Authority)?:/);
   assert.match(bootstrap, /acceptMode:/);
   assert.match(bootstrap, /## User Prompt/);
   // Path tutorial is owned by Context Card, not repeated in session body.

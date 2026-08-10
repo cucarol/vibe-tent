@@ -210,7 +210,6 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
     contextNodeIds: [],
     userPrompt: "auto-accept integrate outside lock",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
@@ -254,7 +253,6 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
     contextNodeIds: [],
     userPrompt: "manual accept outside lock",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskDeliver(e as any, result.taskPath, {
@@ -300,7 +298,6 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
     contextNodeIds: [],
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);

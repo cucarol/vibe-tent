@@ -60,7 +60,6 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
     workNodeIds: [nodeId],
     contextNodeIds: [],
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     ...(typeof input === "string" ? { userPrompt: input } : input),
   });
 }
@@ -71,7 +70,6 @@ async function dispatchOnFreeBox(dir: string, role = "executor") {
   const result = await dispatchToRole(e as any, "cx-p1", role, {
     userPrompt: "Implement the lifecycle slice",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   return { e, result };
 }
@@ -97,7 +95,6 @@ test("lifecycle: queued Task cannot replace an already-bound Session during clai
     contextNodeIds: [],
     userPrompt: "Keep the exact pre-bound Session",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   const before = await e.fs.readFile(result.taskPath);
 
@@ -234,7 +231,6 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
   const result = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "auto path",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);
@@ -260,7 +256,6 @@ test("lifecycle: auto-accept persists ready Delivery before integration and pres
   const result = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "auto-accept failure",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
@@ -295,7 +290,6 @@ test("lifecycle: auto-accept finalize rejects Delivery commit drift", async () =
   const result = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "auto candidate drift",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
@@ -371,7 +365,6 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
   const r1 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "need decision",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "agent-decide",
   });
   await taskClaim(e as any, r1.taskPath);
@@ -384,7 +377,6 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
   const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "review only",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "review-required",
   });
   await taskClaim(e as any, r2.taskPath);
@@ -430,7 +422,6 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "again",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, r2.taskPath);
   await taskInterrupt(e as any, r2.taskPath);
@@ -489,33 +480,28 @@ test("lifecycle: exact Node occupation blocks peers but not parent, child, or si
   const r1 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "first",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
   await assert.rejects(
     () => dispatchToRole(e as any, "cx-p1", "reviewer", {
       userPrompt: "overlap",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     }),
     /occupied by active task/,
   );
   const child = await dispatchToRole(e as any, "cx-p2", "reviewer", {
     userPrompt: "child",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(child.taskPath);
   const parent = await dispatchToRole(e as any, "cx-promptzone", "reviewer", {
     userPrompt: "parent",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(parent.taskPath);
   const r2 = await dispatchToRole(e as any, "cx-o1", "reviewer", {
     userPrompt: "sibling",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(r2.taskPath);
   const active = await findActiveTaskForNode(e.fs, "cx-p1");
@@ -583,7 +569,6 @@ test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch
   const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "retry after fail",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, r2.taskPath);
   assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));

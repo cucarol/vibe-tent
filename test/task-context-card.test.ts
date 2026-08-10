@@ -399,14 +399,13 @@ test("decideStablePrefixInjection omits only on exact valid generation match", (
   );
 });
 
-test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority from parent/reviewer", () => {
+test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority from parentActor", () => {
   const lane = projectExecutionLaneFromTask({
     baseCommit: "abc123base",
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
     worktree: "C:/wt",
     parentActor: { kind: "role", id: "规划" },
-    reviewer: { kind: "role", id: "规划" },
   });
   assert.equal(lane?.baseCommit, "abc123base");
   assert.equal(lane?.targetBranch, "tent-role/规划");
@@ -417,26 +416,23 @@ test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
     parentActor: { kind: "role", id: "规划" },
-    reviewer: { kind: "role", id: "规划" },
   });
   assert.equal(noBase?.baseCommit, undefined);
   assert.equal(noBase?.integrationAuthority?.mutator, "service");
   assert.deepEqual(
     deriveIntegrationAuthority({
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     }),
     { actor: { kind: "user", id: "user" }, mutator: "service" }
   );
 });
 
-test("projectExecutionLaneFromTask fails loud on parent/reviewer mismatch", () => {
+test("projectExecutionLaneFromTask fails loud on invalid parentActor", () => {
   assert.throws(
     () =>
       projectExecutionLaneFromTask({
         baseCommit: "abc",
-        parentActor: { kind: "role", id: "规划" },
-        reviewer: { kind: "role", id: "other" },
+        parentActor: { kind: "user", id: "not-user" },
       }),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
@@ -445,20 +441,17 @@ test("projectExecutionLaneFromTask fails loud on parent/reviewer mismatch", () =
 
 test("assertIntegrationAuthorityMatchesParent rejects arbitrary Task-supplied authority", () => {
   const parent = { kind: "role" as const, id: "规划" };
-  const reviewer = { kind: "role" as const, id: "规划" };
   assert.doesNotThrow(() =>
     assertIntegrationAuthorityMatchesParent(
       { actor: parent, mutator: "service" },
-      parent,
-      reviewer
+      parent
     )
   );
   assert.throws(
     () =>
       assertIntegrationAuthorityMatchesParent(
         { actor: { kind: "role", id: "forged" }, mutator: "service" },
-        parent,
-        reviewer
+        parent
       ),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
@@ -467,8 +460,7 @@ test("assertIntegrationAuthorityMatchesParent rejects arbitrary Task-supplied au
     () =>
       assertIntegrationAuthorityMatchesParent(
         { actor: parent, mutator: "executor" },
-        parent,
-        reviewer
+        parent
       ),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"

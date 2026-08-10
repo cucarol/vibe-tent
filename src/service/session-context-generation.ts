@@ -129,7 +129,7 @@ export async function collectStableContextGeneration(
   }
 
   // Role facts belong only to an exact durable Task.roleId. A temporary Session
-  // receives Task/Node context, never a parent/reviewer Role's private prompt.
+  // receives Task/Node context, never a parent Role's private prompt.
   const roleId = input.task.roleId?.trim() || "";
   const role = roleId
     ? await requireResolvedRoleFromRegistry(

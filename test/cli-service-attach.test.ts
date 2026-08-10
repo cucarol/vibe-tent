@@ -573,7 +573,6 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
       roleId: "rl-executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -638,7 +637,6 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       roleId: "rl-executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
 
@@ -694,7 +692,6 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
       roleId: "rl-executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
     await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);
@@ -723,7 +720,6 @@ test("task list/get human output uses canonical assignee fields", async () => {
       roleId: "rl-executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const list = await runTaskCommand("list", [], { client, cwd: ws, dataDir });
@@ -753,7 +749,6 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
       roleId: "rl-executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
     await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);

@@ -39,7 +39,6 @@ function capturingDispatchClient() {
         roleId: args.roleId,
         sessionId: isConnection ? "ss-capture" : undefined,
         parentActor: args.parentActor,
-        reviewer: args.reviewer,
         session: isConnection
             ? {
                 session: {
@@ -231,8 +230,8 @@ test("role target: queued durable handoff; work/context Nodes; no startSession",
     assert.deepEqual(args.contextNodeIds, ["cx-context"]);
     assert.equal(args.prompt, "role handoff work");
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, "user");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, undefined, "user-direct role target must not set asSub");
     assert.equal(args.acceptMode, undefined);
 
@@ -276,8 +275,8 @@ test("Connection target: managed ACP exact Session; work/context Nodes", async (
     assert.deepEqual(args.workNodeIds, ["cx-alpha", "cx-beta"]);
     assert.deepEqual(args.contextNodeIds, ["cx-context"]);
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, "user");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, undefined, "user-direct Connection target must not set asSub");
 
     const parsed = JSON.parse(r.stdout) as {
@@ -291,11 +290,11 @@ test("Connection target: managed ACP exact Session; work/context Nodes", async (
   });
 });
 
-test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both targets)", async () => {
+test("parentActor single source + derived asSub: Role caller vs user-direct (both targets)", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
 
-  // Role caller → role:* : equal parent/reviewer, asSub:true, no startSession
+  // Role caller → role:* : parentActor=Role, asSub:true, no startSession
   await withTentRoleId("rl-planning", async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -318,14 +317,14 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
     assert.deepEqual(args.parentActor, { kind: "role", id: "rl-planning" });
-    assert.deepEqual(args.reviewer, { kind: "role", id: "rl-planning" });
-    assert.equal(args.callerKind, "role");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, true, "Role caller role:* targets parent Role Git lane");
     assert.equal(args.roleId, "rl-executor");
     assert.equal(args.connectionId, undefined);
   });
 
-  // Role caller → connection:* : equal parent/reviewer, asSub:true, exact Session
+  // Role caller → connection:* : parentActor=Role, asSub:true, exact Session
   await withTentRoleId("rl-planning", async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -348,8 +347,8 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
     assert.deepEqual(args.parentActor, { kind: "role", id: "rl-planning" });
-    assert.deepEqual(args.reviewer, { kind: "role", id: "rl-planning" });
-    assert.equal(args.callerKind, "role");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, true, "Role caller connection:* targets parent Role Git lane");
     assert.equal(args.connectionId, "connection-a");
     assert.equal(args.roleId, undefined);
@@ -373,8 +372,8 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, "user");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, undefined, "user-direct connection:* must not set asSub");
     assert.equal(args.connectionId, "connection-b");
     assert.equal(args.roleId, undefined);
@@ -398,8 +397,8 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, "user");
+    assert.equal(args.reviewer, undefined);
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, undefined, "user-direct role:* must not set asSub");
     assert.equal(args.startSession, undefined);
   });
@@ -427,7 +426,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, "user");
+    assert.equal(args.callerKind, undefined);
     assert.equal(args.asSub, undefined);
   });
 });

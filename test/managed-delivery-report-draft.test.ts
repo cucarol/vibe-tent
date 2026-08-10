@@ -133,7 +133,6 @@ async function setupManagedTask(
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const dispatched = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId],
     contextNodeIds: [],
@@ -247,7 +246,6 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -350,7 +348,6 @@ test("malformed outcome text is delivered intact instead of discarding the repor
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -407,7 +404,6 @@ test("P0: report draft survives service restart; retry publishes without re-prom
       workspaceId = mounted.workspaceId;
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [mounted.nodeId],
         contextNodeIds: [],
@@ -594,7 +590,6 @@ test("P0: publish preparation failure preserves draft; retry publishes without r
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],

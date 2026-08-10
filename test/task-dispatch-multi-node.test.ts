@@ -57,7 +57,6 @@ async function dispatchToRole(env: any, nodeId: string, roleId: string, input: R
     workNodeIds: workNodeIds ?? [nodeId],
     contextNodeIds: contextNodeIds ?? [],
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     ...rest,
   });
 }
@@ -110,7 +109,6 @@ test("dispatch: work/context Nodes preserve exact order in Context Card; dedupe;
   const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
     userPrompt: "multi-node ordered work",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workNodeIds: ["cx-o1", "cx-p1"],
     contextNodeIds: ["cx-g1"],
   });
@@ -142,7 +140,6 @@ test("dispatch: multiline Context Card strings round-trip without corrupting the
   const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
     userPrompt: prompt,
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workNodeIds: ["cx-o1"],
     contextNodeIds: [],
   });
@@ -262,7 +259,6 @@ test("dispatch: canonical Task id is fail-loud and cannot alias an existing Task
         contextNodeIds: [],
         userPrompt: "invalid Task id must not allocate paths",
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
       }),
     /Invalid Task id/
   );
@@ -275,7 +271,6 @@ test("dispatch: canonical Task id is fail-loud and cannot alias an existing Task
     contextNodeIds: [],
     userPrompt: "first exact Task identity",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskEnvelope(env.fs, first.taskPath)).id, "tk-exactcollision");
 
@@ -288,7 +283,6 @@ test("dispatch: canonical Task id is fail-loud and cannot alias an existing Task
         contextNodeIds: [],
         userPrompt: "duplicate Task identity must fail before writes",
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
       }),
     /Task id already exists/
   );
@@ -472,7 +466,6 @@ test("service task.dispatch: work/context Nodes are ordered in the Context Card"
     const { workspaceId, idA, idB } = await mountTwoNotes(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idB],
       contextNodeIds: [idA],
@@ -493,7 +486,6 @@ test("service task.dispatch: work/context Nodes are ordered in the Context Card"
 
     const blocked = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idB],
       contextNodeIds: [],
@@ -516,7 +508,6 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
 
     const missing = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idA],
       contextNodeIds: ["cx-missingzz"],
@@ -529,7 +520,6 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
     // Empty work selection
     const empty = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [],
       contextNodeIds: [],
@@ -542,7 +532,6 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
     // Malformed context selection (not string[])
     const bad = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idA],
       contextNodeIds: [42],
@@ -555,7 +544,6 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
     for (const retiredField of ["nodeId", "id", "claimId"] as const) {
       const retired = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         [retiredField]: idA,
         workNodeIds: [idB],
@@ -600,7 +588,6 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
 
     const archivedDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idFree],
       contextNodeIds: [],
@@ -631,7 +618,6 @@ test("service task.dispatch: Role and route Tasks use distinct Node selections",
 
     const roleD = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idA],
       contextNodeIds: [idB],
@@ -654,7 +640,6 @@ test("service task.dispatch: Role and route Tasks use distinct Node selections",
 
     const routeD = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [idC],
       contextNodeIds: [],

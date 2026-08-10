@@ -726,18 +726,12 @@ export class ServiceClient {
        */
       parentActor: { kind: "user" | "role"; id: string };
       /**
-       * Explicit reviewer (V0.2). Optional: derived equal to parentActor when omitted.
-       * When present must equal parentActor. Ordinary accept/reject equals this actor only.
-       */
-      reviewer?: { kind: "user" | "role"; id: string };
-      /**
        * Sub-dispatch Git lane. When true, requires durable parent Role
        * and a real Git workspace lane; targetBranch becomes tent-role/<parent>.
        * asSub is lane-only — not review authority.
        */
       asSub?: boolean;
       acceptMode?: "review-required" | "auto-accept" | "agent-decide";
-      callerKind?: "user" | "role";
     } & (
       | { roleId: string; connectionId?: never }
       | { connectionId: string; roleId?: never }
@@ -751,7 +745,7 @@ export class ServiceClient {
   /**
    * Create and immediately claim a durable Role's own execution Task.
    * This is execution ownership, not downstream dispatch: there is no target,
-   * caller-authored parent/reviewer, asSub flag, or managed Session launch.
+   * caller-authored responsibility override, asSub flag, or managed Session launch.
    */
   taskClaimDirect(
     workspaceId: string,

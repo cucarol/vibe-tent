@@ -71,7 +71,7 @@ type ReadyFixture = {
 async function makeReadyFixture(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
-  reviewer: { kind: "user" | "role"; id: string },
+  parentActor: { kind: "user" | "role"; id: string },
   label: string
 ): Promise<ReadyFixture> {
   const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -83,8 +83,7 @@ async function makeReadyFixture(
   const mount = svc.hostApi.require(workspaceId);
   const task = await dispatch(mount.env, created.nodeId, {
     roleId: "rl-executor",
-    parentActor: reviewer,
-    reviewer,
+    parentActor,
     workNodeIds: [created.nodeId],
     contextNodeIds: [],
     userPrompt: `review authority ${label}`,

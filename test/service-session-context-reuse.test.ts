@@ -185,8 +185,6 @@ async function dispatchConnectionTask(
     prompt,
     connectionId,
     parentActor: { kind: "role", id: "rl-orchestrator" },
-    reviewer: { kind: "role", id: "rl-orchestrator" },
-    callerKind: "user",
   });
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   return dispatched.result as { taskPath: string; session?: { sessionId: string } };

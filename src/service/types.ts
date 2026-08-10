@@ -293,10 +293,8 @@ export type TaskProjection = {
   /** Full lifecycle state (task-api §2). */
   state: string;
   manifest: string;
-  /** Explicit parent actor (V0.2). */
-  parentActor?: TaskActorRefWire;
-  /** Explicit Delivery reviewer (V0.2). */
-  reviewer?: TaskActorRefWire;
+  /** Sole parent/review authority. */
+  parentActor: TaskActorRefWire;
   /** Peer vs sub Git lane; missing/false = peer. */
   asSub?: boolean;
   acceptMode: AcceptMode;
@@ -312,7 +310,7 @@ export type TaskProjection = {
     targetBranch?: string;
     /** Exact Task lane start SHA (cx-5q6za6). */
     baseCommit?: string;
-    /** actor = parent/reviewer; mutator = service. */
+    /** actor = parentActor; mutator = service. */
     integrationAuthority?: {
       actor: TaskActorRefWire;
       mutator: "service";
@@ -786,7 +784,7 @@ export const CLIENT_METHODS = [
   /**
    * Durable Role self-execution: atomically create + claim from exact
    * workNodeIds[] with optional shared contextNodeIds[].
-   * Service derives parent/reviewer from persisted Task/Session responsibility;
+   * Service derives parent/review authority from persisted Task/Session responsibility;
    * callers cannot provide actor, target, asSub, or Delivery authority fields.
    */
   "task.claimDirect",

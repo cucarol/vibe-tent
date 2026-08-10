@@ -123,7 +123,6 @@ async function createRunningRoleTask(input: {
     roleId: "rl-executor",
     prompt: "Need a durable decision",
     parentActor: input.parentActor,
-    reviewer: input.parentActor,
     acceptMode: "review-required",
   })) as { taskPath: string };
   await executor.client.taskClaim(workspaceId, dispatched.taskPath);
@@ -152,7 +151,6 @@ async function createRunningConnectionTask(input: {
     connectionId: "fake-default",
     prompt: "Managed Task with a durable Decision Request",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "review-required",
   })) as { taskPath: string; task: { sessionId?: string } };
   const current = (await root.taskGet(workspaceId, dispatched.taskPath)) as {

@@ -54,10 +54,10 @@ Dispatch forms (downstream assignment only):
 - `connectionId` is a non-secret stable reference to machine Settings. It resolves
   provider, model, endpoint, and credential metadata for the exact Task's
   temporary ACP Session.
-- Tent derives the exact parent reviewer and parent Role Git lane. Callers pass only the documented target, Node refs, and prompt; all other responsibility and execution fields are Service-owned.
+- Tent derives reviewer authority and the parent Role Git lane from exact persisted `parentActor`. Callers pass only the documented target, Node refs, and prompt; all other responsibility and execution fields are Service-owned.
 - Prompt is required through `--prompt <text>|-`; positional Task source or prompt forms are not aliases.
 
-Executors never self-accept. Review authority is the exact persisted parent reviewer. Downstream Tasks always use review-to-parent and cannot elevate the durable Role's user-facing Delivery policy.
+Executors never self-accept. Review authority is the exact persisted `parentActor`. Downstream Tasks always use review-to-parent and cannot elevate the durable Role's user-facing Delivery policy.
 
 `--delivery-id` is the exact current ready Delivery shown to the reviewer. A
 `DELIVERY_CHANGED` error means the review view is stale; refresh it rather than
@@ -106,8 +106,8 @@ Rules:
 - Do **not** self-`send-input` on the **same** task you are currently executing.
 - A dispatcher **may** `send-input` to another task’s path when acting as U2A writer.
 - `list` / `get` / `ack` always need `taskPath` scope; no global inbox.
-- An explicit `--actor` must match the exact Task Role, persisted parent/reviewer Role, or a Service-verified Session bound to that Task. Text such as `--actor user` is not user authority.
-- For the Local Service user path, omit `--actor`; Service derives user authority from its authenticated boundary plus persisted user parent/reviewer. Acknowledging `uncertain` preserves its diagnostic history and never prompts the provider again.
+- An explicit `--actor` must match the exact Task Role, persisted parent Role, or a Service-verified Session bound to that Task. Text such as `--actor user` is not user authority.
+- For the Local Service user path, omit `--actor`; Service derives user authority from its authenticated boundary plus persisted user `parentActor`. Acknowledging `uncertain` preserves its diagnostic history and never prompts the provider again.
 - Managed ACP injects fixed-format follow-ups (`## User Input` / review feedback); a Role executor may poll and acknowledge its Task input.
 
 ## Stop an obsolete Task

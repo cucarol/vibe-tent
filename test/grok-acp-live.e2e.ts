@@ -115,7 +115,6 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc("task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],

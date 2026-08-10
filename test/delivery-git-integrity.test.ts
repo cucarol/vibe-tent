@@ -134,7 +134,6 @@ async function claimRunningWithBase(
 
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId],
     contextNodeIds: [],

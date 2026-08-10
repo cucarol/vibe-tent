@@ -19,7 +19,7 @@ incremental input/review delta.
    target and is not downstream dispatch. A managed Connection Task is already
    claimed by Service; a durable Role claims its own work through the Role
    boundary.
-3. Read the immutable prompt, `parentActor`, exact `reviewer`, optional `roleId`,
+3. Read the immutable prompt, sole review authority `parentActor`, optional `roleId`,
    exact executing `sessionId`, and WorkspaceLane from the Task envelope. Read
    work/context Node ids, frozen Node snapshots, and optional
    `contextGeneration` from Context Card v2.
@@ -87,7 +87,7 @@ never invents success. Use DecisionRequest for a real authority question.
 - Every reported SHA must belong to this Task's lane. Ready Delivery snapshots
   target head; `TARGET_MOVED` requires reject/resume and re-delivery.
 - Delivery is never acceptance. The executor never accepts its own Delivery.
-- Use persisted parent/reviewer. Downstream work cannot change frozen
+- Use persisted `parentActor`. Downstream work cannot change frozen
   `acceptMode` or self-review; a durable Role follows it through `tent-role`.
 
 Before Delivery, settle TaskInputs/DecisionRequests, turn and Session state, worktree,

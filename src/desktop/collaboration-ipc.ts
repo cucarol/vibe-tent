@@ -2,7 +2,7 @@
  * Narrow Electron boundary for Task, Delivery, and Decision Request UI.
  *
  * Authority fields are deliberately absent: Desktop main supplies the fixed
- * local-user parent/reviewer/actor values. Renderer code cannot override Git
+ * local-user parent/actor values. Renderer code cannot override Git
  * integration commits, Sessions, reviewers, or lifecycle actors.
  */
 

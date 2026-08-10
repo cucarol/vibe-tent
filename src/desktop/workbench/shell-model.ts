@@ -43,6 +43,7 @@ export type ShellTaskRow = {
   roleId?: string;
   workNodeIds: string[];
   contextNodeIds: string[];
+  parentActor: TaskProjection["parentActor"];
   /** Canonical lifecycle state (task-api). */
   state: string;
   acceptMode: TaskProjection["acceptMode"];
@@ -125,6 +126,7 @@ export class DesktopShellModel {
           roleId: t.roleId,
           workNodeIds: t.workNodeIds,
           contextNodeIds: t.contextNodeIds,
+          parentActor: t.parentActor,
           state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
@@ -301,6 +303,7 @@ export class DesktopShellModel {
         roleId: t.roleId,
         workNodeIds: t.workNodeIds ?? [],
         contextNodeIds: t.contextNodeIds ?? [],
+        parentActor: t.parentActor,
         state: t.state,
         acceptMode: t.acceptMode,
         id: t.id,

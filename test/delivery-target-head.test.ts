@@ -168,7 +168,6 @@ async function claimRunningWithBase(
   const acceptMode = opts.acceptMode ?? "review-required";
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId],
     contextNodeIds: [],

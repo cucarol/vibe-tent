@@ -60,8 +60,8 @@ tent task dispatch \
   dispatch.
 - `connection:*` snapshots machine Settings into the exact temporary managed
   Session and binds the formal Task to that `sessionId`.
-- Tent derives equal persisted `parentActor` and `reviewer`; the
-  executor cannot select or elevate them.
+- Tent persists one `parentActor`; the executor cannot select or elevate its
+  derived reviewer authority.
 - prompt is explicit through `--prompt`; there is no positional dispatch form.
 
 Connection dispatch does not register a worker, mutate a Role, or create a
@@ -117,8 +117,8 @@ authority is derived from authenticated transport rather than caller-provided te
 
 ## Review and Git
 
-`task deliver` creates a Delivery; it never accepts it. The exact persisted
-reviewer acts on the exact ready Delivery shown for the Task:
+`task deliver` creates a Delivery; it never accepts it. The reviewer authority
+derived from persisted `parentActor` acts on the exact ready Delivery shown for the Task:
 
 ```text
 tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> ...

@@ -56,7 +56,6 @@ async function writeTerminalTask(
   const sessionId = `ss-${role.replace(/[^a-z0-9]/gi, "").toLowerCase()}`;
   const path = await writeTaskEnvelope(fs, clock(opts.createdAt ?? OLD), {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     sessionId,
     workNodeIds: [opts.claimId ?? "cx-p1"],
     contextNodeIds: [],
@@ -107,7 +106,6 @@ test("preview: never selects active tasks or ready deliveries", async () => {
 
   const activePath = await writeTaskEnvelope(fs, clock(OLD), {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
@@ -288,7 +286,6 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
 
   const activePath = await writeTaskEnvelope(fs, clock(NOW), {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
     workNodeIds: ["cx-p2"],
     contextNodeIds: [],

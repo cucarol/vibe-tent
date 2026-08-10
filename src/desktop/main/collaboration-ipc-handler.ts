@@ -616,8 +616,6 @@ export async function handleDesktopCollaborationRequest(
           contextNodeIds: request.contextNodeIds,
           prompt: request.prompt,
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
-          callerKind: "user",
           asSub: false,
           acceptMode: request.acceptMode,
           ...target,

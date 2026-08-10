@@ -21,8 +21,8 @@ owns structured context and durable refs.
 Node bodies provide durable context. Session state is runtime authority.
 Delivery is review evidence. No one object substitutes for another.
 
-Every Task persists exact `parentActor` and `reviewer`. They are equal for
-ordinary dispatch. Downstream executors cannot self-accept, rewrite reviewer,
+Every Task persists exact `parentActor` as the sole parent responsibility and
+review authority. Downstream executors cannot self-accept, rewrite that authority,
 or elevate Role-to-user delivery policy.
 
 ## 2. Direct claim and dispatch contract
@@ -38,7 +38,7 @@ tent task claim --work-node <nodeId> [--work-node <nodeId> ...] \
 This is one create-and-claim Service mutation, not dispatch. It has no target
 or caller-authored authority fields. An explicit `--from-task` must be an active
 claimed Task for the same Role. Otherwise Tent may continue the persisted
-parent/reviewer chain from a verified current Role execution context; missing
+`parentActor` chain from a verified current Role execution context; missing
 history falls back to the Role's user-facing root.
 
 Dispatch is only downstream assignment. Its public target grammar is
@@ -63,8 +63,7 @@ Targets:
   then starts the provider outside the lifecycle mutation.
 
 The temporary Session remains execution state of the dispatched Task. Durable
-responsibility and review authority remain with the persisted parent reviewer
-chain.
+responsibility and review authority remain with the persisted `parentActor` chain.
 
 ## 3. Exact Node occupation
 
@@ -87,7 +86,7 @@ Context Card v2 persists:
 - separate exact work/context Node ids and their frozen Node snapshots;
 - optional `contextGeneration` written when an actual Session computes it.
 
-The Task envelope, not the Card, persists the raw prompt, parent/reviewer,
+The Task envelope, not the Card, persists the raw prompt, `parentActor`,
 Role/Session binding, and optional WorkspaceLane.
 
 Node id is authoritative; snapshot paths are refreshable hints. Referenced Nodes
@@ -235,14 +234,14 @@ slow or failed draft retry cannot reverse it.
 
 ## 12. Review
 
-The exact persisted reviewer accepts or rejects:
+The authority derived from exact persisted `parentActor` accepts or rejects:
 
 - accept validates the ready Delivery, integrates declared commits when
   required, then publishes accepted Task/Delivery state;
 - reject records review feedback and either ends the Task or atomically resumes
   it;
 - executors never accept their own Delivery;
-- `review-required` uses the frozen reviewer; `auto-accept` still persists a
+- `review-required` uses the frozen `parentActor` authority; `auto-accept` still persists a
   ready Delivery before Core integration; `agent-decide` is available to an
   executor Session and is not a Role identity test.
 
@@ -314,7 +313,7 @@ the owning projection.
 Public failures distinguish at least:
 
 - invalid Node refs or exact occupation conflict;
-- authority/reviewer mismatch;
+- parent/review authority mismatch;
 - unavailable Agent Connection;
 - Task lifecycle or Session binding CAS conflict;
 - pending interaction or unresolved Delivery;

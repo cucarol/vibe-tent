@@ -24,7 +24,8 @@ indexes. It is ignored by the project repository.
 - **Task** is one exact work and review attempt over one or more Nodes.
 - **Session** is an execution binding, managed by ACP or entered by an external
   host.
-- **Delivery** is the formal result submitted to the persisted reviewer.
+- **Delivery** is the formal result submitted to reviewer authority derived from
+  persisted `parentActor`.
 - **Agent Connection** is machine-local non-secret launch configuration for provider,
   model, endpoint, command, and optional Launch Secret reference.
 

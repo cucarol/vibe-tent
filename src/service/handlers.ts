@@ -58,7 +58,6 @@ import {
   isTaskId,
   parseTaskActorRef,
   parseTaskOutcomeReport,
-  resolveParentReviewerPair,
   type TaskActorRef,
   type TaskOutcome,
 } from "../core/task-model.js";
@@ -3119,10 +3118,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       "connectionId",
       "prompt",
       "parentActor",
-      "reviewer",
       "asSub",
       "acceptMode",
-      "callerKind",
     ]),
     "task.dispatch"
   );
@@ -3138,15 +3135,10 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   }
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
-  // Protocol 3 has one explicit responsibility pair.
+  // parentActor is the sole persisted responsibility and review authority.
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
-  const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitAcceptMode = parseAcceptMode(optionalString(p, "acceptMode"));
-  // New create requires explicit parentActor + reviewer.
-  const resolvedActors = resolveDispatchActorsFromRpc({
-    parentActor: explicitParentActor,
-    reviewer: explicitReviewer,
-  });
+  const parentActor = resolveDispatchParentActorFromRpc(explicitParentActor);
 
   const roleRegistry = requestedRoleId || asSub ? await loadRolesRegistry(mount.env.fs) : undefined;
   const roleDefinition = requestedRoleId
@@ -3155,21 +3147,21 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   if (requestedRoleId && !roleDefinition) {
     throw new RpcError(-32004, `Role not found in registry: ${requestedRoleId}`);
   }
-  const parentRoleDefinition = asSub && resolvedActors.parentActor.kind === "role"
-    ? roleRegistry?.roles.find((role) => role.id === resolvedActors.parentActor.id)
+  const parentRoleDefinition = asSub && parentActor.kind === "role"
+    ? roleRegistry?.roles.find((role) => role.id === parentActor.id)
     : undefined;
   if (asSub && !parentRoleDefinition) {
     throw new RpcError(
       -32004,
-      `Parent Role not found in registry: ${resolvedActors.parentActor.id}`
+      `Parent Role not found in registry: ${parentActor.id}`
     );
   }
   if (connectionId && !ctx.connectionCatalog.get(connectionId)) {
     throw new RpcError(-32004, `Agent Connection not found: ${connectionId}`);
   }
-  // parentActor is the persisted authority fact. callerKind is a convenience hint,
-  // not a second authorization source; derive the combined start path from parentActor.
-  const callerKind = resolvedActors.parentActor.kind;
+  // parentActor is the sole dispatch responsibility fact. The internal start path
+  // derives its execution kind locally instead of accepting a duplicate RPC knob.
+  const callerKind = parentActor.kind;
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
@@ -3189,7 +3181,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     if (asSub) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
-        parentActor: resolvedActors.parentActor,
+        parentActor,
         targetRoleId: requestedRoleId,
       });
     }
@@ -3237,17 +3229,17 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     if (
       acceptMode !== "review-required" &&
       !allowsNonReviewAcceptMode({
-        parentActor: resolvedActors.parentActor,
+        parentActor,
       })
     ) {
       if (explicitAcceptMode !== undefined) {
         throw new RpcError(
           -32602,
           `acceptMode=${acceptMode} is only legal for a user-facing Task; ` +
-            `Task Agent → parent must use review-required (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
+            `Task Agent → parent must use review-required (parent=${parentActor.kind}:${parentActor.id})`,
           {
             acceptMode,
-            parentActor: resolvedActors.parentActor,
+            parentActor,
             roleId: requestedRoleId,
           }
         );
@@ -3269,8 +3261,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     try {
       dispatched = await dispatch(mount.env, primaryNodeId, {
         userPrompt: prompt,
-        parentActor: resolvedActors.parentActor,
-        reviewer: resolvedActors.reviewer,
+        parentActor,
         asSub,
         acceptMode,
         workspace: workspaceLane,
@@ -3437,7 +3428,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     sessionId: dispatched.sessionId,
     asSub: taskAsSub(taskAfter),
     parentActor: taskAfter.parentActor,
-    reviewer: taskAfter.reviewer,
     state: taskAfter.state,
     session,
     // Prefer envelope projection (Role baseCommit only after claim; Connection-asSub may
@@ -3499,7 +3489,7 @@ async function assertSubDispatchPreconditions(
 
 function parseOptionalTaskActor(
   value: unknown,
-  label: "parentActor" | "reviewer"
+  label: "parentActor"
 ): TaskActorRef | undefined {
   if (value === undefined || value === null) return undefined;
   try {
@@ -3553,38 +3543,16 @@ function resolveTaskNodeSelection(
 }
 
 /**
- * Resolve parent/reviewer at dispatch RPC.
- * Requires explicit parentActor. Reviewer may be omitted (derived equal to
- * parent); when present must match exactly — no Role A → reviewer Role B.
- * Equality is enforced only via resolveParentReviewerPair (same as Core write/load).
+ * Resolve the sole dispatch responsibility and review authority.
  */
-function resolveDispatchActorsFromRpc(input: {
-  parentActor?: TaskActorRef;
-  reviewer?: TaskActorRef;
-}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  if (!input.parentActor) {
+function resolveDispatchParentActorFromRpc(parentActor?: TaskActorRef): TaskActorRef {
+  if (!parentActor) {
     throw new RpcError(
       -32602,
       "task.dispatch requires explicit parentActor { kind: user|role, id }"
     );
   }
-  try {
-    return resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer,
-    });
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error
-        ? err.message
-        : "task.dispatch reviewer must equal parentActor",
-      {
-        parentActor: input.parentActor,
-        reviewer: input.reviewer,
-      }
-    );
-  }
+  return parentActor;
 }
 
 async function taskClaimDirectRpc(
@@ -3631,7 +3599,7 @@ async function taskClaimDirectRpc(
       workspaceId,
       callerSession.id
     );
-    const actors = await resolveDirectClaimResponsibility(ctx, {
+    const parentActor = await resolveDirectClaimResponsibility(ctx, {
       workspaceId,
       roleId,
       sourceTaskPath,
@@ -3644,7 +3612,7 @@ async function taskClaimDirectRpc(
     await ensureRoleWorkspaceIfGit(mount.workspaceRoot, roleDefinition.name);
     const settings = await loadWorkspaceSettings(mount.env.fs);
     const acceptMode = allowsNonReviewAcceptMode({
-      parentActor: actors.parentActor,
+      parentActor,
     })
       ? settings.defaultAcceptMode
       : "review-required";
@@ -3664,8 +3632,7 @@ async function taskClaimDirectRpc(
     try {
       created = await dispatch(mount.env, selection.primaryId, {
         userPrompt: prompt,
-        parentActor: actors.parentActor,
-        reviewer: actors.reviewer,
+        parentActor,
         acceptMode,
         roleId,
         sessionId: callerSession.id,
@@ -3768,7 +3735,7 @@ async function resolveDirectClaimResponsibility(
     sourceTaskPath?: string;
     sourceSessionId?: string;
   }
-): Promise<{ parentActor: TaskActorRef; reviewer: TaskActorRef }> {
+): Promise<TaskActorRef> {
   const mount = ctx.host.require(input.workspaceId);
   let session: SessionRecord | null = null;
   if (input.sourceSessionId) {
@@ -3796,11 +3763,7 @@ async function resolveDirectClaimResponsibility(
     }
   }
 
-  const rootResponsibility = (): { parentActor: TaskActorRef; reviewer: TaskActorRef } =>
-    resolveParentReviewerPair({
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-    });
+  const rootResponsibility = (): TaskActorRef => ({ kind: "user", id: "user" });
 
   const explicitSourceTask = Boolean(input.sourceTaskPath);
   const sourceRef = input.sourceTaskPath || session?.lastTaskId?.trim() || "";
@@ -3883,25 +3846,14 @@ async function resolveDirectClaimResponsibility(
     // stale chain implicitly; the caller can name the active --from-task exactly.
     return rootResponsibility();
   }
-  if (!sourceTask.parentActor || !sourceTask.reviewer) {
+  if (!sourceTask.parentActor) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      "task.claimDirect source Task is missing persisted parent/reviewer",
+      "task.claimDirect source Task is missing persisted parentActor",
       { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_MISSING", taskPath: sourceTask.path }
     );
   }
-  try {
-    return resolveParentReviewerPair({
-      parentActor: sourceTask.parentActor,
-      reviewer: sourceTask.reviewer,
-    });
-  } catch (err) {
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      err instanceof Error ? err.message : "Invalid source Task responsibility chain",
-      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_INVALID", taskPath: sourceTask.path }
-    );
-  }
+  return sourceTask.parentActor;
 }
 
 async function taskClaimRpc(
@@ -4211,10 +4163,10 @@ async function prepareRoleClaimWrite(
   // Immutable base already fully audited — nothing extra to write with claim.
   if (task.baseCommit?.trim() && task.baseCommitCapture) return undefined;
 
-  if (!task.parentActor || !task.reviewer) {
+  if (!task.parentActor) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.claim Role capture requires exact persisted parentActor/reviewer ` +
+      `task.claim Role capture requires exact persisted parentActor ` +
         `(task ${task.id || task.path})`,
       { taskPath: task.path, code: "BASE_CAPTURE_ACTOR" }
     );
@@ -4329,10 +4281,7 @@ async function prepareRoleClaimWrite(
     capturedAt: now,
   };
   if (!task.integrationAuthority) {
-    patch.integrationAuthority = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer,
-    });
+    patch.integrationAuthority = deriveIntegrationAuthority({ parentActor: task.parentActor });
   }
   return patch;
 }
@@ -6590,7 +6539,6 @@ type TaskSessionBindSnapshot = {
   baseCommit: string | undefined;
   acceptMode: TaskEnvelope["acceptMode"];
   parentActor: TaskEnvelope["parentActor"];
-  reviewer: TaskEnvelope["reviewer"];
 };
 
 function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnapshot {
@@ -6612,7 +6560,6 @@ function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnap
     baseCommit: task.baseCommit,
     acceptMode: task.acceptMode,
     parentActor: task.parentActor,
-    reviewer: task.reviewer,
   };
 }
 
@@ -6636,7 +6583,6 @@ function assertTaskSessionBindSnapshot(
     actual.baseCommit === expected.baseCommit &&
     actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
-    JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
     actual.nodeContextJson === expected.nodeContextJson;
   if (unchanged && current.state === "running") return;
   throw new RpcError(
@@ -6669,7 +6615,6 @@ function assertTaskSessionPostStartOwnership(
     actual.baseCommit === expected.baseCommit &&
     actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
-    JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
     actual.nodeContextJson === expected.nodeContextJson;
   const validSameSessionProgress =
     current.state === "running" || current.state === "waiting";
@@ -9642,8 +9587,8 @@ async function taskInputGet(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * Formal ack after observing one-shot input. Omitted actor is the user-only
- * Local Service path and is allowed only for a persisted user parent/reviewer.
- * Explicit actor must be the exact Task role, persisted parent/reviewer Role,
+ * Local Service path and is allowed only for a persisted user parentActor.
+ * Explicit actor must be the exact Task role, persisted parent Role,
  * or a service-verified Session bound to this Task. Explicit "user" text is
  * never authority. pending|delivered|uncertain → consumed.
  */
@@ -9742,14 +9687,13 @@ async function resolveTaskInputAckAuthority(
 
   if (!actorRaw) {
     if (
-      task.parentActor?.kind === "user" &&
-      task.reviewer?.kind === "user"
+      task.parentActor?.kind === "user"
     ) {
       return { actor: "user", task };
     }
     throw new RpcError(
       -32001,
-      "taskInput.ack user path requires the exact persisted parent/reviewer to be user",
+      "taskInput.ack user path requires the exact persisted parentActor to be user",
       { inputId: item.id, workspaceId: item.workspaceId, taskPath: item.taskPath }
     );
   }
@@ -9765,10 +9709,7 @@ async function resolveTaskInputAckAuthority(
   if (task.roleId && actorRaw === task.roleId) {
     return { actor: actorRaw, task };
   }
-  if (
-    (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw) ||
-    (task.reviewer?.kind === "role" && task.reviewer.id === actorRaw)
-  ) {
+  if (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw) {
     return { actor: actorRaw, task };
   }
 
@@ -9792,13 +9733,12 @@ async function resolveTaskInputAckAuthority(
 
   throw new RpcError(
     -32001,
-    "taskInput.ack actor must match the exact Task role, persisted parent/reviewer Role, or a service-verified Session binding",
+    "taskInput.ack actor must match the exact Task role, persisted parent Role, or a service-verified Session binding",
     {
       inputId: item.id,
       actor: actorRaw,
       expectedRoleId: task.roleId,
       parentActor: task.parentActor,
-      reviewer: task.reviewer,
       sessionId: item.sessionId,
       workspaceId: item.workspaceId,
       taskPath: item.taskPath,
@@ -10001,7 +9941,7 @@ async function taskWorktreeReclaimPreviewRpc(
 }
 
 /**
- * Exact-task reconcile for local user or the persisted parent/reviewer Role.
+ * Exact-task reconcile for local user or the persisted parent Role.
  * This never scans inventory or prunes Git: it reloads one authoritative
  * envelope and reuses the terminal reclaim gates.
  */
@@ -10036,13 +9976,11 @@ function requireTaskWorktreeReconcileActor(
 ): string {
   const actor = requireString(p, "actor");
   if (actor === "user") return actor;
-  const authorized = [task.parentActor, task.reviewer].some(
-    (candidate) => candidate?.kind === "role" && candidate.id === actor
-  );
+  const authorized = task.parentActor?.kind === "role" && task.parentActor.id === actor;
   if (!authorized) {
     throw new RpcError(
       -32001,
-      "task.worktreeReclaim.reconcile requires user or the exact Task parent/reviewer Role",
+      "task.worktreeReclaim.reconcile requires user or the exact Task parent Role",
       { actor, taskId: task.id, taskPath: task.path }
     );
   }
@@ -13263,9 +13201,9 @@ async function resolveIntegrationContract(
  * Persists exact workspaceLane.baseCommit at first bind (capture-once).
  * Also backfills roleBranchBase for managed collection once when missing.
  * integrationAuthority: only the on-disk bag counts as recorded truth; absence
- * triggers explicit persist of parent/reviewer + service mutator.
+ * triggers explicit persist of parentActor + service mutator.
  * Non-Git / pure docs → no fake Git fields (cwd falls back to workspace root);
- * authority remains a derived projection from parent/reviewer, not a Connection permission.
+ * authority remains a derived projection from parentActor, not a Connection permission.
  */
 async function ensureTaskWorkspaceLane(
   ctx: HandlerContext,
@@ -13370,18 +13308,15 @@ async function ensureTaskWorkspaceLane(
         patch.roleBranchBase = tip;
       }
     }
-    // integrationAuthority: always derived from parent/reviewer + service mutator.
+    // integrationAuthority: always derived from parentActor + service mutator.
     if (!currentHasAuthority) {
-      if (!current.parentActor || !current.reviewer) {
+      if (!current.parentActor) {
         throw new Error(
-          `Task ${current.id || current.path} missing parentActor/reviewer; ` +
-            `cannot derive integrationAuthority (actor=parent/reviewer, mutator=service).`
+          `Task ${current.id || current.path} missing parentActor; ` +
+            `cannot derive integrationAuthority (actor=parentActor, mutator=service).`
         );
       }
-      patch.integrationAuthority = deriveIntegrationAuthority({
-        parentActor: current.parentActor,
-        reviewer: current.reviewer,
-      });
+      patch.integrationAuthority = deriveIntegrationAuthority({ parentActor: current.parentActor });
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -13531,9 +13466,6 @@ function buildContextCardManagedBootstrap(
     ...(task.parentActor
       ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`]
       : []),
-    ...(task.reviewer
-      ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`]
-      : []),
     ...(task.roleId ? [`roleId: ${task.roleId}`] : []),
     ...(task.sessionId ? [`sessionId: ${task.sessionId}`] : []),
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
@@ -13583,13 +13515,15 @@ async function collectTaskBootstrapImageRefs(task: TaskEnvelope): Promise<Bootst
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {
-  const derivedAuthority =
-    task.parentActor && task.reviewer
-      ? deriveIntegrationAuthority({
-          parentActor: task.parentActor,
-          reviewer: task.reviewer,
-        })
-      : undefined;
+  if (!task.parentActor) {
+    throw new RpcError(
+      -32022,
+      `Task ${task.id || task.path} is missing canonical parentActor`,
+      { code: "TASK_PARENT_ACTOR_MISSING", taskPath: task.path }
+    );
+  }
+  const parentActor = task.parentActor;
+  const derivedAuthority = deriveIntegrationAuthority({ parentActor });
   const hasLane = Boolean(
     task.workspace ||
       task.worktree ||
@@ -13617,8 +13551,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     contextNodeIds: [...task.contextNodeIds],
     state: task.state,
     manifest: task.manifest,
-    parentActor: task.parentActor,
-    reviewer: task.reviewer,
+    parentActor,
     // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     acceptMode: task.acceptMode,

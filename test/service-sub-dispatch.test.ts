@@ -175,7 +175,7 @@ async function enterRoleClient(
 
 // ---- pure unit: review authority + envelope asSub ----
 
-test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Role", () => {
+test("assertReviewAuthority: exact parentActor only; user cannot ordinary-bypass Role", () => {
   const userReviewer = { kind: "user" as const, id: "user" };
   const orchReviewer = { kind: "role" as const, id: "rl-orchestrator" };
 
@@ -183,7 +183,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
     assertReviewAuthority({
       actor: "user",
       executorRoleId: "rl-executor",
-      reviewer: userReviewer,
+      parentActor: userReviewer,
       action: "accept",
     })
   );
@@ -193,7 +193,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
       assertReviewAuthority({
         actor: "rl-orchestrator",
         executorRoleId: "rl-executor",
-        reviewer: userReviewer,
+        parentActor: userReviewer,
         action: "reject",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -203,7 +203,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
       assertReviewAuthority({
         actor: "rl-executor",
         executorRoleId: "rl-executor",
-        reviewer: userReviewer,
+        parentActor: userReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
@@ -215,7 +215,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
       assertReviewAuthority({
         actor: "user",
         executorRoleId: "rl-helper",
-        reviewer: orchReviewer,
+        parentActor: orchReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -224,7 +224,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
     assertReviewAuthority({
       actor: "rl-orchestrator",
       executorRoleId: "rl-helper",
-      reviewer: orchReviewer,
+      parentActor: orchReviewer,
       action: "reject",
     })
   );
@@ -233,7 +233,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
       assertReviewAuthority({
         actor: "rl-executor",
         executorRoleId: "rl-helper",
-        reviewer: orchReviewer,
+        parentActor: orchReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -243,7 +243,7 @@ test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Ro
       assertReviewAuthority({
         actor: "rl-helper",
         executorRoleId: "rl-helper",
-        reviewer: orchReviewer,
+        parentActor: orchReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
@@ -263,13 +263,12 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "peer",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   const peer = await loadTaskEnvelope(fsa, peerPath);
   assert.equal(peer.asSub, undefined);
   assert.equal(taskAsSub(peer), false);
   assert.equal(peer.parentActor?.kind, "user");
-  assert.equal(peer.reviewer?.id, "user");
+  assert.equal(peer.parentActor?.id, "user");
   const peerRaw = await fsa.readFile(peerPath);
   assert.doesNotMatch(peerRaw, /^asSub:/m);
   assert.doesNotMatch(peerRaw, /^dispatchedBy:/m);
@@ -283,7 +282,6 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "sub",
     parentActor: { kind: "role", id: "rl-orchestrator" },
-    reviewer: { kind: "role", id: "rl-orchestrator" },
     asSub: true,
     workspace: {
       workspace: dir,
@@ -296,7 +294,7 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   assert.equal(sub.asSub, true);
   assert.equal(taskAsSub(sub), true);
   assert.equal(sub.parentActor?.id, "rl-orchestrator");
-  assert.equal(sub.reviewer?.id, "rl-orchestrator");
+  assert.equal(sub.parentActor?.id, "rl-orchestrator");
   assert.equal(sub.targetBranch, "tent-role/orchestrator");
   const subRaw = await fsa.readFile(subPath);
   assert.match(subRaw, /^asSub:\s*true$/m);
@@ -375,7 +373,6 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       prompt: "help orchestrator",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const subResult = sub.result as {
@@ -398,7 +395,7 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const task = await loadTaskEnvelope(envFs, subResult.taskPath);
     assert.equal(taskAsSub(task), true);
     assert.equal(task.parentActor?.id, "rl-orchestrator");
-    assert.equal(task.reviewer?.id, "rl-orchestrator");
+    assert.equal(task.parentActor?.id, "rl-orchestrator");
     assert.equal(task.branch, undefined);
     assert.equal(task.targetBranch, undefined);
     assert.equal(task.worktree, undefined);
@@ -426,7 +423,6 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       roleId: "rl-executor",
       prompt: "peer work",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const peerResult = peer.result as {
@@ -484,9 +480,7 @@ test("task.dispatch asSub Connection: exact Task lane at dispatch for sub and pe
       connectionId: "fake-default",
       prompt: "Connection helper",
       asSub: true,
-      callerKind: "role",
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const subResult = sub.result as {
@@ -530,7 +524,6 @@ test("task.dispatch asSub Connection: exact Task lane at dispatch for sub and pe
       connectionId: "fake-default",
       prompt: "peer Connection",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const peerResult = peer.result as {
@@ -585,7 +578,6 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(asUser.error);
     assert.equal(asUser.error!.code, -32004);
@@ -599,7 +591,6 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "rl-helper" },
-      reviewer: { kind: "role", id: "rl-helper" },
     });
     assert.ok(asSelf.error);
     assert.match(String(asSelf.error!.message), /must not equal the assignee/i);
@@ -612,7 +603,6 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "ghost-role" },
-      reviewer: { kind: "role", id: "ghost-role" },
     });
     assert.ok(unknown.error);
     assert.match(String(unknown.error!.message), /not found in registry/i);
@@ -628,7 +618,6 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(noGit.error);
     assert.match(String(noGit.error!.message), /Git workspace|pure Tent/i);
@@ -638,7 +627,6 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId: noGitMount.workspaceId,
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workNodeIds: [noGitMount.nodeId],
       contextNodeIds: [],
       roleId: "rl-executor",
@@ -691,7 +679,6 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
       prompt: "sub review",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -760,7 +747,6 @@ test("managed Sessions are Connection-only; Role Tasks never start one", async (
       prompt: "durable handoff only",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!roleTask.error, JSON.stringify(roleTask.error));
     const roleTaskPath = (roleTask.result as { taskPath: string }).taskPath;
@@ -775,7 +761,6 @@ test("managed Sessions are Connection-only; Role Tasks never start one", async (
     const connectionNode = await createNote(svc, workspaceId, "connection-task");
     const connectionTask = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [connectionNode],
       contextNodeIds: [],
@@ -806,7 +791,6 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
       prompt: "integrate to dispatcher",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
@@ -876,7 +860,6 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
       prompt: "corrupt me",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
@@ -966,7 +949,6 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
 
     const parentDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [parentId],
       contextNodeIds: [],
@@ -980,7 +962,6 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     // Parent and child Nodes are independently occupiable.
     const peerOk = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [subChildId],
       contextNodeIds: [],
@@ -998,7 +979,6 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       prompt: "sub under dispatcher claim",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!subOk.error, JSON.stringify(subOk.error));
     const subResult = subOk.result as {
@@ -1028,7 +1008,6 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       prompt: "sub with executor parent",
       asSub: true,
       parentActor: { kind: "role", id: "rl-executor" },
-      reviewer: { kind: "role", id: "rl-executor" },
     });
     assert.ok(!otherParent.error, JSON.stringify(otherParent.error));
     assert.equal((otherParent.result as { asSub?: boolean }).asSub, true);
@@ -1088,7 +1067,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     // 2. Orchestrator dispatch + claim parent.
     const parentDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [parentId],
       contextNodeIds: [],
@@ -1123,7 +1101,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       prompt: "produce sub artifact for parent",
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
       acceptMode: "review-required",
     });
     assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
@@ -1237,7 +1214,6 @@ test("peer Connection dispatch creates exact tent-task lane before provider work
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "peer-connection");
     const peer = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],

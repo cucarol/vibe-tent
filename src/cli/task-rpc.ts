@@ -300,8 +300,8 @@ export async function runTaskCommand(
         }
 
         // Caller authority comes from the verified environment/current actor.
-        // Role caller → parentActor=reviewer=that Role + callerKind=role (downstream review).
-        // User-direct → parentActor=reviewer=user + callerKind=user.
+        // Role caller → parentActor=that Role (downstream review).
+        // User-direct → parentActor=user.
         // Role downstream work targets the parent Role lane; user-direct work does not.
         const envRole = String(
           (globals.env?.TENT_ROLE_ID ?? globals.env?.TENT_ROLE ?? process.env.TENT_ROLE_ID ?? process.env.TENT_ROLE ?? "") as string
@@ -310,7 +310,6 @@ export async function runTaskCommand(
         const parentActor = roleCaller
           ? ({ kind: "role" as const, id: envRole })
           : ({ kind: "user" as const, id: "user" });
-        const callerKind: "user" | "role" = roleCaller ? "role" : "user";
         const asSub = roleCaller ? true : undefined;
 
         // Service RPC mirrors the public model:
@@ -323,8 +322,6 @@ export async function runTaskCommand(
           contextNodeIds,
           prompt,
           parentActor,
-          reviewer: parentActor,
-          callerKind,
           ...(asSub ? { asSub: true as const } : {}),
         };
         const dispatchArgs =
@@ -739,7 +736,6 @@ function formatTaskDispatch(result: unknown): string {
     state?: string;
     relayPrompt?: string;
     parentActor?: { kind?: string; id?: string };
-    reviewer?: { kind?: string; id?: string };
     roleId?: string;
     sessionId?: string;
     session?:
@@ -771,10 +767,6 @@ function formatTaskDispatch(result: unknown): string {
     row.parentActor?.kind && row.parentActor?.id
       ? `${row.parentActor.kind}:${row.parentActor.id}`
       : undefined;
-  const reviewerLabel =
-    row.reviewer?.kind && row.reviewer?.id
-      ? `${row.reviewer.kind}:${row.reviewer.id}`
-      : undefined;
 
   return (
     `✓ Dispatched via service RPC\n` +
@@ -782,7 +774,6 @@ function formatTaskDispatch(result: unknown): string {
     `state: ${row.state ?? "queued"}\n` +
     (row.roleId ? `roleId: ${row.roleId}\n` : "") +
     (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
-    (reviewerLabel ? `reviewer: ${reviewerLabel}\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +
     (sessionConnectionId ? `sessionConnectionId: ${sessionConnectionId}\n` : "") +
@@ -1135,14 +1126,14 @@ Commands:
   tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
-      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
+      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/review authority from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target connection:* machine Settings Connection + exact managed Session
       # --work-node      repeatable writable Nodes (at least one; exact occupation)
       # --context-node   repeatable shared read-only context Nodes
-      # parentActor/reviewer derive from the durable Role or local user boundary
+      # parentActor derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
   tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]

@@ -163,7 +163,6 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
       connectionId: "mock-ti",
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -305,7 +304,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.ok(spoofedUser.error);
     assert.equal(spoofedUser.error!.code, -32001);
 
-    // Omitted actor is the Local Service user path; persisted parent/reviewer
+    // Omitted actor is the Local Service user path; persisted parentActor
     // is user:user, so it succeeds.
     const userAcked = (await client.taskInputAck(
       workspaceId,
@@ -415,7 +414,6 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
         connectionId: "mock-ti",
         prompt: "Canonical cross-workspace TaskInput isolation fixture",
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         acceptMode: "review-required",
       })) as { taskPath: string };
       await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -526,13 +524,12 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       name: "ack-authority",
       type: "prompt",
     }));
-    // Persisted parent/reviewer Role may acknowledge ambiguity for its child.
+    // Persisted parent Role may acknowledge ambiguity for its child.
     const parentDispatched = (await client.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Canonical parent acknowledgement fixture",
       parentActor: { kind: "role", id: "dispatcher" },
-      reviewer: { kind: "role", id: "dispatcher" },
       acceptMode: "review-required",
     })) as { taskPath: string; taskId?: string };
     const parentTaskPath = parentDispatched.taskPath;
@@ -576,7 +573,6 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       connectionId: "mock-ti",
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -691,7 +687,6 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
       connectionId: "mock-ti",
       prompt: "Recover exact durable inputs after explicit Session bind",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -827,7 +822,6 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
       connectionId: "mock-ti",
       prompt: "Guard TaskInput injection by exact Task Session binding",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const started = (await client.taskStartSession(workspaceId, {
@@ -914,7 +908,6 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       connectionId: "mock-ti",
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1067,7 +1060,6 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       connectionId: "mock-ti",
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1223,7 +1215,6 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       connectionId: "mock-ti",
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1441,7 +1432,6 @@ test("reject-resume restore failure parks session_unavailable and startSession r
       connectionId: "mock-ti",
       prompt: "Reject restore recovery",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1538,7 +1528,6 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       connectionId: "mock-ti",
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1646,7 +1635,6 @@ test("reject-resume: background completion projects processing → delivered", a
       connectionId: "mock-ti",
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2108,7 +2096,6 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
       connectionId: "mock-ti",
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2257,7 +2244,6 @@ test("reject-resume: omitted note uses authoritative default and startSession re
       connectionId: "mock-ti",
       prompt: "Reject WAL continuation",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2357,7 +2343,6 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       connectionId: "mock-ti",
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2425,7 +2410,6 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
       connectionId: "mock-ti",
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2579,7 +2563,6 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         connectionId: connectionId,
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         acceptMode: "review-required",
       })) as { taskPath: string };
       const taskPath = dispatched.taskPath;
@@ -2683,7 +2666,6 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
       connectionId: "mock-ti",
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2795,7 +2777,6 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
       connectionId: "mock-ti",
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2926,7 +2907,6 @@ test("task.sendInput: service stop drains background work without unhandled reje
       connectionId: "mock-ti",
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -3026,7 +3006,6 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       connectionId: "mock-ti",
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     taskPath = dispatched.taskPath;

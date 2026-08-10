@@ -108,7 +108,6 @@ async function runningTaskWithBase(
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId],
     contextNodeIds: [],

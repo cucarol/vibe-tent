@@ -117,7 +117,6 @@ test("CoreDocsClient: active task protects collab fields on write", async () => 
     contextNodeIds: [],
     userPrompt: "do the work",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   await taskAck(env as any, dispatched.taskPath);
 

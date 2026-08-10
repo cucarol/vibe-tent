@@ -218,7 +218,6 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
       roleId: "rl-executor",
       prompt: "first task uses default review",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t1 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
     assert.equal(t1.acceptMode, "review-required");
@@ -233,7 +232,6 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
       roleId: "rl-executor",
       prompt: "second task snapshots auto-accept",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t2 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
     assert.equal(t2.acceptMode, "auto-accept");
@@ -245,7 +243,6 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
       roleId: "rl-executor",
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "agent-decide",
     })) as { taskPath: string };
     const t3 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
@@ -265,7 +262,6 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
     for (const value of ["manual", "review", "bypass"]) {
       const rejected = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [await createNode(`work-item-${value}-reject`)],
         contextNodeIds: [],
@@ -278,7 +274,6 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
     }
     const retiredField = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [await createNode("work-item-retired-field")],
       contextNodeIds: [],
@@ -302,7 +297,6 @@ test("task envelope persists canonical acceptMode and rejects retired disk value
       roleId: "rl-executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string; task?: { acceptMode?: string } };
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const raw = await fsa.readFile(d.taskPath);

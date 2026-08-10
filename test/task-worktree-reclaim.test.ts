@@ -70,7 +70,6 @@ function sessionTask(
     acceptMode: "review-required",
     manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workNodeIds: partial.workNodeIds ?? contextCard.workNodeIds,
     contextNodeIds: partial.contextNodeIds ?? contextCard.contextNodeIds,
     nodeSnapshots: partial.nodeSnapshots ?? contextCard.nodeSnapshots,

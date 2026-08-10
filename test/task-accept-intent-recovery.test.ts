@@ -110,7 +110,6 @@ async function fixture() {
     contextNodeIds: [],
     userPrompt: "manual accept recovery",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     acceptMode: "review-required",
   });
   await taskClaim(env as never, dispatched.taskPath);

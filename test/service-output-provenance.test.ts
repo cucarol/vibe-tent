@@ -136,7 +136,6 @@ async function readyDeliveryTask(
     roleId: `rl-${role}`,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -595,7 +594,6 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const taskPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     roleId: "rl-executor",
     ...taskNodeContext("cx-src", "inbox"),
     manifestPath: "temp/roles/rl-executor/manifests/m.md",
@@ -650,7 +648,6 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const otherPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     roleId: "rl-executor",
     ...taskNodeContext("cx-other", "inbox"),
     manifestPath: "temp/roles/rl-executor/manifests/m2.md",

@@ -398,7 +398,6 @@ test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient"
       connectionId: "fake-default",
       prompt: "Ship B5 wiring",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; state: string; sessionId: string };
     assert.equal(dispatched.state, "running");
@@ -495,7 +494,6 @@ test("B5: acceptMode=auto-accept integrates without reviewer action", async () =
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -523,7 +521,6 @@ test("B5: agent-decide integrate vs request-review", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d1 = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -556,7 +553,6 @@ test("B5: agent-decide integrate vs request-review", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws2);
     const d1 = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -595,7 +591,6 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -622,7 +617,6 @@ test("B5: available Connection permits role startSession for an exact reserved b
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -651,7 +645,6 @@ test("B5: user callerKind starts an available exact reserved Connection binding"
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -680,7 +673,6 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -703,7 +695,6 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -784,7 +775,6 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       const userPrompt = "near-field: summarize the box intent without tools";
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-managed",
@@ -884,7 +874,6 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-seal",
@@ -979,7 +968,6 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-busy-deliver",
@@ -1138,7 +1126,6 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
     const { workspaceId, nodeId } = await mountWorkItem(svc, wsIdle);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -1191,7 +1178,6 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
         const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
           workspaceId,
           workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: `mock-acp-${mode}`,
@@ -1246,7 +1232,6 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const dispatched = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-output-limit",
@@ -1405,7 +1390,6 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-interrupt",
@@ -1458,7 +1442,6 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
         const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
           workspaceId,
           workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: "mock-acp-autoaccept",
@@ -1518,7 +1501,6 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
         const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
           workspaceId,
           workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: "mock-acp-ad",
@@ -1598,7 +1580,6 @@ test("B5: task.interrupt stops bound session", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -1629,7 +1610,6 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -1680,7 +1660,6 @@ test("B5: task.cancel removes queued envelope", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
@@ -1806,7 +1785,6 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-ask",
@@ -1914,7 +1892,6 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -1998,7 +1975,6 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-deny",
@@ -2062,7 +2038,6 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-timeout",
@@ -2139,7 +2114,6 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-fail-clean",
@@ -2188,7 +2162,6 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
       // Waiting remains active occupation: the exact Node cannot accept a second Task.
       const d2 = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-fail-clean",
@@ -2242,7 +2215,6 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-spontaneous-die",
@@ -2291,7 +2263,6 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
       // A terminal child parks the Task; its exact Node occupation remains exclusive.
       const d2 = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
@@ -2346,7 +2317,6 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
       const d = await rpc(svc, "task.dispatch", {
         workspaceId: mounted.workspaceId,
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "crash mid-session",
@@ -2484,7 +2454,6 @@ test("P0-1: Connection dispatch creates an isolated WorkspaceLane and uses its T
 
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2509,7 +2478,6 @@ test("P0-1: Connection dispatch creates an isolated WorkspaceLane and uses its T
     const nodeId2 = (box2.result as { nodeId: string }).nodeId;
     const d2 = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId2], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2556,7 +2524,6 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2576,7 +2543,7 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
         };
       }
     ).workspaceLane;
-    // Authority-only projection: parent/reviewer + service mutator; no fake Git fields.
+    // Authority-only projection: parentActor + service mutator; no fake Git fields.
     assert.ok(lane, "non-Git still projects integrationAuthority");
     assert.equal(lane!.workspace, undefined);
     assert.equal(lane!.worktree, undefined);
@@ -2629,7 +2596,6 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2679,7 +2645,6 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
     const nodeId2 = (box2.result as { nodeId: string }).nodeId;
     const d2 = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId2], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2729,7 +2694,6 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2784,7 +2748,6 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -2867,7 +2830,6 @@ async function claimDeliveredReviewTask(
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId], contextNodeIds: [],
     connectionId: "fake-default",
@@ -2943,7 +2905,6 @@ test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrat
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3065,7 +3026,6 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3141,7 +3101,6 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3211,7 +3170,6 @@ test("P0-2: auto-accept integrate failure preserves ready Delivery and occupatio
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3274,7 +3232,6 @@ test("P0 fix: managed auto-accept failure preserves ready Delivery and emits dia
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3380,7 +3337,6 @@ test("terminal consistency: managed finalization and interrupt have one winner",
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3467,7 +3423,6 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3513,7 +3468,6 @@ test("P0 fix: managed auto-deliver collects exact Task-lane commit; manual accep
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3587,7 +3541,6 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3646,7 +3599,6 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3689,7 +3641,6 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
     const { workspaceId, nodeId } = await mountWorkItem(svc, wsGit);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3731,7 +3682,6 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3875,7 +3825,6 @@ test("reject-resume fail-closes a non-resumable Connection Task without false-ru
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -3927,7 +3876,6 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4012,7 +3960,6 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-reject-resume",
@@ -4143,7 +4090,7 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
+      parentActor: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "explicit replacement after unavailable resume", acceptMode: "review-required",
     });
@@ -4190,7 +4137,7 @@ test("late session.failed on a replaced prior Session keeps the exact Task runni
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
+      parentActor: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "late prior terminal must not demote replacement",
     });
@@ -4229,7 +4176,6 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4302,7 +4248,6 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4387,7 +4332,6 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4438,7 +4382,6 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4492,7 +4435,6 @@ test("P0 late terminal from old session after rebind does not affect new occupat
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4591,7 +4533,6 @@ test("P0 three independent same-tick session terminals each park only their own 
       const nodeId = (created.result as { nodeId: string }).nodeId;
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
@@ -4662,7 +4603,6 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4721,7 +4661,6 @@ test("P0 explicit replacement session resume after recoverable park", async () =
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4842,7 +4781,7 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
+      parentActor: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "non-resume-capable binding", acceptMode: "review-required",
     });
@@ -4887,7 +4826,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
+      parentActor: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "preserve durable input across explicit replacement", acceptMode: "review-required",
     });
@@ -4921,7 +4860,6 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -4993,7 +4931,6 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5052,7 +4989,6 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5105,7 +5041,6 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5161,7 +5096,6 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-fail-launch",
@@ -5223,7 +5157,6 @@ test("P0: user and role concurrent starts share one machine-route launch", async
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5313,7 +5246,6 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
       const connectionBound = opts.realLiveSession === true;
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         ...(connectionBound
@@ -5519,7 +5451,6 @@ test("task.startSession clears a recoverable external wait before provider launc
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5564,7 +5495,6 @@ test("task.startSession leaves session_unavailable waiting when a deliverable dr
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -5652,7 +5582,6 @@ test("task.startSession internal resume waits for the exact Task lifecycle fligh
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -5725,7 +5654,6 @@ test("task.startSession parks an unavailable bound session; replaceSession creat
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5803,7 +5731,6 @@ test("task.startSession and replaceSession fail closed on a stale missing bindin
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -5869,7 +5796,6 @@ test("task.startSession and replaceSession fail closed on a foreign binding", as
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const dispatched = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-boundary",
@@ -5975,7 +5901,6 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -6020,7 +5945,6 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
@@ -6066,7 +5990,6 @@ test("P0 fix: auto-accept with zero commits is legal (pure docs / no auto-collec
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",

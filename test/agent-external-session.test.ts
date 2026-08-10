@@ -225,7 +225,6 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       roleId: "rl-executor",
       prompt: "do the thing",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
 
@@ -307,7 +306,6 @@ test("external Role reject-resume keeps the exact live Session and Task running"
       roleId: "rl-executor",
       prompt: "external reject resume",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
@@ -382,7 +380,6 @@ test("external session.leave defensively parks every exact active Task and new c
       roleId: "rl-executor",
       prompt: "first exact external Task",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, first.taskPath);
@@ -435,7 +432,6 @@ test("external session.leave defensively parks every exact active Task and new c
       roleId: "rl-executor",
       prompt: "second exact external Task",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const secondBefore = await mount.env.fs.readFile(second.taskPath);
     const sessionBefore = await svc.runtime.registry.read(sessionId);
@@ -530,7 +526,6 @@ test("task.claim recovers only the exact rejected external Role Task from its pa
       roleId: "rl-executor",
       prompt: "recover exact external Task",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
@@ -615,7 +610,6 @@ test("external Role claim racing exact session.leave converges to a recoverable 
       roleId: "rl-executor",
       prompt: "race exact external recovery with leave",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
     await roleClient.taskWait(
@@ -713,7 +707,6 @@ test("external Role reject-resume racing session.leave never projects closed Ses
       roleId: "rl-executor",
       prompt: "race reject resume with exact external leave",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
@@ -861,7 +854,6 @@ test("external Role reject-resume failure is parked without managed-Session diag
       roleId: "rl-executor",
       prompt: "external failure wording",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);

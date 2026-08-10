@@ -29,7 +29,7 @@ export type WaitReason = "user-input" | "review" | "external";
  */
 export type TaskOutcome = "delivered" | "blocked" | "needs-input";
 
-/** Parent / reviewer actor on a Task. */
+/** Parent actor on a Task; this is also the sole review authority. */
 export type TaskActorKind = "user" | "role";
 export type TaskActorRef = {
   kind: TaskActorKind;
@@ -81,12 +81,12 @@ export function isTaskActorKind(value: unknown): value is TaskActorKind {
 }
 
 /**
- * Fail-loud parse of parentActor / reviewer wire objects.
+ * Fail-loud parse of the parentActor wire object.
  * Accepts `{ kind, id }` only.
  */
 export function parseTaskActorRef(
   value: unknown,
-  label: "parentActor" | "reviewer"
+  label: "parentActor"
 ): TaskActorRef {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TaskLifecycleError(
@@ -122,76 +122,6 @@ export function parseTaskActorRef(
     );
   }
   return { kind, id };
-}
-
-/**
- * V0.2 invariant: reviewer is derived from parentActor — not arbitrary delegation.
- * `reviewer.kind/id` must equal `parentActor.kind/id`. Role A may not assign
- * reviewer Role B. Fail-loud on mismatch.
- */
-export function assertParentReviewerEqual(
-  parentActor: TaskActorRef,
-  reviewer: TaskActorRef
-): void {
-  if (parentActor.kind !== reviewer.kind || parentActor.id !== reviewer.id) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task reviewer must equal parentActor (no arbitrary delegation); ` +
-        `got parentActor=${parentActor.kind}:${parentActor.id} ` +
-        `reviewer=${reviewer.kind}:${reviewer.id}.`
-    );
-  }
-}
-
-/** True when parent and reviewer are the same actor ref. */
-export function parentReviewerEqual(
-  parentActor: TaskActorRef,
-  reviewer: TaskActorRef
-): boolean {
-  return parentActor.kind === reviewer.kind && parentActor.id === reviewer.id;
-}
-
-/**
- * Single authoritative resolve for parentActor + reviewer pairs.
- * Used by Core new-write, load, migration, and Service RPC — equality is
- * enforced here so no boundary can parse two actors and return them unchecked.
- *
- * - `parentActor` required (already-parsed TaskActorRef).
- * - `reviewer` optional: when omitted, derived as a copy of parentActor.
- * - When present, must equal parentActor (assertParentReviewerEqual).
- * - Always returns both fields (both must be persisted on write).
- */
-export function resolveParentReviewerPair(input: {
-  parentActor: TaskActorRef;
-  reviewer?: TaskActorRef;
-}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = input.reviewer
-    ? parseTaskActorRef(input.reviewer, "reviewer")
-    : { ...parentActor };
-  assertParentReviewerEqual(parentActor, reviewer);
-  return { parentActor, reviewer };
-}
-
-/** User parent + user reviewer (user-direct Task). */
-export function userTaskActors(): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  const parentActor: TaskActorRef = { kind: "user", id: "user" };
-  return { parentActor, reviewer: { ...parentActor } };
-}
-
-/** Role parent + same-role reviewer (Role-dispatched Task Agent / sub). */
-export function roleTaskActors(
-  roleName: string
-): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  const id = roleName.trim();
-  if (!id || id === "user") {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      "Role parent/reviewer requires a durable role name (not user)."
-    );
-  }
-  const parentActor: TaskActorRef = { kind: "role", id };
-  return { parentActor, reviewer: { ...parentActor } };
 }
 
 /**
@@ -272,7 +202,7 @@ export type WorkspaceLane = {
    */
   baseCommit?: string;
   /**
-   * Integration authority: actor equals parent/reviewer; mutator is always service.
+   * Integration authority: actor equals parentActor; mutator is always service.
    * Ordinary executors do not hold Git integration authority.
    */
   integrationAuthority?: {
@@ -440,22 +370,21 @@ export function assertNotSelfAccept(actor: string, executorRoleId?: string): voi
 }
 
 /**
- * Review authority for task.accept / task.reject (V0.2 parent/reviewer wire).
- * Ordinary accept/reject must equal the **exact** persisted Task.reviewer and
+ * Review authority for task.accept / task.reject.
+ * Ordinary accept/reject must equal the **exact** persisted Task.parentActor and
  * never the submitter. There is no user root override on Role-reviewed Tasks.
  *
- * - `reviewer.kind=user` → only `actor=user`.
- * - `reviewer.kind=role` → only `actor === reviewer.id` (exact parent Role).
+ * - `parentActor.kind=user` → only `actor=user`.
+ * - `parentActor.kind=role` → only `actor === parentActor.id` (exact parent Role).
  * - Self-review (actor === submitter) always forbidden.
  * - Soft policy only — not cryptographic auth on the shared service token.
  *
- * Callers pass the explicit envelope `reviewer` (after migration). This function
- * never infers responsibility from the Git-lane `asSub` flag.
+ * This function never infers responsibility from the Git-lane `asSub` flag.
  */
 export function assertReviewAuthority(input: {
   actor: string;
   executorRoleId?: string;
-  reviewer?: TaskActorRef;
+  parentActor?: TaskActorRef;
   action?: "accept" | "reject";
 }): void {
   const actor = input.actor.trim();
@@ -473,25 +402,25 @@ export function assertReviewAuthority(input: {
       `task.${action} actor must not equal executing Role (${executorRoleId}).`
     );
   }
-  const reviewer = input.reviewer;
-  if (!reviewer) {
+  const parentActor = input.parentActor;
+  if (!parentActor) {
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
-      `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
+      `task.${action} requires an explicit Task.parentActor.`
     );
   }
-  if (reviewer.kind === "user") {
+  if (parentActor.kind === "user") {
     // Exact match only: kind=user requires id "user" (enforced by parseTaskActorRef).
-    if (actor === reviewer.id && actor === "user") return;
+    if (actor === parentActor.id && actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
   // Role-reviewed: exact parent Role id only — never an ordinary user override.
-  if (actor === reviewer.id) return;
+  if (actor === parentActor.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
+    `task.${action} requires actor equal to parent role (${parentActor.id}); got ${actor}.`
   );
 }

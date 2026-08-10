@@ -138,7 +138,7 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     assert.equal(task.sessionId, plannerSession.sessionId);
     assert.equal(taskAsSub(task), false);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
+    assert.doesNotMatch(await tentFs.readFile(task.path), /^reviewer:/m);
     assert.deepEqual(task.workNodeIds, [first, second]);
     assert.deepEqual(task.contextNodeIds, []);
     assert.deepEqual(task.contextCard.nodeSnapshots.map((snapshot) => snapshot.id), [first, second]);
@@ -157,7 +157,7 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
   });
 });
 
-test("Role direct claim inherits persisted parent/reviewer while real self-subdispatch stays rejected", async () => {
+test("Role direct claim inherits persisted parentActor while real self-subdispatch stays rejected", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
     const tentFs = new NodeFs(path.join(workspace, ".tent"));
@@ -174,7 +174,6 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       roleId: "rl-executor",
       prompt: "parent responsibility",
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sourceDispatch.error, JSON.stringify(sourceDispatch.error));
     const sourcePath = (sourceDispatch.result as { taskPath: string }).taskPath;
@@ -212,7 +211,6 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       (direct.result as { taskPath: string }).taskPath
     );
     assert.deepEqual(directTask.parentActor, { kind: "role", id: "rl-orchestrator" });
-    assert.deepEqual(directTask.reviewer, { kind: "role", id: "rl-orchestrator" });
     assert.equal(taskAsSub(directTask), false);
     await taskInterrupt(svc.hostApi.require(workspaceId).env, directTask.path);
 
@@ -229,7 +227,6 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       (viaSession.result as { taskPath: string }).taskPath
     );
     assert.deepEqual(sessionTask.parentActor, { kind: "role", id: "rl-orchestrator" });
-    assert.deepEqual(sessionTask.reviewer, { kind: "role", id: "rl-orchestrator" });
 
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
@@ -238,7 +235,6 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       roleId: "rl-executor",
       prompt: "not a direct claim",
       parentActor: { kind: "role", id: "rl-executor" },
-      reviewer: { kind: "role", id: "rl-executor" },
       asSub: true,
     });
     assert.ok(selfDispatch.error);
@@ -263,7 +259,6 @@ test("Role task.claim trusts only exact live transport Session binding", async (
         roleId: "rl-executor",
         prompt: `execute ${nodeId}`,
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
       });
       assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
       return (dispatched.result as { taskPath: string }).taskPath;
@@ -439,7 +434,6 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
       roleId: "rl-executor",
       prompt: "prior delegated work",
       parentActor: { kind: "role", id: "rl-orchestrator" },
-      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const priorPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -475,7 +469,6 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
       (next.result as { taskPath: string }).taskPath
     );
     assert.deepEqual(nextTask.parentActor, { kind: "role", id: "rl-orchestrator" });
-    assert.deepEqual(nextTask.reviewer, { kind: "role", id: "rl-orchestrator" });
 
     const missingSession = await enterRoleSession(
       svc,
@@ -497,6 +490,5 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
       (afterMissing.result as { taskPath: string }).taskPath
     );
     assert.deepEqual(missingTask.parentActor, { kind: "user", id: "user" });
-    assert.deepEqual(missingTask.reviewer, { kind: "user", id: "user" });
   });
 });

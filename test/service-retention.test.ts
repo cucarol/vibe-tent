@@ -71,7 +71,6 @@ async function seedOldTerminal(
   const taskPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
     ...taskNodeContext("cx-seed", "inbox"),
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
@@ -233,7 +232,6 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const activePath = await writeTaskEnvelope(fsa, clock, {
 
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       sessionId: "ss-executor",
       ...taskNodeContext("cx-live", "inbox"),
       manifestPath: "temp/sessions/ss-executor/manifests/m.md",

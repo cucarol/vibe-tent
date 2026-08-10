@@ -197,7 +197,6 @@ test("node.collaboration: running Task projects raw state + assignee; no session
       roleId: "rl-executor",
       prompt: "do running work",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
 
@@ -236,7 +235,6 @@ test("node.collaboration: waiting Task projects raw waiting state", async () => 
       roleId: "rl-executor",
       prompt: "need input",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
     await client.taskWait(workspaceId, dispatched.taskPath, "user-input", "Need criteria");
@@ -263,7 +261,6 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
       roleId: "rl-executor",
       prompt: "ship for review",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
@@ -305,7 +302,6 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
       roleId: "rl-executor",
       prompt: "finish",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
@@ -335,7 +331,6 @@ test("node.collaborations: order preserved; empty ids → empty items", async ()
       roleId: "rl-executor",
       prompt: "work a",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
 
     const empty = (await client.nodeCollaborations(
@@ -447,7 +442,6 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
       roleId: "rl-executor",
       prompt: "occupy parent",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     await client.taskDispatch(workspaceId, {
       workNodeIds: [child.nodeId],
@@ -455,7 +449,6 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
       roleId: "rl-planner",
       prompt: "occupy child",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
 
     const parentItem = (await client.nodeCollaboration(workspaceId, parent.nodeId)) as NodeCollaboration;
@@ -492,7 +485,6 @@ test("task.claim rejects Session selectors and derives exact transport binding",
       roleId: "rl-executor",
       prompt: "bind session",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const rejected = await rpc(svc, "task.claim", {
@@ -539,7 +531,6 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
       roleId: "rl-executor",
       prompt: "occupy one exact Node",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const blocked = await client.tryCall("task.dispatch", {
@@ -549,7 +540,6 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
       roleId: "rl-planner",
       prompt: "second exact Node task",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
     assert.equal(blocked.ok, false);
     if (!blocked.ok) {
@@ -570,7 +560,6 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
       roleId: "rl-executor",
       prompt: "reference two Nodes",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const multiTask = (await client.taskGet(workspaceId, multi.taskPath)) as {
       task: { id: string };
@@ -599,7 +588,6 @@ test("node.collaborations: duplicate ids preserve order and project same item", 
       roleId: "rl-executor",
       prompt: "dup",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
 
     const batch = (await client.nodeCollaborations(workspaceId, [
@@ -637,7 +625,6 @@ test("node.collaboration: descendant claim does not paint parent", async () => {
       roleId: "rl-executor",
       prompt: "occupy child only",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
 
     const childItem = (await client.nodeCollaboration(workspaceId, child.nodeId)) as NodeCollaboration;
@@ -663,7 +650,6 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       roleId: "rl-executor",
       prompt: "interrupt me",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, d1.taskPath);
     await client.taskInterrupt(workspaceId, d1.taskPath);
@@ -681,7 +667,6 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       roleId: "rl-executor",
       prompt: "reject me",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, d2.taskPath);
@@ -706,7 +691,6 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       roleId: "rl-executor",
       prompt: "fail me",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, d3.taskPath);
     const fsa = new NodeFs(path.join(ws, ".tent"));
@@ -732,7 +716,6 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
       roleId: "rl-executor",
       prompt: "stale pointers",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
 
@@ -765,7 +748,6 @@ test("node.collaboration: Connection dispatch projects exact Session binding", a
       connectionId: "fake-default",
       prompt: "Connection work",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as {
       taskPath: string;
       sessionId: string;
@@ -795,7 +777,6 @@ test("node.collaboration: idle / no sessionId incurs no session probe", async ()
       roleId: "rl-executor",
       prompt: "no session bind",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     });
 
     // Unrelated sessions exist on the machine.
@@ -858,7 +839,6 @@ test("node.collaborations: duplicate Node requests probe each exact Task Session
       connectionId: "fake-default",
       prompt: "a",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const dB = (await client.taskDispatch(workspaceId, {
       workNodeIds: [b.nodeId],
@@ -866,7 +846,6 @@ test("node.collaborations: duplicate Node requests probe each exact Task Session
       connectionId: "fake-default",
       prompt: "b",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const startedA = (await client.taskStartSession(workspaceId, {
       taskPath: dA.taskPath,

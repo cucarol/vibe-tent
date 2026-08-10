@@ -126,7 +126,6 @@ async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string,
   const connectionId = opts?.connectionId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
@@ -175,7 +174,6 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -235,7 +233,6 @@ test("managed start refuses a Role Task; only an exact Connection Task owns a Se
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], roleId: "rl-executor",
       prompt: "Role Task must never receive a Connection-managed Session", acceptMode: "review-required",
     });
@@ -265,7 +262,6 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
 
     const dispatching = rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -453,7 +449,6 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
         workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
@@ -863,7 +858,6 @@ test("startSession rejects a changed exact Task/Session identity before flight j
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -1014,7 +1008,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const otherNodeId = (otherNote.result as { nodeId: string }).nodeId;
     const otherDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [otherNodeId],
       contextNodeIds: [],

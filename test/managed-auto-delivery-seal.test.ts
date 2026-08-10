@@ -52,7 +52,6 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
       connectionId: CONNECTION.connectionId,
       prompt: "hold managed session open",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; sessionId: string };
 

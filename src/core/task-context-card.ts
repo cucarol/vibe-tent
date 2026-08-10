@@ -21,7 +21,6 @@ import {
 } from "./task-context-card-schema.js";
 import {
   parseTaskActorRef,
-  resolveParentReviewerPair,
   TaskLifecycleError,
   type TaskActorRef,
 } from "./task-model.js";
@@ -759,9 +758,9 @@ export function routeLaunchCompatibilityDigest(input: {
 // Truth lives on Task workspaceLane; Context Card only projects.
 // ---------------------------------------------------------------------------
 
-/** Integration authority: actor equals parent/reviewer; mutator is always service. */
+/** Integration authority: actor equals parentActor; mutator is always service. */
 export type IntegrationAuthority = {
-  /** Exact parent/reviewer actor — ordinary accept authority. */
+  /** Exact parent actor — ordinary accept authority. */
   actor: TaskActorRef;
   /** Git mutator is Local Service only (never the executor). */
   mutator: typeof INTEGRATION_MUTATOR_SERVICE;
@@ -780,28 +779,23 @@ export type ExecutionLaneProjection = {
 };
 
 /**
- * Derive integrationAuthority from persisted Task parent/reviewer only.
- * mutator is always `service`. Rejects parent/reviewer mismatch (fail loud).
+ * Derive integrationAuthority from persisted Task parentActor only.
+ * mutator is always `service`.
  * Never accepts an arbitrary Task-supplied authority object as truth.
  */
 export function deriveIntegrationAuthority(input: {
   parentActor: TaskActorRef;
-  reviewer: TaskActorRef;
 }): IntegrationAuthority {
   try {
-    const pair = resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer,
-    });
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
     return {
-      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      actor: { kind: parentActor.kind, id: parentActor.id },
       mutator: INTEGRATION_MUTATOR_SERVICE,
     };
   } catch (err) {
     if (err instanceof TaskLifecycleError) {
       throw new TaskContextCardError("INVALID_ACTOR", err.message, {
         parentActor: input.parentActor,
-        reviewer: input.reviewer,
       });
     }
     throw err;
@@ -809,7 +803,7 @@ export function deriveIntegrationAuthority(input: {
 }
 
 /**
- * @deprecated Prefer {@link deriveIntegrationAuthority} with both parent+reviewer.
+ * @deprecated Prefer {@link deriveIntegrationAuthority}.
  * Single-actor helper still fail-loud-parses the actor; mutator is always service.
  */
 export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAuthority {
@@ -821,19 +815,18 @@ export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAutho
 }
 
 /**
- * Assert a projected/persisted authority bag matches derived parent/reviewer + service.
+ * Assert a projected/persisted authority bag matches derived parentActor + service.
  * Fail loud on actor mismatch or non-service mutator — never trust executor-supplied bags.
  */
 export function assertIntegrationAuthorityMatchesParent(
   authority: IntegrationAuthority | unknown,
-  parentActor: TaskActorRef,
-  reviewer: TaskActorRef
+  parentActor: TaskActorRef
 ): IntegrationAuthority {
-  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+  const derived = deriveIntegrationAuthority({ parentActor });
   if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      "integrationAuthority must be { actor, mutator: service } derived from parentActor.",
       { authority }
     );
   }
@@ -857,7 +850,7 @@ export function assertIntegrationAuthorityMatchesParent(
   if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task parent/reviewer ` +
+      `integrationAuthority.actor must equal Task parentActor ` +
         `(${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
       { authority, derived }
     );
@@ -868,13 +861,13 @@ export function assertIntegrationAuthorityMatchesParent(
 /**
  * Derive executionLane projection from Task lane truth.
  * - baseCommit: exact workspaceLane.baseCommit only (never roleBranchBase substitution).
- * - integrationAuthority: always re-derived from parentActor+reviewer + service mutator.
- * Invalid parent/reviewer fails loud — never silently drop authority.
+ * - integrationAuthority: always re-derived from parentActor + service mutator.
+ * Invalid parentActor fails loud — never silently drop authority.
  */
 export function projectExecutionLaneFromTask(
   task: Pick<
     TaskEnvelope,
-    "targetBranch" | "branch" | "worktree" | "parentActor" | "reviewer" | "baseCommit"
+    "targetBranch" | "branch" | "worktree" | "parentActor" | "baseCommit"
   >
 ): ExecutionLaneProjection | undefined {
   const baseCommit =
@@ -887,19 +880,8 @@ export function projectExecutionLaneFromTask(
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
 
   let integrationAuthority: IntegrationAuthority | undefined;
-  if (task.parentActor || task.reviewer) {
-    if (!task.parentActor || !task.reviewer) {
-      throw new TaskContextCardError(
-        "INVALID_ACTOR",
-        "executionLane requires both parentActor and reviewer to derive integrationAuthority.",
-        { parentActor: task.parentActor, reviewer: task.reviewer }
-      );
-    }
-    // Fail loud on invalid / mismatched actors — do not catch and drop.
-    integrationAuthority = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer,
-    });
+  if (task.parentActor) {
+    integrationAuthority = deriveIntegrationAuthority({ parentActor: task.parentActor });
   }
 
   if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {

@@ -92,7 +92,6 @@ export type DispatchValidation = {
     roleId: string;
     prompt: string;
     parentActor: { kind: "user" | "role"; id: string };
-    reviewer: { kind: "user" | "role"; id: string };
   } | null;
 };
 
@@ -245,7 +244,6 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
     },
   };
 }

@@ -89,11 +89,6 @@ export interface DispatchOptions {
    */
   parentActor: import("./task-model.js").TaskActorRef;
   /**
-   * Explicit reviewer (V0.2). Optional: derived equal to parentActor when omitted.
-   * When present must equal parentActor (no arbitrary Role A → Role B).
-   */
-  reviewer?: import("./task-model.js").TaskActorRef;
-  /**
    * Sub-dispatch Git lane flag. Missing/false = peer. When true, requires real
    * Git lane and a durable parent Role (validated by service/CLI). asSub is lane-only.
    */
@@ -207,7 +202,7 @@ async function dispatchUnlocked(
   // and workspace context remain independent. asSub is a Git-lane flag only.
   if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor; reviewer may be derived equal."
+      "Dispatch requires explicit parentActor."
     );
   }
   void options.asSub;
@@ -273,7 +268,6 @@ async function dispatchUnlocked(
       userPrompt,
       workspace: options.workspace,
       parentActor: options.parentActor,
-      reviewer: options.reviewer,
       asSub: options.asSub === true,
       acceptMode: options.acceptMode,
       id: taskId,
@@ -282,7 +276,7 @@ async function dispatchUnlocked(
       },
     });
 
-    // Load the just-written envelope for an honest relay projection (parent/reviewer included).
+    // Load the just-written envelope for an honest responsibility projection.
     const written = await loadTaskEnvelope(env.fs, taskPath);
     const relayPrompt = relayPromptForTask(written, env.tentRoot || env.tentName);
     return {

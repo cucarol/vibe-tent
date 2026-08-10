@@ -44,7 +44,7 @@ When the envelope includes lane fields:
 - `branch` — Git branch for this role/task (`tent-role/<role>` or `tent-task/<taskId>`)
 - `targetBranch` — integrate target (mainline or dispatcher role branch)
 - `baseCommit` — exact Task-lane starting commit captured once at the lifecycle stage that establishes this lane; ordinary executor history must be linear from it
-- `integrationAuthority` — derived from exact parent/reviewer with Service as mutator
+- `integrationAuthority` — derived from exact `parentActor` with Service as mutator
 
 Lane timing depends on execution shape and parent: Role Tasks defer execution
 lane/base to first claim; Connection-launched Tasks establish their Task lane

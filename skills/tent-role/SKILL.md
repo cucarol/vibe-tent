@@ -54,7 +54,7 @@ binding, compatibility result, or persisted state.
 - An Agent Connection resolves provider/model/endpoint/credential metadata. Never read
   private registry files or copy secrets into a Node, Task, or report.
 - A temporary ACP Session remains execution state of its exact downstream
-  Task; durable responsibility stays with the Role and parent reviewer chain.
+  Task; durable responsibility stays with the Role and `parentActor` chain.
 - Caller authority and parent lane are derived by Tent. Do not recreate
   internal identity, reviewer, or accept-mode knobs.
 
@@ -67,7 +67,7 @@ context as the old Session.
 
 ## Review downstream Delivery
 
-- Trust persisted `parentActor` and exact `reviewer`. Downstream executors use
+- Trust persisted `parentActor` as the sole reviewer authority. Downstream executors use
   review-to-parent, never self-accept or elevate Role-to-user policy.
 - Inspect the real diff, commit ancestry, target-head snapshot, checks, Task
   interactions, Session settle state, and Delivery record.

@@ -551,7 +551,7 @@ export async function prepareTaskAccept(
     assertReviewAuthority({
       actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "accept",
     });
     // Pre-validate Outputs before integrate so bad selectors fail before side effects.
@@ -613,7 +613,7 @@ export async function finalizeTaskAccept(
     assertReviewAuthority({
       actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "accept",
     });
 
@@ -834,11 +834,11 @@ export async function taskReject(
       task,
       options.deliveryId
     );
-    // Exact Task.reviewer only (no user override on Role-reviewed); never self.
+    // Exact Task.parentActor only (no user override on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "reject",
     });
 
@@ -1250,7 +1250,7 @@ async function completeTaskAcceptIntent(
   assertReviewAuthority({
     actor: intent.actor,
     executorRoleId: task.roleId,
-    reviewer: task.reviewer,
+    parentActor: task.parentActor,
     action: "accept",
   });
   const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
@@ -1416,7 +1416,7 @@ async function reconcilePendingTaskReject(
   assertReviewAuthority({
     actor: intent.actor,
     executorRoleId: task.roleId,
-    reviewer: task.reviewer,
+    parentActor: task.parentActor,
     action: "reject",
   });
   const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);

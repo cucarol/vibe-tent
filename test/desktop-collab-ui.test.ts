@@ -96,7 +96,6 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
     roleId: "rl-executor",
     prompt: "implement feature",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
 
   assert.equal(
@@ -189,6 +188,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/tasks/a.md",
         id: "tk-a",
         roleId: "rl-executor",
+        parentActor: { kind: "user", id: "user" },
         workNodeIds: ["cx-box"], contextNodeIds: [],
         state: "delivered",
         manifest: "m",
@@ -201,6 +201,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/tasks/b.md",
         id: "tk-b",
         roleId: "rl-executor",
+        parentActor: { kind: "user", id: "user" },
         sessionId: "ss-b",
         workNodeIds: ["cx-box"], contextNodeIds: [],
         state: "queued",
@@ -353,6 +354,7 @@ test("task/session state labels and start/interrupt gates", () => {
         path: "temp/executor/tasks/live.md",
         id: "tk-live",
         roleId: "rl-executor",
+        parentActor: { kind: "user", id: "user" },
         workNodeIds: ["cx-1"], contextNodeIds: [],
         state: "running",
         manifest: "m",
@@ -455,9 +457,6 @@ test("service+client: registry → create coordination box → dispatch → deli
       roleId: form.payload!.roleId,
       prompt: form.payload!.prompt,
       parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
-      reviewer:
-        form.payload!.reviewer ??
-        form.payload!.parentActor ?? { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -508,7 +507,6 @@ test("service+client: registry → create coordination box → dispatch → deli
       roleId: "rl-executor",
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, d2.taskPath);
@@ -599,7 +597,6 @@ test("service+client: connection.list safe metadata + managed Session/interrupt 
       connectionId: "fake-default",
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as {
       taskPath: string;

@@ -118,7 +118,7 @@ tent task claim --work-node <nodeId> [--work-node <nodeId> ...] \
 ```
 
 This creates and immediately claims one Role Task. It has no target and is not
-downstream assignment. Tent inherits its persisted parent/reviewer
+downstream assignment. Tent inherits its persisted `parentActor`
 responsibility from an explicit current Task or the verified current Role
 execution context; a Role root falls back to the user.
 
@@ -160,7 +160,7 @@ Node. Parent and child Nodes do not imply subtree locks.
 
 Dispatch persists:
 
-- exact `parentActor` and `reviewer` authority;
+- exact `parentActor`, the sole parent responsibility and review authority;
 - optional durable `roleId` responsibility and/or exact executing `sessionId`;
 - the immutable raw prompt in the Task body;
 - frozen work/context Node ids and snapshots in Context Card v2;
@@ -229,12 +229,13 @@ A Delivery is an executor's formal result for one Task. It is separate from the
 Task, Session, and any Output Node. It contains a human summary plus optional
 commits, checks, and artifact references.
 
-The executor submits Delivery to the exact persisted reviewer. Downstream Task
+The executor submits Delivery to the reviewer derived from the exact persisted
+`parentActor`. Downstream Task
 Agents always use review-to-parent and cannot self-accept.
 
 Every Task freezes one `acceptMode` at creation:
 
-- `review-required`: the frozen reviewer accepts or rejects;
+- `review-required`: the frozen `parentActor` authority accepts or rejects;
 - `auto-accept`: Service creates a durable ready Delivery, then mechanically
   integrates and accepts under Core;
 - `agent-decide`: the executor Session explicitly chooses integration or review.

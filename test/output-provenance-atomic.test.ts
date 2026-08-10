@@ -62,7 +62,6 @@ async function readyAcceptFixture(dir: string) {
     contextNodeIds: [],
     userPrompt: "atomic provenance fixture",
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskDeliver(e as any, result.taskPath, {
@@ -396,7 +395,6 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
   const taskPath = await writeTaskEnvelope(base, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],

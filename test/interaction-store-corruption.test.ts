@@ -155,7 +155,6 @@ for (const fixture of cases) {
           connectionId: CONNECTION.connectionId,
           prompt: "hold for corruption delivery gate",
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
           acceptMode: "review-required",
         })) as { taskPath: string };
         taskPath = dispatched.taskPath;
@@ -191,7 +190,6 @@ for (const fixture of cases) {
           connectionId: CONNECTION.connectionId,
           prompt: "hold for corruption delivery gate",
           parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
           acceptMode: "review-required",
         })) as { taskPath: string };
         taskPath = dispatched.taskPath;
