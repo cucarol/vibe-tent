@@ -1,8 +1,8 @@
 // Machine-local managed Delivery *report draft* preservation.
 //
-// Scope: only the final assistantText that managed auto-deliver will publish as
-// Delivery.summary. Not chat history, not a sixth pending-interaction surface,
-// not a ready Delivery / draft Delivery record under temp/*/deliveries.
+// Scope: the complete bounded final assistantText for one managed turn, including
+// blocked/needs-input control reports. Not chat history, not a sixth pending-
+// interaction surface, and not a ready Delivery under temp/*/deliveries.
 //
 // Survives service restart so seal / dirty-worktree / collect / integrate /
 // task.deliver failures can retry without re-prompting the Agent.
@@ -23,7 +23,7 @@ export interface ManagedDeliveryReportDraft {
   taskPath: string;
   taskId?: string;
   sessionId: string;
-  /** Final assistant report body (trimmed non-empty). */
+  /** Complete final assistant report/control wire (trimmed non-empty). */
   assistantText: string;
   createdAt: string;
   updatedAt: string;

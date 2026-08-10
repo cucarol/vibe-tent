@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { taskReject as coreTaskReject } from "../src/core/task-lifecycle.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -1409,6 +1410,98 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
   });
 });
 
+test("reject-resume restore failure parks session_unavailable and startSession recovers", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-recover-log-")),
+    "mock-acp.json"
+  );
+  const connections = [
+    mockAcpRoute("mock-ti", {
+      logPath,
+      promptText: "outcome: delivered\n\nFIRST_REJECT_RECOVERY",
+      followupText: "outcome: delivered\n\nRECOVERED_REWORK",
+      promptDelayMs: 150,
+      keepAlive: true,
+      loadSession: true,
+    }),
+  ];
+
+  await withService(connections, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = await client.docsCreateNote(workspaceId, {
+      name: "reject-restore-recovery",
+      type: "prompt",
+    });
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      workNodeIds: [created.nodeId],
+      contextNodeIds: [],
+      connectionId: "mock-ti",
+      prompt: "Reject restore recovery",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      acceptMode: "review-required",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    const sessionId = started.session.sessionId;
+    await pollUntil(async () => {
+      const got = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return got.task.state === "delivered" ? got : null;
+    }, 20_000, "first delivery before injected restore failure");
+    await svc.runtime.stopSession(sessionId, "user");
+    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+
+    const originalResume = svc.runtime.resumeSession.bind(svc.runtime);
+    svc.runtime.resumeSession = async () => {
+      throw new Error("injected native restore failure");
+    };
+    try {
+      await assert.rejects(
+        () =>
+          client.taskReject(
+            workspaceId,
+            taskPath,
+            deliveryId,
+            "user",
+            { resume: true, note: "RECOVER_AFTER_FAILURE" }
+          ),
+        /injected native restore failure/
+      );
+    } finally {
+      svc.runtime.resumeSession = originalResume;
+    }
+
+    const parked = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { state: string; wait?: { code?: string } };
+    };
+    assert.equal(parked.task.state, "waiting");
+    assert.equal(parked.task.wait?.code, "session_unavailable");
+
+    const recovered = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      callerKind: "user",
+    })) as { task: { state: string }; session: { sessionId: string } };
+    assert.equal(recovered.task.state, "running");
+    assert.equal(recovered.session.sessionId, sessionId);
+    await pollUntil(async () => {
+      const pending = (await client.taskInputListPending(workspaceId, taskPath)) as {
+        inputs: Array<{ kind?: string; status: string }>;
+      };
+      return pending.inputs.some((item) => item.kind === "review-feedback")
+        ? pending
+        : null;
+    }, 10_000, "review feedback scheduled after startSession recovery");
+  });
+});
+
 test("reject-resume: slow follow-up returns accepted without headers-timeout wait", async () => {
   // Provider follow-up is slow (1.5s). Old path awaited the full turn on the
   // reject RPC and could trip CLI/fetch headers timeouts. New path restores +
@@ -1982,9 +2075,7 @@ test("reject-resume: failed inject stays retryable; uncertain is at-most-once", 
   await assert.rejects(() => reloaded.markProcessing(uncertainId), /pending or failed/);
 });
 
-test("reject-resume: second reject while rework running is rejected (no double inject)", async () => {
-  // Lifecycle: reject only from delivered. A second reject while rework is
-  // running fails loud — does not create a second review-feedback or re-inject.
+test("reject-resume: cached exact retry reuses one durable feedback and mismatches fail", async () => {
   const ws = await makeWorkspace();
   const logPath = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-dup-")),
@@ -2034,10 +2125,11 @@ test("reject-resume: second reject while rework running is rejected (no double i
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "first delivery for dup reject");
 
+    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
     const first = (await client.taskReject(
       workspaceId,
       taskPath,
-      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      deliveryId,
       "user",
       {
         resume: true,
@@ -2051,13 +2143,29 @@ test("reject-resume: second reject while rework running is rejected (no double i
     assert.equal(first.accepted, true);
     assert.equal(first.state, "running");
 
-    // Immediate second reject while occupation is rework/running — must fail.
+    // Lost-response retry uses the cached original delivery id and exact args.
+    // It must converge to the same deterministic TaskInput, never add another.
+    const retry = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      deliveryId,
+      "user",
+      {
+        resume: true,
+        note: "FIRST_FEEDBACK_ONLY",
+      }
+    )) as { accepted?: boolean; input: { id: string }; state: string };
+    assert.equal(retry.accepted, true);
+    assert.equal(retry.state, "running");
+    assert.equal(retry.input.id, first.input.id);
+
+    // Same cached Delivery but different request cannot inherit the old result.
     await assert.rejects(
       async () =>
         client.taskReject(
           workspaceId,
           taskPath,
-          await exactReadyDeliveryId(client, workspaceId, taskPath),
+          deliveryId,
           "user",
           {
             resume: true,
@@ -2113,6 +2221,122 @@ test("reject-resume: second reject while rework running is rejected (no double i
     assert.ok(
       !(log.prompts ?? []).some((p) => p.includes("SECOND_MUST_NOT_INJECT")),
       "second reject note must never inject"
+    );
+  });
+});
+
+test("reject-resume: omitted note uses authoritative default and startSession recovers continuation", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-wal-")),
+    "mock-acp.json"
+  );
+  const connections = [
+    mockAcpRoute("mock-ti", {
+      logPath,
+      promptText: "outcome: delivered\n\nFIRST_REJECT_WAL",
+      followupText: "outcome: delivered\n\nREWORK_REJECT_WAL",
+      promptDelayMs: 150,
+      followupDelayMs: 400,
+      keepAlive: true,
+      loadSession: true,
+    }),
+  ];
+
+  await withService(connections, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = await client.docsCreateNote(workspaceId, {
+      name: "reject-wal-continuation",
+      type: "prompt",
+    });
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      workNodeIds: [created.nodeId],
+      contextNodeIds: [],
+      connectionId: "mock-ti",
+      prompt: "Reject WAL continuation",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      acceptMode: "review-required",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    await client.taskStartSession(workspaceId, { taskPath, callerKind: "user" });
+    await pollUntil(async () => {
+      const got = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return got.task.state === "delivered" ? got : null;
+    }, 20_000, "first delivery for reject WAL continuation");
+
+    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const mount = svc.ctx.host.require(workspaceId);
+    await coreTaskReject(mount.env, taskPath, {
+      actor: "user",
+      deliveryId,
+      resume: true,
+    });
+
+    const afterCore = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { state: string; activeDeliveryId?: string };
+    };
+    assert.equal(afterCore.task.state, "running");
+    assert.equal(afterCore.task.activeDeliveryId, deliveryId);
+    const pendingBefore = (await client.taskInputListPending(
+      workspaceId,
+      taskPath
+    )) as { inputs: Array<{ kind?: string }> };
+    assert.equal(pendingBefore.inputs.length, 0, "fault is before Service continuation WAL");
+
+    const beforeResume = await mount.env.fs.readFile(taskPath);
+    await assert.rejects(
+      () => client.taskResume(workspaceId, taskPath),
+      /continuation is incomplete.*retry the exact task\.reject/i
+    );
+    assert.equal(
+      await mount.env.fs.readFile(taskPath),
+      beforeResume,
+      "task.resume must not mutate the Core-committed reject without its continuation"
+    );
+
+    const recovered = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      deliveryId,
+      "user",
+      { resume: true }
+    )) as { input: { id: string; text?: string }; accepted: boolean };
+    assert.equal(recovered.accepted, true);
+    assert.equal(recovered.input.text, "Rejected; waiting for resubmission.");
+
+    // The deterministic row uses the authoritative default note, so ordinary
+    // lifecycle reconciliation accepts it and startSession can finish the
+    // interrupted reject-resume continuation without another identity.
+    const startedRecovery = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      callerKind: "user",
+    })) as { task: { state: string } };
+    assert.equal(startedRecovery.task.state, "running");
+
+    const reviewInputId = recovered.input.id;
+    await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        reviewInputId
+      )) as { input: { status: string } };
+      return got.input.status === "delivered" ? got : null;
+    }, 20_000, "recovered review continuation delivered once");
+    const log = JSON.parse(await fs.readFile(logPath, "utf8")) as { prompts?: string[] };
+    const reviewPrompts = (log.prompts ?? []).filter((prompt) =>
+      prompt.includes("## Review Feedback")
+    );
+    assert.equal(reviewPrompts.length, 1);
+    assert.equal(
+      (await svc.ctx.taskInputs.listForTask(workspaceId, taskPath)).filter(
+        (item) => item.kind === "review-feedback"
+      ).length,
+      1
     );
   });
 });
@@ -2236,14 +2460,23 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
       }
     }, 15_000, "bootstrap done while waiting");
 
-    await client.taskResume(workspaceId, taskPath);
-
+    // Keep the Task waiting while both inputs are durably accepted. Resuming
+    // here would also retry the already-preserved bootstrap report, allowing
+    // its default Delivery to race ahead of sendInput before this FIFO seam is
+    // exercised. Hold the first background worker instead: the second RPC is
+    // issued only after the first row is durable and has entered the queue.
+    const hold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
     const tAccept0 = Date.now();
     const p1 = client.taskSendInput(workspaceId, taskPath, { text: "FIRST_U2A" });
-    // Start second while first is still in-flight.
-    await new Promise((r) => setTimeout(r, 30));
+    await hold.entered;
     const p2 = client.taskSendInput(workspaceId, taskPath, { text: "SECOND_U2A" });
-    const [r1, r2] = (await Promise.all([p1, p2])) as [
+    let accepted: Awaited<ReturnType<typeof client.taskSendInput>>[];
+    try {
+      accepted = await Promise.all([p1, p2]);
+    } finally {
+      hold.release();
+    }
+    const [r1, r2] = accepted as [
       {
         input: { id: string; status: string; text?: string };
         accepted?: boolean;
@@ -2598,8 +2831,9 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
         return null;
       }
     }, 15_000, "bootstrap done while waiting");
-    await client.taskResume(workspaceId, taskPath);
-
+    // sendInput accepts waiting Tasks. Keeping this Task parked prevents the
+    // completed bootstrap report from racing a default Delivery ahead of the
+    // durable input acceptance being measured here.
     const t0 = Date.now();
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "ASYNC_BODY",
@@ -2727,8 +2961,9 @@ test("task.sendInput: service stop drains background work without unhandled reje
         return null;
       }
     }, 15_000, "bootstrap parked");
-    await client.taskResume(workspaceId, taskPath);
-
+    // Keep the Task waiting while the input is durably accepted. A formal
+    // resume also retries the preserved bootstrap report and could publish it
+    // before this shutdown/hung-follow-up seam is exercised.
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "DRAIN_ME",
     })) as { accepted?: boolean; input: { id: string } };
@@ -2827,8 +3062,8 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
         return null;
       }
     }, 15_000, "bootstrap parked for hang");
-    await client.taskResume(workspaceId, taskPath);
-
+    // The live managed Session can accept U2A while Task state remains waiting;
+    // do not retry the completed bootstrap report before this hung-turn seam.
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "HANG_U2A",
     })) as { accepted?: boolean; input: { id: string } };

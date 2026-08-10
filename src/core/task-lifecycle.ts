@@ -35,11 +35,11 @@ import {
   type TaskEnvelope,
   type TaskEnvelopePatch,
 } from "./task.js";
-import { roleDeliveriesDir, sessionDeliveriesDir } from "./paths.js";
 import { isSessionId } from "./id.js";
 import {
   assertReviewAuthority,
   assertTransition,
+  isTaskId,
   resolveDeliverRouting,
   TaskLifecycleError,
   type ArtifactRef,
@@ -113,6 +113,8 @@ export interface TaskRejectOptions {
   /** Default true — rework path delivered → running. */
   resume?: boolean;
 }
+
+export const DEFAULT_TASK_REJECT_NOTE = "Rejected; waiting for resubmission.";
 
 export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
@@ -201,6 +203,36 @@ export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskEnv
   });
 }
 
+/**
+ * Exact-Task structural WAL preflight for composite Service mutations.
+ * It performs no requested transition: pending reject and committed Delivery
+ * operations converge first, then the caller evaluates the returned Task.
+ */
+export interface TaskRejectResumeContinuation {
+  deliveryId: string;
+  actor: string;
+  note: string;
+}
+
+export interface TaskLifecycleReconciliation {
+  task: TaskEnvelope;
+  rejectResume?: TaskRejectResumeContinuation;
+}
+
+export async function reconcileTaskLifecycle(
+  env: OpsEnv,
+  taskPath: string
+): Promise<TaskLifecycleReconciliation> {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    const rejectResume = await completedTaskRejectResume(env.fs, task);
+    return {
+      task,
+      ...(rejectResume ? { rejectResume } : {}),
+    };
+  });
+}
+
 export interface TaskDeliverResult {
   task: TaskEnvelope;
   delivery: DeliveryRecord;
@@ -266,7 +298,7 @@ export async function prepareTaskDeliver(
     const routing = resolveDeliverRouting(task.acceptMode, options.decision);
 
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-      taskId: task.id || taskPath,
+      taskId: requireCanonicalTaskId(task),
       sourceNodeId: nodeId,
       summary: options.summary,
       commits: options.commits,
@@ -718,11 +750,11 @@ export async function taskReject(
     const intent: TaskRejectIntent = {
       type: TASK_REJECT_INTENT_TYPE,
       version: 1,
-      taskId: task.id || task.path,
+      taskId: requireCanonicalTaskId(task),
       deliveryId: delivery.id,
       to,
       actor: options.actor,
-      note: options.note?.trim() || "Rejected; waiting for resubmission.",
+      note: options.note?.trim() || DEFAULT_TASK_REJECT_NOTE,
       updatedAt: env.clock.now(),
     };
     await writeTaskRejectIntent(env.fs, taskPath, intent);
@@ -748,15 +780,48 @@ async function recoverCompletedTaskReject(
   const completedIntent: TaskRejectIntent = {
     type: TASK_REJECT_INTENT_TYPE,
     version: 1,
-    taskId: task.id || task.path,
+    taskId: requireCanonicalTaskId(task),
     deliveryId: delivery.id,
     to: task.state,
     actor: delivery.review.by,
-    note: delivery.review.note || "Rejected; waiting for resubmission.",
+    note: delivery.review.note || DEFAULT_TASK_REJECT_NOTE,
     updatedAt: delivery.updatedAt || task.updatedAt || "",
   };
   assertTaskRejectRequestMatchesIntent(completedIntent, options);
   return { task, delivery };
+}
+
+async function completedTaskRejectResume(
+  fs: FsAdapter,
+  task: TaskEnvelope
+): Promise<TaskRejectResumeContinuation | undefined> {
+  if (task.state !== "running" || !task.activeDeliveryId) return undefined;
+  const delivery = await requireTaskDeliveryById(fs, task, task.activeDeliveryId);
+  if (delivery.status !== "rejected") return undefined;
+  if (
+    delivery.sourceNodeId !== primaryNodeId(task) ||
+    !isReadyDeliveryModeForTask(task, delivery.integrationMode)
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Rejected Delivery ${delivery.id} source or integration mode does not match its exact Task.`
+    );
+  }
+  if (
+    delivery.review?.decision !== "reject" ||
+    !delivery.review.by?.trim() ||
+    typeof delivery.review.note !== "string"
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Rejected Delivery ${delivery.id} does not contain a complete review continuation.`
+    );
+  }
+  return {
+    deliveryId: delivery.id,
+    actor: delivery.review.by,
+    note: delivery.review.note,
+  };
 }
 
 export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
@@ -838,7 +903,7 @@ export async function taskFail(
 
 /** Clear this Task's non-accepted deliveries; occupation ends with task state. */
 async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
-  await removeNonAcceptedDeliveriesForTask(env.fs, task.id || task.path);
+  await removeNonAcceptedDeliveriesForTask(env.fs, requireCanonicalTaskId(task));
 }
 
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
@@ -855,11 +920,16 @@ export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Prom
   return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
-/** Delivery storage dir is derived from canonical Task Role/Session facts. */
+/** Delivery storage stays in the Task's immutable owner namespace across Session replacement. */
 function deliveryDirForTask(task: TaskEnvelope): string {
-  if (task.roleId) return roleDeliveriesDir(task.roleId);
-  if (task.sessionId) return sessionDeliveriesDir(task.sessionId);
-  throw new Error(`Task ${task.id || task.path} has no Role or Session delivery namespace.`);
+  const normalized = task.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const match = /^(temp\/(?:roles|sessions)\/[^/]+)\/tasks\/[^/]+\.md$/.exec(normalized);
+  if (!match) {
+    throw new Error(
+      `Task ${requireCanonicalTaskId(task)} has no canonical owner delivery namespace.`
+    );
+  }
+  return `${match[1]}/deliveries`;
 }
 
 // ---- internals ----
@@ -993,8 +1063,8 @@ async function reconcilePendingTaskReject(
   const intent = await loadTaskRejectIntent(env.fs, taskPath);
   if (!intent) return undefined;
   const task = await loadTaskEnvelope(env.fs, taskPath);
-  if (intent.taskId !== (task.id || task.path) || task.activeDeliveryId !== intent.deliveryId) {
-    throw new Error(`Exact-Task reject recovery intent does not match Task ${task.id || task.path}.`);
+  if (intent.taskId !== requireCanonicalTaskId(task) || task.activeDeliveryId !== intent.deliveryId) {
+    throw new Error(`Exact-Task reject recovery intent does not match Task ${requireCanonicalTaskId(task)}.`);
   }
   assertReviewAuthority({
     actor: intent.actor,
@@ -1023,7 +1093,7 @@ function assertTaskRejectRequestMatchesIntent(
   options: TaskRejectOptions
 ): void {
   const expectedTo = options.resume === false ? "rejected" : "running";
-  const expectedNote = options.note?.trim() || "Rejected; waiting for resubmission.";
+  const expectedNote = options.note?.trim() || DEFAULT_TASK_REJECT_NOTE;
   if (
     options.deliveryId !== intent.deliveryId ||
     options.actor !== intent.actor ||
@@ -1231,7 +1301,7 @@ function throwCommittedDeliveryStateMismatch(
 ): never {
   throw new TaskLifecycleError(
     "DELIVERY_CHANGED",
-    `Committed Delivery ${delivery.id} (${delivery.status}) conflicts with Task ${task.id || task.path} state ${task.state}; refusing mutation.`
+    `Committed Delivery ${delivery.id} (${delivery.status}) conflicts with Task ${requireCanonicalTaskId(task)} state ${task.state}; refusing mutation.`
   );
 }
 
@@ -1373,10 +1443,10 @@ async function loadTaskDeliveryById(
   const path = join(deliveryDirForTask(task), `${deliveryId}.md`);
   if (!(await fs.exists(path))) return undefined;
   const delivery = await loadDelivery(fs, path);
-  if (delivery.id !== deliveryId || delivery.taskId !== (task.id || task.path)) {
+  if (delivery.id !== deliveryId || delivery.taskId !== requireCanonicalTaskId(task)) {
     throw new TaskLifecycleError(
       "DELIVERY_CHANGED",
-      `Delivery ${deliveryId} does not belong to exact Task ${task.id || task.path}.`
+      `Delivery ${deliveryId} does not belong to exact Task ${requireCanonicalTaskId(task)}.`
     );
   }
   return delivery;
@@ -1394,7 +1464,7 @@ async function findCommittedTaskDelivery(
     (delivery) => delivery.status === "ready"
   );
   if (ready.length > 1) {
-    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
+    throw new Error(`Task ${requireCanonicalTaskId(task)} has multiple ready Deliveries; refusing recovery.`);
   }
   return ready[0];
 }
@@ -1406,7 +1476,7 @@ async function findCommittedTaskDelivery(
 async function discoverTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord[]> {
   const dir = deliveryDirForTask(task);
   if (!(await fs.exists(dir))) return [];
-  const taskId = task.id || task.path;
+  const taskId = requireCanonicalTaskId(task);
   const out: DeliveryRecord[] = [];
   const entries = (await fs.listDir(dir))
     .filter((entry) => !entry.isDir && entry.name.endsWith(".md"))
@@ -1433,6 +1503,14 @@ function requireNodeById(tent: LoadedTent, nodeId: string): Node {
   const node = tent.byId.get(nodeId);
   if (!node) throw new Error(`Node not found: ${nodeId}.`);
   return node;
+}
+
+function requireCanonicalTaskId(task: TaskEnvelope): string {
+  const id = task.id?.trim() || "";
+  if (!isTaskId(id)) {
+    throw new Error(`Task ${task.path} is missing its canonical tk-* id.`);
+  }
+  return id;
 }
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {

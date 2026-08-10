@@ -112,6 +112,18 @@ const richOptions: TaskDeliverOptions = {
   ],
 };
 
+test("persisted Task envelopes require a canonical tk-* id", async () => {
+  const { base, taskPath } = await runningTask("review-required");
+  const raw = await base.readFile(taskPath);
+  const withoutId = raw.replace(/^id:\s*[^\r\n]+\r?\n/m, "");
+  assert.notEqual(withoutId, raw, "fixture must remove the persisted id field");
+  await base.writeFile(taskPath, withoutId);
+  await assert.rejects(
+    () => loadTaskEnvelope(base, taskPath),
+    /canonical task id is required/
+  );
+});
+
 async function taskAndDeliveries(base: NodeFs, taskPath: string): Promise<{
   task: TaskEnvelope;
   deliveries: DeliveryRecord[];

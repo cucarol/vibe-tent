@@ -124,11 +124,13 @@ import {
   composeManagedSkillBootstrapPrefix,
 } from "../core/managed-skill-compose.js";
 import {
+  DEFAULT_TASK_REJECT_NOTE,
   findActiveTaskForNode,
   finalizeTaskAccept,
   finalizeTaskDeliverAuto,
   prepareTaskAccept,
   prepareTaskDeliver,
+  reconcileTaskLifecycle,
   recoverCommittedTaskDeliver,
   taskCancel,
   taskClaim,
@@ -4384,12 +4386,37 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  return ctx.mutations.run(workspaceId, async () => {
+  const resumed = await ctx.mutations.run(workspaceId, async () => {
+    // A Core-committed reject-resume is not ordinary running work until the
+    // deterministic Service continuation row exists and matches. Open rows are
+    // allowed here so start/replace recovery can reuse this exact primitive.
+    await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskResume(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.resume");
-    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+    return task;
   });
+  const sessionId = resumed.sessionId?.trim();
+  if (sessionId) {
+    // Explicit resume is the bounded production recovery entrance for a final
+    // managed report preserved before a prior publication failure. This stays
+    // outside the workspace mutation/Task flight and never re-prompts provider.
+    try {
+      await requestManagedAutoDeliverRetryFromDraft(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+      });
+    } catch {
+      // Resume is already durable. A preserved report remains retryable and
+      // its own diagnostics are authoritative; publication failure must not
+      // turn the successful resume operation into a false failure.
+    }
+  }
+  // The draft retry can commit its Delivery WAL and then fail before the Task
+  // write. Always reconcile Core authority before projecting the RPC result.
+  const current = (await reconcileTaskLifecycle(mount.env, taskPath)).task;
+  return { workspaceId, taskPath, task: projectTask(current), state: current.state };
 }
 
 /** Decision authority accepts only the derived Session capability, never externalKey discovery. */
@@ -4569,6 +4596,134 @@ function parseDecisionRequestOptions(raw: unknown): DecisionRequestOption[] {
   return options;
 }
 
+function taskRejectResumeFeedbackId(deliveryId: string): string {
+  if (!/^dl-[a-z0-9]+$/i.test(deliveryId)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Reject-resume continuation requires a canonical Delivery id: ${deliveryId}`,
+      { code: "TASK_REJECT_RESUME_CONTINUATION_CHANGED", deliveryId }
+    );
+  }
+  return `ti-rf-${deliveryId.slice(3).toLowerCase()}`;
+}
+
+function rejectResumeFeedbackMatches(
+  item: TaskInputRecord,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    task: TaskEnvelope;
+    deliveryId: string;
+    note: string;
+    exactText: boolean;
+  }
+): boolean {
+  const expectedSessionId = input.task.sessionId?.trim() || undefined;
+  const actualSessionId = item.sessionId?.trim() || undefined;
+  const expectedText = input.exactText
+    ? input.note
+    : input.note.trim() || DEFAULT_TASK_REJECT_NOTE;
+  const actualText = input.exactText
+    ? item.text ?? ""
+    : (item.text ?? "").trim() || DEFAULT_TASK_REJECT_NOTE;
+  const requiresCurrentSession =
+    item.status === "pending" || item.status === "processing" || item.status === "failed";
+  return (
+    item.id === taskRejectResumeFeedbackId(input.deliveryId) &&
+    item.workspaceId === input.workspaceId &&
+    item.taskPath === input.taskPath &&
+    item.taskId === input.task.id! &&
+    (!requiresCurrentSession || actualSessionId === expectedSessionId) &&
+    item.role === taskParentRoleId(input.task) &&
+    normalizeTaskInputKind(item.kind) === "review-feedback" &&
+    typeof item.text === "string" &&
+    actualText === expectedText
+  );
+}
+
+/**
+ * Core WAL reconciliation plus the Service-owned reject-resume continuation
+ * boundary. A rejected Delivery projected back to running is not ordinary
+ * runnable work until its deterministic review-feedback row is durable.
+ */
+async function reconcileServiceTaskLifecycle(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  options?: { blockOpenRejectResumeFeedback?: boolean }
+): Promise<TaskEnvelope> {
+  const mount = ctx.host.require(workspaceId);
+  const reconciled = await reconcileTaskLifecycle(mount.env, taskPath);
+  const pending = reconciled.rejectResume;
+  if (!pending) return reconciled.task;
+
+  const inputId = taskRejectResumeFeedbackId(pending.deliveryId);
+  const item = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
+  if (
+    !item ||
+    !rejectResumeFeedbackMatches(item, {
+      workspaceId,
+      taskPath,
+      task: reconciled.task,
+      deliveryId: pending.deliveryId,
+      note: pending.note,
+      exactText: false,
+    })
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume continuation is incomplete; retry the exact task.reject request before mutating this Task.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_REQUIRED",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId,
+      }
+    );
+  }
+  if (item.status === "uncertain") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback has uncertain delivery; acknowledge it with taskInput.ack before starting or replacing the Session.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_UNCERTAIN",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId,
+      }
+    );
+  }
+  if (item.status === "cancelled") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback was cancelled; retry the exact task.reject request before mutating this Task.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_CANCELLED",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId,
+      }
+    );
+  }
+  if (
+    options?.blockOpenRejectResumeFeedback &&
+    (item.status === "pending" || item.status === "processing" || item.status === "failed")
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback must run before new task input; retry the exact task.reject request if recovery is required.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_OPEN",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId,
+        inputStatus: item.status,
+      }
+    );
+  }
+  return reconciled.task;
+}
+
 /**
  * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
  * Does not answer pending Decision Requests, write chat history, or mutate Connections.
@@ -4622,7 +4777,9 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
   // Git windows, then re-read state so sendInput cannot slip past auto-deliver.
   const { current, input } = await runTaskLifecycle(workspaceId, taskPath, () =>
   ctx.mutations.run(workspaceId, async () => {
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath, {
+      blockOpenRejectResumeFeedback: true,
+    });
     if (current.state !== "running" && current.state !== "waiting") {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -4871,26 +5028,15 @@ async function scheduleRetryableTaskInputsAfterSessionBind(
     taskPath: string;
   }
 ): Promise<void> {
-  try {
-    const retryable = await ctx.taskInputs.listRetryableForTask(
-      input.workspaceId,
-      input.taskPath
-    );
-    retryable.sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
-    );
-    for (const item of retryable) {
-      enqueueManagedTaskInputBackground(ctx, item);
-    }
-  } catch (err) {
-    // Session binding already succeeded and rows remain durable. Recovery
-    // scheduling must not turn a successful explicit start/replace RPC into a
-    // false failure or wait for provider work.
-    console.error(
-      `[taskInput] exact bind recovery scheduling failed for ${input.taskPath}: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
+  const retryable = await ctx.taskInputs.listRetryableForTask(
+    input.workspaceId,
+    input.taskPath
+  );
+  retryable.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  );
+  for (const item of retryable) {
+    enqueueManagedTaskInputBackground(ctx, item);
   }
 }
 
@@ -6004,6 +6150,29 @@ async function taskRejectRpc(
         note: noteForDelivery,
         resume,
       });
+      // The deterministic review-feedback row is the Service continuation WAL.
+      // Keep it in the same Task flight as Core reject so another composite RPC
+      // cannot observe reject-resume as ordinary runnable work between the two.
+      const reviewInput = resume
+        ? await createRejectResumeReviewFeedback(ctx, {
+            workspaceId,
+            taskPath,
+            task: rejected.task,
+            deliveryId: rejected.delivery.id,
+            note:
+              noteExact !== undefined
+                ? noteExact
+                : rejected.delivery.review?.note || DEFAULT_TASK_REJECT_NOTE,
+          })
+        : undefined;
+      if (reviewInput && afterTaskRejectContinuationPersistForTests) {
+        await afterTaskRejectContinuationPersistForTests({
+          workspaceId,
+          taskPath,
+          deliveryId,
+          inputId: reviewInput.id,
+        });
+      }
       // External Role continuity is a pure exact-binding validation and belongs
       // in the same Task lifecycle/mutation flight as reject. Capture failure so
       // the already-durable rejected Delivery can be parked honestly afterward.
@@ -6027,7 +6196,7 @@ async function taskRejectRpc(
         },
         "self"
       );
-      return { ...rejected, externalRestoreError };
+      return { ...rejected, reviewInput, externalRestoreError };
     });
   });
 
@@ -6043,15 +6212,8 @@ async function taskRejectRpc(
     };
   }
 
-  // Rework path: review note is a lifecycle-generated U2A TaskInput (not a second
-  // prompt channel). Persist first so external poll/ack and restart survive even
-  // when managed restore fails.
-  const reviewInput = await createRejectResumeReviewFeedback(ctx, {
-    workspaceId,
-    taskPath,
-    task: result.task,
-    note: noteExact,
-  });
+  // Rework path: the durable row was created/reused inside the exact Task flight.
+  const reviewInput = result.reviewInput!;
 
   // No bound Session: keep review feedback pending for scoped poll/get/ack.
   const boundSessionId = result.task.sessionId?.trim() || "";
@@ -6171,17 +6333,41 @@ async function createRejectResumeReviewFeedback(
     workspaceId: string;
     taskPath: string;
     task: TaskEnvelope;
+    deliveryId: string;
     note?: string;
   }
 ): Promise<TaskInputRecord> {
   const now = new Date().toISOString();
   // Preserve note exactly — do not trim. Undefined → empty string so payload is valid.
   const text = typeof input.note === "string" ? input.note : "";
+  const id = taskRejectResumeFeedbackId(input.deliveryId);
+  const existing = await ctx.taskInputs.get(id, input.workspaceId, input.taskPath);
+  if (existing) {
+    if (
+      !rejectResumeFeedbackMatches(existing, {
+        ...input,
+        note: text,
+        exactText: true,
+      })
+    ) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Reject-resume continuation ${id} conflicts with its exact Delivery request.`,
+        {
+          code: "TASK_REJECT_RESUME_CONTINUATION_CHANGED",
+          taskPath: input.taskPath,
+          deliveryId: input.deliveryId,
+          inputId: id,
+        }
+      );
+    }
+    return existing;
+  }
   const record = await ctx.taskInputs.add({
-    id: makeTaskInputId(),
+    id,
     workspaceId: input.workspaceId,
     taskPath: input.taskPath,
-    taskId: input.task.id || undefined,
+    taskId: input.task.id!,
     sessionId: input.task.sessionId || undefined,
     role: taskParentRoleId(input.task),
     kind: "review-feedback",
@@ -6356,7 +6542,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     }
     const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
-      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       const sessionId = prepared.result.session.sessionId;
       if (
         (current.state !== "running" && current.state !== "waiting") ||
@@ -6494,10 +6680,7 @@ function assertTaskSessionPostStartOwnership(
     JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
     actual.nodeContextJson === expected.nodeContextJson;
   const validSameSessionProgress =
-    current.state === "running" ||
-    current.state === "waiting" ||
-    current.state === "delivered" ||
-    current.state === "accepted";
+    current.state === "running" || current.state === "waiting";
   if (immutableIdentityUnchanged && validSameSessionProgress) return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -6573,7 +6756,7 @@ async function prepareAuthorizedTaskStartSession(
 ): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  let task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   const boundSessionId = task.sessionId?.trim() || "";
   if (!boundSessionId) {
     throw new RpcError(
@@ -6589,10 +6772,10 @@ async function prepareAuthorizedTaskStartSession(
       { code: "BOUND_SESSION_MISSING", taskPath, sessionId: boundSessionId }
     );
   }
-  const exactTaskId = task.id || taskPath;
+  const exactTaskId = task.id!;
   if (
     boundSession.workspace !== workspaceId ||
-    (boundSession.lastTaskId !== exactTaskId && boundSession.lastTaskId !== taskPath)
+    boundSession.lastTaskId !== exactTaskId
   ) {
     throw new RpcError(
       RPC_LIFECYCLE,
@@ -6617,7 +6800,7 @@ async function prepareAuthorizedTaskStartSession(
   if (task.state === "queued" && callerKind === "user") {
     // User-driven convenience: claim before start.
     await taskClaimRpc(ctx, { workspaceId, taskPath });
-    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   }
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(
@@ -6642,7 +6825,7 @@ async function prepareAuthorizedTaskStartSession(
       );
     }
     await taskResumeRpc(ctx, { workspaceId, taskPath });
-    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   }
 
   // Same-Task alive idempotency only. Context-generation drift controls stable
@@ -6683,7 +6866,7 @@ async function launchAndBindTaskStartSession(
   const { workspaceId, taskPath, connectionId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     if (current.state !== "running") {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -6739,11 +6922,11 @@ async function launchAndBindTaskStartSession(
         { code: "BOUND_SESSION_MISSING", taskPath, sessionId: priorSessionId }
       );
   }
-  const exactTaskId = task.id || taskPath;
+  const exactTaskId = task.id!;
   if (
     priorSession.workspace !== workspaceId ||
     priorSession.connectionId !== connectionId ||
-    (priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath)
+    priorSession.lastTaskId !== exactTaskId
   ) {
       await parkTaskForUnavailableSession(ctx, {
         workspaceId,
@@ -6856,7 +7039,7 @@ async function launchAndBindTaskStartSession(
     bootstrapImageRefs.length > 0 ? mount.systemRoot : undefined;
 
   const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     assertTaskSessionBindSnapshot(
       "task.startSession",
       taskPath,
@@ -6881,7 +7064,7 @@ async function launchAndBindTaskStartSession(
               bootstrapImageSystemRoot,
             }
           : {}),
-        lastTaskId: task.id || taskPath,
+        lastTaskId: task.id!,
       });
     } else if (firstStart) {
       handle = await ctx.runtime.startSession({
@@ -6946,9 +7129,17 @@ async function launchAndBindTaskStartSession(
   // Persist only Task binding plus non-secret context metadata.
   let bound: TaskEnvelope;
   try {
+    if (afterManagedSessionProviderStartForTests) {
+      await afterManagedSessionProviderStartForTests({
+        operation: "task.startSession",
+        workspaceId,
+        taskPath,
+        sessionId: handle.sessionId,
+      });
+    }
     bound = await runTaskLifecycle(workspaceId, taskPath, () =>
       ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
         assertTaskSessionBindSnapshot("task.startSession", taskPath, current, bindSnapshot);
         ctx.host.markSelfWrite(workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
@@ -7061,7 +7252,7 @@ async function assertReplaceSessionEligible(
   taskPath: string
 ): Promise<void> {
   const mount = ctx.host.require(workspaceId);
-  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
       code: "INVALID_TASK_STATE",
@@ -7092,7 +7283,7 @@ async function assertReplaceSessionEligible(
     !prior ||
     !prior.connectionId ||
     prior.workspace !== workspaceId ||
-    (prior.lastTaskId !== (task.id || taskPath) && prior.lastTaskId !== taskPath)
+    prior.lastTaskId !== task.id
   ) {
     throw new RpcError(
       RPC_LIFECYCLE,
@@ -7123,10 +7314,10 @@ async function executeTaskReplaceSession(
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
     await assertReplaceSessionEligible(ctx, workspaceId, taskPath);
-    let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     if (current.state === "waiting") {
       await taskResumeRpc(ctx, { workspaceId, taskPath });
-      current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     }
     return ensureTaskWorkspaceLane(ctx, workspaceId, current);
   });
@@ -7165,14 +7356,35 @@ async function executeTaskReplaceSession(
             targetBranch: task.targetBranch,
           }
         : undefined;
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      assertTaskSessionBindSnapshot(
+        "task.replaceSession",
+        taskPath,
+        current,
+        captureTaskSessionBindSnapshot(task)
+      );
+      return current;
+    });
     replacementSessionId = makeSessionId();
     await ctx.runtime.reserveSession({
       sessionId: replacementSessionId,
       connectionId,
-      lastTaskId: task.id || taskPath,
+      lastTaskId: task.id!,
       workspace: workspaceId,
       workspaceLane,
       runtimeWorkspace: { cwd },
+    });
+
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      assertTaskSessionBindSnapshot(
+        "task.replaceSession",
+        taskPath,
+        current,
+        captureTaskSessionBindSnapshot(task)
+      );
+      return current;
     });
 
     try {
@@ -7203,7 +7415,7 @@ async function executeTaskReplaceSession(
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       // Stopping the prior managed Session legitimately projects this exact Task to
       // waiting(session_unavailable). Resume that replace-owned projection before
       // taking the final pre-launch snapshot; every other drift remains fail-closed.
@@ -7213,7 +7425,7 @@ async function executeTaskReplaceSession(
         isSessionUnavailableParkedWait(current)
       ) {
         await taskResumeRpc(ctx, { workspaceId, taskPath });
-        current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       }
       assertTaskSessionBindSnapshot(
         "task.replaceSession",
@@ -7250,7 +7462,7 @@ async function executeTaskReplaceSession(
         const beforePrebind = task;
         const prebound = await runTaskLifecycle(workspaceId, taskPath, () =>
           ctx.mutations.run(workspaceId, async () => {
-            const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+            const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
             assertTaskSessionBindSnapshot(
               "task.replaceSession",
               taskPath,
@@ -7375,9 +7587,18 @@ async function executeTaskReplaceSession(
       workspace: workspaceId,
     });
 
+    if (afterManagedSessionProviderStartForTests) {
+      await afterManagedSessionProviderStartForTests({
+        operation: "task.replaceSession",
+        workspaceId,
+        taskPath,
+        sessionId: handle.sessionId,
+      });
+    }
+
     const bound = await runTaskLifecycle(workspaceId, taskPath, () =>
       ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
         // Provider events may validly advance this exact replacement-bound Task
         // before startSession returns. Verify immutable identity and ownership only;
         // do not mistake same-Session waiting/delivery progress for a late-bind race.
@@ -9654,8 +9875,7 @@ async function resolveTaskInputAckAuthority(
       if (rec) {
         const workspaceMatches = rec.workspace === item.workspaceId;
         const taskMatches =
-          (rec.lastTaskId === task.id || rec.lastTaskId === item.taskPath) &&
-          task.sessionId === item.sessionId;
+          rec.lastTaskId === task.id && task.sessionId === item.sessionId;
         if (workspaceMatches && taskMatches) {
           return { actor: actorRaw, task };
         }
@@ -10896,6 +11116,17 @@ async function requestManagedAutoDeliverRetryFromDraft(
   ctx: HandlerContext,
   input: { workspaceId: string; taskPath: string; sessionId: string }
 ): Promise<void> {
+  const draft = await ctx.managedDeliveryReportDrafts.get(
+    input.workspaceId,
+    input.taskPath
+  );
+  if (!draft) return;
+  const priorOutcome = parseTaskOutcomeReport(draft.assistantText);
+  if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
+    // Control reports are durable evidence for the parked turn, not deferred
+    // Delivery candidates. Only a real later provider report may supersede one.
+    return;
+  }
   const key = managedDeliverKey(input.sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key)) return;
   if (managedAutoDeliverInFlight.has(key)) {
@@ -11530,30 +11761,9 @@ async function tryManagedAutoDeliver(
       report: rawReport,
     };
   }
-  if (parsedOutcome.outcome !== "delivered") {
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: parsedOutcome.outcome,
-      report: parsedOutcome.report || rawReport,
-    });
-    return;
-  }
   const summary = (parsedOutcome.report || rawReport).trim();
-  if (!summary) {
-    // delivered with empty body is not a usable Delivery.
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: "delivered",
-      report: "",
-      emptyDeliveredBody: true,
-    });
-    return;
-  }
-  // Keep the full outcome wire in drafts so idempotent retry re-parses correctly.
+  // Keep the complete bounded outcome wire in drafts so idempotent retry
+  // re-parses control reports without relying on the truncated wait summary.
   const draftText = rawReport;
 
   const key = managedDeliverKey(sessionId, input.taskPath);
@@ -11586,24 +11796,66 @@ async function tryManagedAutoDeliver(
       input.taskPath
     );
     if (existingDraft) {
-      if (
-        existingDraft.sessionId !== sessionId ||
-        existingDraft.assistantText.trim() !== draftText
-      ) {
-        throw new Error(
-          "managed Delivery report draft conflicts with this Session or completion report"
-        );
+      const exactExisting =
+        existingDraft.sessionId === sessionId &&
+        existingDraft.assistantText.trim() === draftText;
+      if (!exactExisting) {
+        const priorOutcome = parseTaskOutcomeReport(existingDraft.assistantText);
+        const priorWasControl =
+          priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input";
+        if (pre.state !== "running" || !priorWasControl) {
+          throw new Error(
+            "managed Delivery report draft conflicts with this Session or completion report"
+          );
+        }
+        // The current Task binding above proves this report belongs to the exact
+        // live Session. A formally resumed/replaced turn may supersede a prior
+        // blocked/needs-input control report even when that report came from the
+        // retired Session; non-control cross-Session drafts remain fail-closed.
+        await ctx.managedDeliveryReportDrafts.preserve({
+          workspaceId: input.workspaceId,
+          taskPath: input.taskPath,
+          taskId: pre.id,
+          sessionId,
+          assistantText: draftText,
+        });
+      } else {
+        draftPreserved = true;
       }
       draftPreserved = true;
     } else {
       await ctx.managedDeliveryReportDrafts.preserve({
         workspaceId: input.workspaceId,
         taskPath: input.taskPath,
-        taskId: pre.id || input.taskPath,
+        taskId: pre.id!,
         sessionId,
         assistantText: draftText,
       });
       draftPreserved = true;
+    }
+
+    if (parsedOutcome.outcome !== "delivered") {
+      await handleManagedNonDeliveredOutcome(ctx, {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        sessionId,
+        outcome: parsedOutcome.outcome,
+        report: parsedOutcome.report || rawReport,
+      });
+      return;
+    }
+    if (!summary) {
+      // Delivered with an empty body is not usable, but its full control wire is
+      // already durable for diagnosis/retry.
+      await handleManagedNonDeliveredOutcome(ctx, {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        sessionId,
+        outcome: "delivered",
+        report: "",
+        emptyDeliveredBody: true,
+      });
+      return;
     }
 
     // One exact-Task flight owns WAL recovery, seal, Git and finalization.
@@ -12199,6 +12451,52 @@ export function setBeforeTaskAcceptFinalizeForTests(
   beforeTaskAcceptFinalizeForTests = fn;
 }
 
+/** Test-only crash boundary after reject WAL + deterministic feedback persistence, before restore. */
+let afterTaskRejectContinuationPersistForTests:
+  | ((input: {
+      workspaceId: string;
+      taskPath: string;
+      deliveryId: string;
+      inputId: string;
+    }) => Promise<void>)
+  | null = null;
+
+export function setAfterTaskRejectContinuationPersistForTests(
+  fn:
+    | ((input: {
+        workspaceId: string;
+        taskPath: string;
+        deliveryId: string;
+        inputId: string;
+      }) => Promise<void>)
+    | null
+): void {
+  afterTaskRejectContinuationPersistForTests = fn;
+}
+
+/** Test-only race boundary after provider start and before final exact-Task bind. */
+let afterManagedSessionProviderStartForTests:
+  | ((input: {
+      operation: "task.startSession" | "task.replaceSession";
+      workspaceId: string;
+      taskPath: string;
+      sessionId: string;
+    }) => Promise<void>)
+  | null = null;
+
+export function setAfterManagedSessionProviderStartForTests(
+  fn:
+    | ((input: {
+        operation: "task.startSession" | "task.replaceSession";
+        workspaceId: string;
+        taskPath: string;
+        sessionId: string;
+      }) => Promise<void>)
+    | null
+): void {
+  afterManagedSessionProviderStartForTests = fn;
+}
+
 /**
  * Test-only: after Role claim prepare succeeds and before Core taskClaim write.
  * Production never sets this. Used to prove failed claim leaves Task queued.
@@ -12267,6 +12565,8 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverRetryRequested.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
+  afterTaskRejectContinuationPersistForTests = null;
+  afterManagedSessionProviderStartForTests = null;
   beforeTaskClaimCoreForTests = null;
   beforeReplaceTaskInputRollbackForTests = null;
   beforeTaskBackfillWorkspaceLaneBaseForTests = null;
@@ -12368,7 +12668,7 @@ async function restoreManagedSessionAfterRejectResume(
     );
   }
   const priorTaskRef = prior.lastTaskId?.trim() || "";
-  if (!priorTaskRef || (priorTaskRef !== task.id && priorTaskRef !== input.taskPath)) {
+  if (!priorTaskRef || priorTaskRef !== task.id) {
     throw new Error(
       `Managed Session ${priorSessionId} is not bound to the exact rejected Task ` +
         `(session.lastTaskId=${priorTaskRef || "(missing)"}, taskId=${task.id})`
@@ -12448,7 +12748,7 @@ async function restoreManagedSessionAfterRejectResume(
       runtimeWorkspace: { cwd },
       cwd,
       bootstrapPrompt: emptyBootstrap,
-      lastTaskId: task.id || input.taskPath,
+      lastTaskId: task.id!,
     });
     if (handle.sessionId !== priorSessionId) {
       throw new Error(
@@ -12544,11 +12844,12 @@ async function parkTaskAfterRejectResumeFailure(
         next = await taskWait(mount.env, input.taskPath, {
           reason: "external",
           summary,
+          code: SESSION_UNAVAILABLE_WAIT_CODE,
         });
       } else {
         next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
           state: "waiting",
-          wait: { reason: "external", summary },
+          wait: { reason: "external", summary, code: SESSION_UNAVAILABLE_WAIT_CODE },
           updatedAt: mount.env.clock.now(),
         });
       }
@@ -12593,6 +12894,13 @@ export async function invokeManagedAutoDeliverForTests(
   }
 ): Promise<void> {
   return tryManagedAutoDeliver(ctx, input);
+}
+
+export async function invokeManagedAutoDeliverRetryFromDraftForTests(
+  ctx: HandlerContext,
+  input: { workspaceId: string; taskPath: string; sessionId: string }
+): Promise<void> {
+  return requestManagedAutoDeliverRetryFromDraft(ctx, input);
 }
 
 // ---- helpers ----

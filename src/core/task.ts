@@ -117,7 +117,7 @@ export interface TaskEnvelope extends TaskNodeContext {
   manifest: string;
   /** Canonical lifecycle state (task-api §2). */
   state: TaskState;
-  /** Operational task id (tk-…). May be absent on pre-B4 envelopes. */
+  /** Canonical persisted task id (tk-…). Synthetic in-memory fixtures may omit it. */
   id?: string;
   /**
    * Explicit parent actor (V0.2). Required after disk migration / on new writes.
@@ -372,6 +372,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (sessionId && !isSessionId(sessionId)) {
     throw new Error(`Invalid task envelope format: ${path} (invalid sessionId).`);
   }
+  if (typeof data.id !== "string" || !isTaskId(data.id)) {
+    throw new Error(`Invalid task envelope format: ${path} (canonical task id is required).`);
+  }
 
   const state = parseTaskState(data.state);
 
@@ -403,6 +406,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     ...(sessionId ? { sessionId } : {}),
     manifest: data.manifest,
     state,
+    id: data.id,
     parentActor: actors.parentActor,
     reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
@@ -412,7 +416,6 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode,
   };
-  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
