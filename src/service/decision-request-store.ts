@@ -11,11 +11,14 @@ import {
 } from "../core/decision-request.js";
 import type { TaskActorRef } from "../core/task-model.js";
 import {
-  backupCorruptMachineFile,
   isNotFoundError,
-  warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
+import {
+  AuthorityStoreCorruptError,
+  persistAuthorityStoreCorruption,
+  readAuthorityStoreCorruption,
+} from "./authority-store-corruption.js";
 
 export type DecisionRequestRecord = DecisionRequest & {
   workspaceId: string;
@@ -28,6 +31,9 @@ export type DecisionRequestRecord = DecisionRequest & {
 export type DecisionRequestStoreOptions = {
   writeState?: (filePath: string, value: unknown) => Promise<void>;
 };
+
+export const DECISION_REQUEST_STORE_CORRUPT =
+  "DECISION_REQUEST_STORE_CORRUPT" as const;
 
 const PENDING_FIELDS = new Set([
   "id",
@@ -128,6 +134,7 @@ export class DecisionRequestStore {
   private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private items = new Map<string, DecisionRequestRecord>();
   private loaded = false;
+  private corruptError: AuthorityStoreCorruptError | null = null;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
   private chain: Promise<void> = Promise.resolve();
@@ -147,29 +154,35 @@ export class DecisionRequestStore {
   }
 
   async ensureLoaded(): Promise<void> {
+    this.throwIfCorrupt();
     if (this.loaded) return;
     await this.enqueue(async () => {
+      this.throwIfCorrupt();
       if (this.loaded) return;
+      const persistedCorruption = await readAuthorityStoreCorruption(
+        this.file,
+        DECISION_REQUEST_STORE_CORRUPT
+      );
+      if (persistedCorruption) {
+        this.corruptError = persistedCorruption;
+        this.items.clear();
+        this.loaded = true;
+        return;
+      }
       try {
         const raw = await fs.readFile(this.file, "utf8");
         const parsed = JSON.parse(raw) as unknown;
         if (!isRecord(parsed) || Object.keys(parsed).some((key) => key !== "items")) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("root must contain only items");
         }
         if (!Array.isArray(parsed.items)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("items must be an array");
         }
         const loaded = new Map<string, DecisionRequestRecord>();
         for (const item of parsed.items) {
           const record = parseRecord(item);
           if (!record || loaded.has(record.id)) {
-            await this.quarantineCorrupt();
-            this.loaded = true;
-            return;
+            return this.latchCorrupt("items contains an invalid or duplicate row");
           }
           loaded.set(record.id, record);
         }
@@ -181,17 +194,19 @@ export class DecisionRequestStore {
           return;
         }
         if (error instanceof SyntaxError) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("invalid JSON");
         }
-        throw error;
+        const code =
+          error && typeof error === "object" && "code" in error
+            ? String((error as NodeJS.ErrnoException).code)
+            : "UNKNOWN";
+        return this.latchCorrupt(`state file unreadable (${code})`);
       }
     });
   }
 
   async listPending(workspaceId?: string): Promise<DecisionRequestRecord[]> {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()]
       .filter(
         (item) =>
@@ -206,7 +221,7 @@ export class DecisionRequestStore {
     taskPath: string,
     requestId: string
   ): Promise<DecisionRequestRecord | undefined> {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = this.items.get(requestId);
     if (!item || item.workspaceId !== workspaceId || item.taskPath !== taskPath) return undefined;
     return cloneRecord(item);
@@ -216,7 +231,7 @@ export class DecisionRequestStore {
     workspaceId: string,
     taskPath: string
   ): Promise<DecisionRequestRecord | undefined> {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = [...this.items.values()].find(
       (candidate) =>
         candidate.status === "pending" &&
@@ -235,7 +250,7 @@ export class DecisionRequestStore {
     taskPath: string
   ): Promise<DecisionRequestRecord | undefined> {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = [...this.items.values()].find(
@@ -259,7 +274,7 @@ export class DecisionRequestStore {
     request: PendingDecisionRequest;
   }): Promise<DecisionRequestRecord> {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const request = validateDecisionRequest(input.request);
@@ -302,7 +317,7 @@ export class DecisionRequestStore {
     response: DecisionResponse;
   }): Promise<DecisionRequestRecord> {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = this.items.get(input.requestId);
@@ -344,7 +359,7 @@ export class DecisionRequestStore {
     requestId: string
   ): Promise<DecisionRequestRecord> {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = this.items.get(requestId);
@@ -373,7 +388,15 @@ export class DecisionRequestStore {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closed = true;
-    this.shutdownPromise = this.ensureLoaded().then(() => undefined);
+    this.shutdownPromise = this.corruptError
+      ? Promise.resolve()
+      : this.ensureLoaded().then(
+          () => undefined,
+          (error) => {
+            if (error === this.corruptError) return;
+            throw error;
+          }
+        );
     return this.shutdownPromise;
   }
 
@@ -387,10 +410,24 @@ export class DecisionRequestStore {
     await this.writeState(this.file, { items: [...pending, ...answered] });
   }
 
-  private async quarantineCorrupt(): Promise<void> {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
+  private throwIfCorrupt(): void {
+    if (this.corruptError) throw this.corruptError;
+  }
+
+  private async requireHealthy(): Promise<void> {
+    await this.ensureLoaded();
+    this.throwIfCorrupt();
+  }
+
+  private async latchCorrupt(reason: string): Promise<void> {
+    this.throwIfCorrupt();
     this.items.clear();
+    this.loaded = true;
+    this.corruptError = await persistAuthorityStoreCorruption(
+      this.file,
+      DECISION_REQUEST_STORE_CORRUPT,
+      reason
+    );
   }
 }
 

@@ -5,12 +5,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
-  backupCorruptMachineFile,
   isNotFoundError,
-  warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
 import type { AnsweredDecisionRequest } from "../core/decision-request.js";
+import {
+  AuthorityStoreCorruptError,
+  persistAuthorityStoreCorruption,
+  readAuthorityStoreCorruption,
+} from "./authority-store-corruption.js";
 
 /**
  * pending    — accepted/enqueued; waiting for managed inject and/or external poll
@@ -86,6 +89,8 @@ export interface TaskInputRecord {
 export type TaskInputStoreOptions = {
   writeState?: (filePath: string, value: unknown) => Promise<void>;
 };
+
+export const TASK_INPUT_STORE_CORRUPT = "TASK_INPUT_STORE_CORRUPT" as const;
 
 function cloneInput(item: TaskInputRecord): TaskInputRecord {
   return {
@@ -310,6 +315,7 @@ export class TaskInputStore {
   private items = new Map<string, TaskInputRecord>();
   private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private loaded = false;
+  private corruptError: AuthorityStoreCorruptError | null = null;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
   private chain: Promise<void> = Promise.resolve();
@@ -331,37 +337,41 @@ export class TaskInputStore {
   }
 
   async ensureLoaded(): Promise<void> {
+    this.throwIfCorrupt();
     if (this.loaded) return;
     return this.enqueue(async () => {
+      this.throwIfCorrupt();
       if (this.loaded) return;
+      const persistedCorruption = await readAuthorityStoreCorruption(
+        this.file,
+        TASK_INPUT_STORE_CORRUPT
+      );
+      if (persistedCorruption) {
+        this.corruptError = persistedCorruption;
+        this.items.clear();
+        this.loaded = true;
+        return;
+      }
       try {
         const raw = await fs.readFile(this.file, "utf8");
         let parsed: unknown;
         try {
           parsed = JSON.parse(raw);
         } catch {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("invalid JSON");
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("root must be an object");
         }
         const items = (parsed as { items?: unknown }).items;
         if (items !== undefined && !Array.isArray(items)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("items must be an array");
         }
         const loaded = new Map<string, TaskInputRecord>();
         for (const item of items ?? []) {
           const restored = parseInput(item);
-          if (!restored) {
-            await this.quarantineCorrupt();
-            this.loaded = true;
-            return;
+          if (!restored || loaded.has(restored.id)) {
+            return this.latchCorrupt("items contains an invalid or duplicate row");
           }
           loaded.set(restored.id, restored);
         }
@@ -372,7 +382,11 @@ export class TaskInputStore {
           this.loaded = true;
           return;
         }
-        throw err;
+        const code =
+          err && typeof err === "object" && "code" in err
+            ? String((err as NodeJS.ErrnoException).code)
+            : "UNKNOWN";
+        return this.latchCorrupt(`state file unreadable (${code})`);
       }
     });
   }
@@ -390,7 +404,7 @@ export class TaskInputStore {
         "TaskInput.listRetryableForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()]
       .filter(
         (i) =>
@@ -431,7 +445,7 @@ export class TaskInputStore {
         "TaskInput.listForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()]
       .filter(
         (i) => i.workspaceId === workspaceId && i.taskPath === taskPath
@@ -466,7 +480,7 @@ export class TaskInputStore {
         "TaskInput.get requires workspaceId and taskPath (no id-only lookup)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = this.items.get(id);
     if (!item) return undefined;
     if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
@@ -477,7 +491,7 @@ export class TaskInputStore {
 
   async add(item: TaskInputRecord): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       if (this.items.has(item.id)) {
@@ -522,7 +536,7 @@ export class TaskInputStore {
       throw new Error("TaskInput.rebindOpenSessions requires non-empty sessionId");
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const isRebindable = (status: TaskInputStatus): boolean =>
@@ -587,7 +601,7 @@ export class TaskInputStore {
    */
   async markProcessing(id: string): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -625,7 +639,7 @@ export class TaskInputStore {
     opts?: { sessionId?: string }
   ): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -665,7 +679,7 @@ export class TaskInputStore {
     resolvedBy = "service"
   ): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -711,7 +725,7 @@ export class TaskInputStore {
     opts?: { sessionId?: string }
   ): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -759,7 +773,7 @@ export class TaskInputStore {
       );
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -811,7 +825,7 @@ export class TaskInputStore {
       );
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -853,7 +867,7 @@ export class TaskInputStore {
     taskPath: string,
     resolvedBy = "service"
   ): Promise<TaskInputRecord[]> {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       const next = new Map(this.items);
       const cancelled: TaskInputRecord[] = [];
@@ -892,7 +906,7 @@ export class TaskInputStore {
     sessionId: string,
     resolvedBy = "service"
   ): Promise<TaskInputRecord[]> {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       const next = new Map(this.items);
       const cancelled: TaskInputRecord[] = [];
@@ -925,7 +939,15 @@ export class TaskInputStore {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closed = true;
-    this.shutdownPromise = this.ensureLoaded().then(() => undefined);
+    this.shutdownPromise = this.corruptError
+      ? Promise.resolve()
+      : this.ensureLoaded().then(
+          () => undefined,
+          (error) => {
+            if (error === this.corruptError) return;
+            throw error;
+          }
+        );
     return this.shutdownPromise;
   }
 
@@ -960,10 +982,24 @@ export class TaskInputStore {
     await this.writeState(this.file, { items: [...open, ...terminal] });
   }
 
-  private async quarantineCorrupt(): Promise<void> {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
+  private throwIfCorrupt(): void {
+    if (this.corruptError) throw this.corruptError;
+  }
+
+  private async requireHealthy(): Promise<void> {
+    await this.ensureLoaded();
+    this.throwIfCorrupt();
+  }
+
+  private async latchCorrupt(reason: string): Promise<void> {
+    this.throwIfCorrupt();
     this.items.clear();
+    this.loaded = true;
+    this.corruptError = await persistAuthorityStoreCorruption(
+      this.file,
+      TASK_INPUT_STORE_CORRUPT,
+      reason
+    );
   }
 }
 
