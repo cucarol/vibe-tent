@@ -55,6 +55,7 @@ import {
 } from "../core/task.js";
 import {
   allowsNonReviewAcceptMode,
+  isTaskId,
   parseTaskActorRef,
   parseTaskOutcomeReport,
   resolveParentReviewerPair,
@@ -4386,21 +4387,24 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  const resumed = await ctx.mutations.run(workspaceId, async () => {
-    // A Core-committed reject-resume is not ordinary running work until the
-    // deterministic Service continuation row exists and matches. Open rows are
-    // allowed here so start/replace recovery can reuse this exact primitive.
-    await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
-    ctx.host.markSelfWrite(workspaceId);
-    const task = await taskResume(mount.env, taskPath);
-    emitTaskState(ctx, workspaceId, task, "task.resume");
-    return task;
-  });
+  const resumed = await runTaskLifecycle(workspaceId, taskPath, () =>
+    ctx.mutations.run(workspaceId, async () => {
+      // A Core-committed reject-resume is not ordinary running work until the
+      // deterministic Service continuation row exists and matches. Open rows are
+      // allowed because this explicit public resume owns that continuation boundary.
+      // start/replace use an internal no-draft-retry transition after their own checks.
+      await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      ctx.host.markSelfWrite(workspaceId);
+      const task = await taskResume(mount.env, taskPath);
+      emitTaskState(ctx, workspaceId, task, "task.resume");
+      return task;
+    })
+  );
   const sessionId = resumed.sessionId?.trim();
   if (sessionId) {
     // Explicit resume is the bounded production recovery entrance for a final
-    // managed report preserved before a prior publication failure. This stays
-    // outside the workspace mutation/Task flight and never re-prompts provider.
+    // managed report preserved before a prior publication failure. It runs after
+    // the resume flight releases and never re-prompts provider.
     try {
       await requestManagedAutoDeliverRetryFromDraft(ctx, {
         workspaceId,
@@ -4415,7 +4419,11 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   }
   // The draft retry can commit its Delivery WAL and then fail before the Task
   // write. Always reconcile Core authority before projecting the RPC result.
-  const current = (await reconcileTaskLifecycle(mount.env, taskPath)).task;
+  const current = (
+    await runTaskLifecycle(workspaceId, taskPath, () =>
+      ctx.mutations.run(workspaceId, () => reconcileTaskLifecycle(mount.env, taskPath))
+    )
+  ).task;
   return { workspaceId, taskPath, task: projectTask(current), state: current.state };
 }
 
@@ -4722,6 +4730,23 @@ async function reconcileServiceTaskLifecycle(
     );
   }
   return reconciled.task;
+}
+
+/**
+ * Service composite entrypoints must queue Core WAL reconciliation behind the
+ * workspace MutationBus. The Core mutation lock is intentionally fail-fast;
+ * calling it directly from concurrent RPC/runtime paths would surface local
+ * Service contention as a cross-process "mutation busy" error.
+ */
+function reconcileServiceTaskLifecycleSerialized(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  options?: { blockOpenRejectResumeFeedback?: boolean }
+): Promise<TaskEnvelope> {
+  return ctx.mutations.run(workspaceId, () =>
+    reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath, options)
+  );
 }
 
 /**
@@ -6522,66 +6547,63 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-
-  const prepared = await prepareAuthorizedTaskStartSession(
-    ctx,
-    p,
-    workspaceId,
-    taskPath,
-    callerKind
-  );
-  if (prepared.kind === "reuse") {
-    const existing = managedSessionInFlight.get(managedSessionFlightKey(workspaceId, taskPath));
-    if (existing) {
-      return joinOrConflictManagedSessionFlight(
-        existing,
-        prepared.connectionId,
-        "startSession",
-        taskPath
-      );
-    }
-    const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      const mount = ctx.host.require(workspaceId);
-      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
-      const sessionId = prepared.result.session.sessionId;
-      if (
-        (current.state !== "running" && current.state !== "waiting") ||
-        current.sessionId !== sessionId
-      ) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          "task.startSession: Task changed before same-Task Session reuse could return",
-          {
-            code: "TASK_SESSION_BIND_CAS_FAILED",
-            taskPath,
-            sessionId,
-            state: current.state,
-            currentSessionId: current.sessionId,
-          }
-        );
-      }
-      const session = await ctx.runtime.registry.read(sessionId);
-      if (!session) {
-        throw new RpcError(RPC_LIFECYCLE, `task.startSession: bound Session ${sessionId} disappeared`, {
-          code: "BOUND_SESSION_MISSING",
-          taskPath,
-          sessionId,
-        });
-      }
-      return projectStartSessionResult(workspaceId, taskPath, current, session, {
-        cwd: current.worktree || mount.workspaceRoot,
-      });
-    });
-    await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+  // Every caller proves the exact persisted Task/Session/Connection route before
+  // joining. Mutating WAL reconciliation happens once inside the shared flight.
+  const route = await readExactManagedSessionRoute(ctx, workspaceId, taskPath);
+  return runManagedSessionFlight(workspaceId, taskPath, route, "startSession", async () => {
+    const prepared = await prepareAuthorizedTaskStartSession(
+      ctx,
+      p,
       workspaceId,
       taskPath,
-    });
-    return result;
-  }
-
-  return runManagedSessionFlight(workspaceId, taskPath, prepared.connectionId, "startSession", () =>
-    launchAndBindTaskStartSession(ctx, prepared)
-  );
+      callerKind
+    );
+    assertManagedSessionRouteUnchanged("task.startSession", taskPath, route, prepared);
+    if (prepared.kind === "reuse") {
+      const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+        const mount = ctx.host.require(workspaceId);
+        const current = await reconcileServiceTaskLifecycleSerialized(
+          ctx,
+          workspaceId,
+          taskPath
+        );
+        const sessionId = prepared.result.session.sessionId;
+        if (
+          (current.state !== "running" && current.state !== "waiting") ||
+          current.sessionId !== sessionId
+        ) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            "task.startSession: Task changed before same-Task Session reuse could return",
+            {
+              code: "TASK_SESSION_BIND_CAS_FAILED",
+              taskPath,
+              sessionId,
+              state: current.state,
+              currentSessionId: current.sessionId,
+            }
+          );
+        }
+        const session = await ctx.runtime.registry.read(sessionId);
+        if (!session) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `task.startSession: bound Session ${sessionId} disappeared`,
+            { code: "BOUND_SESSION_MISSING", taskPath, sessionId }
+          );
+        }
+        return projectStartSessionResult(workspaceId, taskPath, current, session, {
+          cwd: current.worktree || mount.workspaceRoot,
+        });
+      });
+      await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+        workspaceId,
+        taskPath,
+      });
+      return result;
+    }
+    return launchAndBindTaskStartSession(ctx, prepared);
+  });
 }
 
 type TaskSessionBindSnapshot = {
@@ -6739,9 +6761,90 @@ type PreparedTaskStartSession =
       bootstrapPrompt?: string;
     };
 
+type ExactManagedSessionRoute = {
+  taskId: string;
+  sessionId: string;
+  connectionId: string;
+};
+
+/** Read-only, per-caller route proof used before managed-session flight join. */
+async function readExactManagedSessionRoute(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string
+): Promise<ExactManagedSessionRoute> {
+  const mount = ctx.host.require(workspaceId);
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const sessionId = task.sessionId?.trim() || "";
+  if (!sessionId) {
+    throw new RpcError(
+      -32602,
+      "task.startSession/task.replaceSession requires an exact bound Session"
+    );
+  }
+  const session = await ctx.runtime.registry.read(sessionId);
+  if (!session?.connectionId) {
+    throw new RpcError(RPC_LIFECYCLE, `Bound managed Session not found: ${sessionId}`, {
+      code: "BOUND_SESSION_MISSING",
+      taskPath,
+      sessionId,
+    });
+  }
+  const taskId = task.id;
+  if (!taskId || !isTaskId(taskId)) {
+    throw new RpcError(RPC_LIFECYCLE, "Task has no canonical id for managed Session routing", {
+      code: "TASK_ID_INVALID",
+      taskPath,
+    });
+  }
+  if (session.workspace !== workspaceId || session.lastTaskId !== taskId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Bound Session ${sessionId} does not match the exact Task/workspace`,
+      { code: "BOUND_SESSION_IDENTITY_MISMATCH", taskPath, sessionId }
+    );
+  }
+  return { taskId, sessionId, connectionId: session.connectionId };
+}
+
+function assertManagedSessionRouteUnchanged(
+  operation: "task.startSession" | "task.replaceSession",
+  taskPath: string,
+  route: ExactManagedSessionRoute,
+  prepared: PreparedTaskStartSession
+): void {
+  const preparedSessionId =
+    prepared.kind === "reuse"
+      ? prepared.result.session.sessionId
+      : prepared.task.sessionId?.trim() || "";
+  const preparedTaskId =
+    prepared.kind === "reuse" ? prepared.result.task.id : prepared.task.id;
+  if (
+    prepared.connectionId === route.connectionId &&
+    preparedSessionId === route.sessionId &&
+    preparedTaskId === route.taskId
+  ) {
+    return;
+  }
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `${operation}: exact Task/Session/Connection route changed before managed flight`,
+    {
+      code: "TASK_SESSION_ROUTE_CHANGED",
+      taskPath,
+      expected: route,
+      actual: {
+        connectionId: prepared.connectionId,
+        sessionId: preparedSessionId,
+        taskId: preparedTaskId,
+      },
+    }
+  );
+}
+
 /**
- * Exact bound-Session preparation for startSession.
- * Must run before any provider-launch flight join/coalesce.
+ * Exact bound-Session preparation for the owner of a managed-session flight.
+ * Every caller already proved its immutable route before the flight was joined or created.
  */
 async function prepareAuthorizedTaskStartSession(
   ctx: HandlerContext,
@@ -6756,7 +6859,7 @@ async function prepareAuthorizedTaskStartSession(
 ): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  let task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+  let task = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
   const boundSessionId = task.sessionId?.trim() || "";
   if (!boundSessionId) {
     throw new RpcError(
@@ -6800,7 +6903,7 @@ async function prepareAuthorizedTaskStartSession(
   if (task.state === "queued" && callerKind === "user") {
     // User-driven convenience: claim before start.
     await taskClaimRpc(ctx, { workspaceId, taskPath });
-    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+    task = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
   }
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(
@@ -6824,8 +6927,38 @@ async function prepareAuthorizedTaskStartSession(
         }
       );
     }
-    await taskResumeRpc(ctx, { workspaceId, taskPath });
-    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      const current = await reconcileServiceTaskLifecycleSerialized(
+        ctx,
+        workspaceId,
+        taskPath
+      );
+      if (
+        current.state !== "waiting" ||
+        current.sessionId !== boundSessionId ||
+        !isSessionUnavailableParkedWait(current)
+      ) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.startSession: exact session_unavailable wait changed before resume",
+          {
+            code: "TASK_SESSION_BIND_CAS_FAILED",
+            taskPath,
+            sessionId: boundSessionId,
+            state: current.state,
+            currentSessionId: current.sessionId,
+            waitCode: current.wait?.code,
+          }
+        );
+      }
+      await assertNoDeliverableDraftBeforeManagedSessionResume(ctx, workspaceId, taskPath);
+      return resumeTaskForManagedSessionOperation(
+        ctx,
+        workspaceId,
+        taskPath,
+        "task.startSession.resume"
+      );
+    });
   }
 
   // Same-Task alive idempotency only. Context-generation drift controls stable
@@ -6866,7 +6999,7 @@ async function launchAndBindTaskStartSession(
   const { workspaceId, taskPath, connectionId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+    const current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
     if (current.state !== "running") {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -7039,7 +7172,7 @@ async function launchAndBindTaskStartSession(
     bootstrapImageRefs.length > 0 ? mount.systemRoot : undefined;
 
   const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+    const current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
     assertTaskSessionBindSnapshot(
       "task.startSession",
       taskPath,
@@ -7231,28 +7364,42 @@ async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unkn
       code: "FORCE_NOT_SUPPORTED",
     });
   }
-  const prepared = await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, callerKind, {
-    skipReuseAndLaunchPrep: true,
-  });
-  if (prepared.kind !== "launch") {
-    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession could not prepare a fresh managed Session");
-  }
-  const connectionId = prepared.connectionId;
+  const route = await readExactManagedSessionRoute(ctx, workspaceId, taskPath);
   // Outer managed-session flight: concurrent same-Connection replace/start still join/coalesce.
   // Exact-Task lifecycle stages are acquired only for authoritative prepare/CAS bind;
   // provider startup stays outside the coordinator so terminal transitions can win.
-  return runManagedSessionFlight(workspaceId, taskPath, connectionId, "replaceSession", () =>
-    executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionId)
+  return runManagedSessionFlight(
+    workspaceId,
+    taskPath,
+    route,
+    "replaceSession",
+    async () => {
+      const prepared = await prepareAuthorizedTaskStartSession(
+        ctx,
+        p,
+        workspaceId,
+        taskPath,
+        callerKind,
+        { skipReuseAndLaunchPrep: true }
+      );
+      if (prepared.kind !== "launch") {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.replaceSession could not prepare a fresh managed Session"
+        );
+      }
+      assertManagedSessionRouteUnchanged("task.replaceSession", taskPath, route, prepared);
+      return executeTaskReplaceSession(ctx, workspaceId, taskPath, route.connectionId);
+    }
   );
 }
 
 async function assertReplaceSessionEligible(
   ctx: HandlerContext,
   workspaceId: string,
-  taskPath: string
+  taskPath: string,
+  task: TaskEnvelope
 ): Promise<void> {
-  const mount = ctx.host.require(workspaceId);
-  const task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
       code: "INVALID_TASK_STATE",
@@ -7305,6 +7452,42 @@ async function assertReplaceSessionEligible(
   }
 }
 
+async function assertNoDeliverableDraftBeforeManagedSessionResume(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string
+): Promise<void> {
+  const draft = await ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+  if (!draft) return;
+  const outcome = parseTaskOutcomeReport(draft.assistantText);
+  if (outcome?.outcome === "blocked" || outcome?.outcome === "needs-input") return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    "task.startSession cannot resume while a deliverable managed report draft is pending; call task.resume to retry its publication",
+    {
+      code: "MANAGED_DELIVERY_DRAFT_REQUIRES_RESUME",
+      taskPath,
+      retryable: true,
+    }
+  );
+}
+
+/** Caller owns the exact Task flight; clear only session_unavailable and never retry a draft. */
+function resumeTaskForManagedSessionOperation(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  reason: "task.startSession.resume" | "task.replaceSession.resume"
+): Promise<TaskEnvelope> {
+  const mount = ctx.host.require(workspaceId);
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const resumed = await taskResume(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, resumed, reason);
+    return resumed;
+  });
+}
+
 async function executeTaskReplaceSession(
   ctx: HandlerContext,
   workspaceId: string,
@@ -7313,11 +7496,18 @@ async function executeTaskReplaceSession(
 ) {
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    await assertReplaceSessionEligible(ctx, workspaceId, taskPath);
-    let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+    let current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
+    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, current);
     if (current.state === "waiting") {
-      await taskResumeRpc(ctx, { workspaceId, taskPath });
-      current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      // Internal replace recovery clears only the exact unavailable wait. It must
+      // not invoke public task.resume's durable report retry while this lifecycle
+      // flight is held, and must preserve the old Session's report draft.
+      current = await resumeTaskForManagedSessionOperation(
+        ctx,
+        workspaceId,
+        taskPath,
+        "task.replaceSession.resume"
+      );
     }
     return ensureTaskWorkspaceLane(ctx, workspaceId, current);
   });
@@ -7357,7 +7547,7 @@ async function executeTaskReplaceSession(
           }
         : undefined;
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      const current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
       assertTaskSessionBindSnapshot(
         "task.replaceSession",
         taskPath,
@@ -7377,7 +7567,7 @@ async function executeTaskReplaceSession(
     });
 
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      const current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
       assertTaskSessionBindSnapshot(
         "task.replaceSession",
         taskPath,
@@ -7415,7 +7605,7 @@ async function executeTaskReplaceSession(
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      let current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
       // Stopping the prior managed Session legitimately projects this exact Task to
       // waiting(session_unavailable). Resume that replace-owned projection before
       // taking the final pre-launch snapshot; every other drift remains fail-closed.
@@ -7424,8 +7614,12 @@ async function executeTaskReplaceSession(
         current.sessionId === priorSessionId &&
         isSessionUnavailableParkedWait(current)
       ) {
-        await taskResumeRpc(ctx, { workspaceId, taskPath });
-        current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+        current = await resumeTaskForManagedSessionOperation(
+          ctx,
+          workspaceId,
+          taskPath,
+          "task.replaceSession.resume"
+        );
       }
       assertTaskSessionBindSnapshot(
         "task.replaceSession",
@@ -10998,7 +11192,7 @@ const rejectResumeNativeInFlight = new Set<string>();
 /** Per-task flight for startSession/replaceSession (authorize first, then join). */
 type ManagedSessionFlightOperation = "startSession" | "replaceSession";
 type ManagedSessionInFlight = {
-  connectionId: string;
+  route: ExactManagedSessionRoute;
   operation: ManagedSessionFlightOperation;
   promise: Promise<unknown>;
 };
@@ -11017,16 +11211,21 @@ export const isManagedSessionInFlightForTests = isTaskStartSessionInFlightForTes
 
 function joinOrConflictManagedSessionFlight(
   existing: ManagedSessionInFlight,
-  connectionId: string,
+  route: ExactManagedSessionRoute,
   operation: ManagedSessionFlightOperation,
   taskPath: string
 ): Promise<unknown> {
-  if (existing.connectionId !== connectionId || existing.operation !== operation) {
+  if (
+    existing.operation !== operation ||
+    existing.route.taskId !== route.taskId ||
+    existing.route.sessionId !== route.sessionId ||
+    existing.route.connectionId !== route.connectionId
+  ) {
     throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
       taskPath,
-      connectionId,
+      route,
       operation,
-      inFlightConnectionId: existing.connectionId,
+      inFlightRoute: existing.route,
       inFlightOperation: existing.operation,
       retryable: true,
     });
@@ -11037,13 +11236,13 @@ function joinOrConflictManagedSessionFlight(
 async function runManagedSessionFlight(
   workspaceId: string,
   taskPath: string,
-  connectionId: string,
+  route: ExactManagedSessionRoute,
   operation: ManagedSessionFlightOperation,
   run: () => Promise<unknown>
 ): Promise<unknown> {
   const flightKey = managedSessionFlightKey(workspaceId, taskPath);
   const existing = managedSessionInFlight.get(flightKey);
-  if (existing) return joinOrConflictManagedSessionFlight(existing, connectionId, operation, taskPath);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, route, operation, taskPath);
 
   let settle!: (value: unknown) => void;
   let rejectFlight!: (reason: unknown) => void;
@@ -11052,7 +11251,7 @@ async function runManagedSessionFlight(
     rejectFlight = reject;
   });
   flightPromise.catch(() => undefined);
-  managedSessionInFlight.set(flightKey, { connectionId, operation, promise: flightPromise });
+  managedSessionInFlight.set(flightKey, { route, operation, promise: flightPromise });
   try {
     const result = await run();
     settle(result);

@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
+import { runTaskLifecycle } from "../src/service/task-lifecycle-flight.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { readServiceEndpoint } from "../src/service/data-dir.js";
@@ -2067,14 +2068,8 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
         connectionId: "mock-acp-tool-timeout",
         prompt: "will timeout tool ask",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
 
       const pending = await pollUntil(async () => {
         const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
@@ -3851,7 +3846,9 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "outcome: delivered\n\nCLEAN_AFTER_COMMIT_OK",
+      // The first provider report is the durable retry authority. Cleaning the
+      // worktree retries that exact draft; a different report cannot overwrite it.
+      assistantText: "",
     });
 
     const after = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3863,7 +3860,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       }
     ).deliveries;
     assert.equal(afterDeliveries.length, 1);
-    assert.equal(afterDeliveries[0].summary, "CLEAN_AFTER_COMMIT_OK");
+    assert.equal(afterDeliveries[0].summary, "DIRTY_SHOULD_NOT_DELIVER");
     assert.equal(afterDeliveries[0].status, "ready");
     assert.ok(afterDeliveries[0].commits.includes(sourceRef));
     assert.ok(afterDeliveries[0].commits.includes(cleanRef));
@@ -5558,6 +5555,167 @@ test("task.startSession clears a recoverable external wait before provider launc
     assert.equal(result.task.wait ?? null, null);
     assert.match(result.session.sessionId, /^ss-/);
     assert.equal(result.task.sessionId, result.session.sessionId);
+  });
+});
+
+test("task.startSession leaves session_unavailable waiting when a deliverable draft requires public resume", async () => {
+  const ws = await makeWorkspace("start-draft-requires-resume");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
+      connectionId: "fake-default",
+      prompt: "draft publication requires explicit resume",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
+    await rpc(svc, "task.wait", {
+      workspaceId,
+      taskPath: direct.taskPath,
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+    const mount = svc.ctx.host.require(workspaceId);
+    await svc.ctx.mutations.run(workspaceId, async () => {
+      svc.ctx.host.markSelfWrite(workspaceId);
+      await patchTaskEnvelope(mount.env.fs, direct.taskPath, {
+        wait: {
+          reason: "external",
+          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+          code: SESSION_UNAVAILABLE_WAIT_CODE,
+        },
+        updatedAt: mount.env.clock.now(),
+      });
+    });
+    await svc.ctx.managedDeliveryReportDrafts.preserve({
+      workspaceId,
+      taskPath: direct.taskPath,
+      sessionId: direct.sessionId,
+      assistantText: "outcome: delivered\n\nold durable report",
+    });
+
+    const originalStart = svc.runtime.startSession.bind(svc.runtime);
+    const originalResume = svc.runtime.resumeSession.bind(svc.runtime);
+    let providerSideEffects = 0;
+    (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = async (
+      input
+    ) => {
+      providerSideEffects += 1;
+      return originalStart(input);
+    };
+    (svc.runtime as { resumeSession: typeof svc.runtime.resumeSession }).resumeSession = async (
+      input
+    ) => {
+      providerSideEffects += 1;
+      return originalResume(input);
+    };
+    try {
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: direct.taskPath,
+        callerKind: "user",
+      });
+      assert.equal(started.error?.code, RPC_LIFECYCLE, JSON.stringify(started));
+      assert.equal(
+        (started.error?.data as { code?: string } | undefined)?.code,
+        "MANAGED_DELIVERY_DRAFT_REQUIRES_RESUME"
+      );
+    } finally {
+      (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = originalStart;
+      (svc.runtime as { resumeSession: typeof svc.runtime.resumeSession }).resumeSession = originalResume;
+    }
+
+    const after = await rpc(svc, "task.get", {
+      workspaceId,
+      taskPath: direct.taskPath,
+    });
+    const task = (after.result as { task: { state: string; wait?: { code?: string } } }).task;
+    assert.equal(task.state, "waiting");
+    assert.equal(task.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
+    assert.equal(providerSideEffects, 0);
+    assert.equal(
+      (await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, direct.taskPath))
+        ?.assistantText,
+      "outcome: delivered\n\nold durable report"
+    );
+  });
+});
+
+test("task.startSession internal resume waits for the exact Task lifecycle flight", async () => {
+  const ws = await makeWorkspace("start-resume-task-flight");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
+      connectionId: "fake-default",
+      prompt: "resume must wait for lifecycle owner",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
+    await rpc(svc, "task.wait", {
+      workspaceId,
+      taskPath: direct.taskPath,
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+    const mount = svc.ctx.host.require(workspaceId);
+    await svc.ctx.mutations.run(workspaceId, async () => {
+      svc.ctx.host.markSelfWrite(workspaceId);
+      await patchTaskEnvelope(mount.env.fs, direct.taskPath, {
+        wait: {
+          reason: "external",
+          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+          code: SESSION_UNAVAILABLE_WAIT_CODE,
+        },
+        updatedAt: mount.env.clock.now(),
+      });
+    });
+
+    let enteredResolve!: () => void;
+    let releaseResolve!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredResolve = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+    const holding = runTaskLifecycle(workspaceId, direct.taskPath, async () => {
+      enteredResolve();
+      await release;
+    });
+    await entered;
+
+    let settled = false;
+    const starting = rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: direct.taskPath,
+      callerKind: "user",
+    }).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(settled, false, "startSession must wait for the exact Task lifecycle owner");
+    const during = await rpc(svc, "task.get", {
+      workspaceId,
+      taskPath: direct.taskPath,
+    });
+    assert.equal((during.result as { task: { state: string } }).task.state, "waiting");
+
+    releaseResolve();
+    await holding;
+    const started = await starting;
+    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.equal((started.result as { task: { state: string } }).task.state, "running");
   });
 });
 

@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { MUTATION_LOCK_PATH } from "../src/core/paths.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -787,6 +788,141 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       }
     });
   }
+});
+
+test("startSession queues lifecycle reconcile behind an active Service mutation", async () => {
+  const ws = await makeWorkspace("start-reconcile-mutation-order");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
+    const mount = svc.ctx.host.require(workspaceId);
+    const entered = deferred();
+    const release = deferred();
+    const holding = svc.ctx.mutations.run(workspaceId, () =>
+      mount.env.fs.withLock!(MUTATION_LOCK_PATH, async () => {
+        entered.resolve();
+        await release.promise;
+      })
+    );
+    await entered.promise;
+
+    let settled = false;
+    const starting = rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    }).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(settled, false, "startSession must queue, not fail on the held mutation lock");
+
+    release.resolve();
+    await holding;
+    const started = await starting;
+    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.equal(
+      (started.result as { session: { sessionId: string } }).session.sessionId,
+      sessionId
+    );
+  });
+});
+
+test("startSession rejects a changed exact Task/Session identity before flight join", async () => {
+  const ws = await makeWorkspace("start-route-identity");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
+      connectionId: "fake-default",
+      prompt: "identity must fail before provider flight",
+      acceptMode: "review-required",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    const task = await getTask(svc, workspaceId, direct.taskPath);
+    assert.ok(task.id);
+    await svc.runtime.registry.update(direct.sessionId, { lastTaskId: "tk-foreign1" });
+
+    try {
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: direct.taskPath,
+        callerKind: "user",
+      });
+      assert.equal(started.error?.code, RPC_LIFECYCLE, JSON.stringify(started));
+      assert.equal(errCode(started), "BOUND_SESSION_IDENTITY_MISMATCH");
+      assert.equal(
+        isManagedSessionInFlightForTests(workspaceId, direct.taskPath),
+        false,
+        "invalid identity must fail before a managed provider flight is installed"
+      );
+    } finally {
+      await svc.runtime.registry.update(direct.sessionId, { lastTaskId: task.id });
+    }
+  });
+});
+
+test("replaceSession does not join an older same-connection flight after exact route rebind", async () => {
+  const ws = await makeWorkspace("replace-route-rebind");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
+      svc,
+      workspaceId,
+      nodeId
+    );
+    const entered = deferred();
+    const release = deferred();
+    const originalStart = svc.runtime.startSession.bind(svc.runtime);
+    let providerStartCount = 0;
+    (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = async (
+      input
+    ) => {
+      providerStartCount += 1;
+      entered.resolve();
+      await release.promise;
+      return originalStart(input);
+    };
+
+    const owner = rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    });
+    await entered.promise;
+
+    try {
+      const rebound = await getTask(svc, workspaceId, taskPath);
+      assert.ok(rebound.sessionId);
+      assert.notEqual(rebound.sessionId, priorSessionId);
+      assert.equal((await svc.runtime.registry.read(rebound.sessionId!))?.connectionId, "fake-default");
+
+      const staleJoin = await rpc(svc, "task.replaceSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+      });
+      assert.equal(staleJoin.error?.code, RPC_LIFECYCLE, JSON.stringify(staleJoin));
+      assert.match(staleJoin.error?.message ?? "", /operation already in progress/);
+      assert.equal(
+        (staleJoin.error?.data as { retryable?: boolean } | undefined)?.retryable,
+        true
+      );
+      assert.equal(providerStartCount, 1, "route mismatch must not start a second provider");
+    } finally {
+      release.resolve();
+      (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = originalStart;
+    }
+
+    const replaced = await owner;
+    assert.ok(!replaced.error, JSON.stringify(replaced.error));
+    assert.equal(providerStartCount, 1);
+  });
 });
 
 /**
