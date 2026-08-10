@@ -12020,8 +12020,8 @@ async function collectManagedDeliveryCommits(
  * Seal the managed turn before publishing Delivery.
  * Stops the process (and cancels pending tool asks) so
  * post-response worktree mutations cannot land after the task enters delivered.
- * Returns true when the session is no longer able to mutate (dead / terminal).
- * Returns false only when a stop was required and the process is still alive.
+ * Returns true only when the session is positively observed dead and idle.
+ * Returns false when stop/probe fails or the process may still be mutable.
  *
  * Registry resume metadata is retained (stopReason=user).
  *
@@ -12035,49 +12035,63 @@ async function sealManagedSessionBeforeDelivery(
   input: { workspaceId: string; sessionId: string; taskPath: string }
 ): Promise<boolean> {
   try {
-    try {
-      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
-    } catch {
-      // ignore
-    }
-    // Intentionally do NOT cancelTaskInputsForSession here — seal must not
-    // rewrite open U2A rows that still block ready Delivery.
-    const probe = await ctx.runtime.probe(input.sessionId);
-    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
-      await ctx.runtime.stopSession(input.sessionId, "user");
-    }
-    const after = await ctx.runtime.probe(input.sessionId);
-    // Sealed when process is dead. turnBusy must also be false when handle remains.
-    return !after.alive && !after.turnBusy;
+    await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+  } catch {
+    // Approval cleanup is best-effort; runtime death is the seal authority.
+  }
+
+  // Intentionally do NOT cancelTaskInputsForSession here — seal must not
+  // rewrite open U2A rows that still block ready Delivery.
+  const failures: string[] = [];
+  try {
+    const before = await ctx.runtime.probe(input.sessionId);
+    if (!before.alive && !before.turnBusy) return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    try {
-      await ctx.runtime.registry.update(input.sessionId, {
-        lastError: `managed session seal before deliver failed: ${message}`,
-      });
-    } catch {
-      // registry row may already be gone
-    }
-    ctx.events.emit(
-      "session.state",
-      input.workspaceId,
-      {
-        sessionId: input.sessionId,
-        taskPath: input.taskPath,
-        runtimeEvent: "session.seal_before_deliver.failed",
-        error: message,
-        taskFailed: false,
-      },
-      "service"
-    );
-    try {
-      const after = await ctx.runtime.probe(input.sessionId);
-      return !after.alive && !after.turnBusy;
-    } catch {
-      // No probe: treat as sealed only when session is gone entirely.
-      return true;
-    }
+    failures.push(`pre-stop probe failed: ${message}`);
   }
+
+  // Even when the first probe is unavailable, make the bounded stop attempt.
+  // Publication still requires a later positive dead+idle observation.
+  try {
+    await ctx.runtime.stopSession(input.sessionId, "user");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    failures.push(`stop failed: ${message}`);
+  }
+
+  try {
+    const after = await ctx.runtime.probe(input.sessionId);
+    if (!after.alive && !after.turnBusy) return true;
+    failures.push(
+      `post-stop probe remained mutable: alive=${String(after.alive)} turnBusy=${String(after.turnBusy)}`
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    failures.push(`post-stop probe failed: ${message}`);
+  }
+
+  const message = failures.join("; ") || "dead and idle state was not proven";
+  try {
+    await ctx.runtime.registry.update(input.sessionId, {
+      lastError: `managed session seal before deliver failed: ${message}`,
+    });
+  } catch {
+    // registry row may already be gone
+  }
+  ctx.events.emit(
+    "session.state",
+    input.workspaceId,
+    {
+      sessionId: input.sessionId,
+      taskPath: input.taskPath,
+      runtimeEvent: "session.seal_before_deliver.failed",
+      error: message,
+      taskFailed: false,
+    },
+    "service"
+  );
+  return false;
 }
 
 /**
