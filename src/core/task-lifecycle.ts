@@ -547,8 +547,9 @@ export async function prepareTaskAccept(
       task,
       options.deliveryId
     );
+    const actor = canonicalTaskAcceptActor(options.actor);
     assertReviewAuthority({
-      actor: options.actor,
+      actor,
       executorRoleId: task.roleId,
       reviewer: task.reviewer,
       action: "accept",
@@ -608,8 +609,9 @@ export async function finalizeTaskAccept(
         "Ready delivery commits changed during accept; refusing accept."
       );
     }
+    const actor = canonicalTaskAcceptActor(options.actor);
     assertReviewAuthority({
-      actor: options.actor,
+      actor,
       executorRoleId: task.roleId,
       reviewer: task.reviewer,
       action: "accept",
@@ -630,19 +632,21 @@ export async function finalizeTaskAccept(
     // failure cannot leave Outputs bound with no operational rollback material.
     // Order (final mutation, after delivery revalidation):
     //   1) operational raw snapshots (fail here → zero Output writes)
-    //   2) Output bind (own raw snapshots + write rollback)
-    //   3) accepted Delivery/Task persistence (compensate with 1+2 on failure)
+    //   2) exact accept WAL persistence
+    //   3) Output bind (own raw snapshots + write rollback)
+    //   4) accepted Delivery/Task persistence (compensate with 1+3 on failure)
     const deliveryRawBefore = await env.fs.readFile(delivery.path);
     const taskRawBefore = await env.fs.readFile(taskPath);
+    const updatedAt = assertIsoTimestamp(env.clock.now(), "Task accept intent updatedAt");
     const intent: TaskAcceptIntent = {
       type: TASK_ACCEPT_INTENT_TYPE,
       version: 1,
       taskId: requireCanonicalTaskId(task),
       deliveryId: delivery.id,
-      actor: options.actor,
+      actor,
       commits: [...delivery.commits],
       outputNodeIds,
-      updatedAt: env.clock.now(),
+      updatedAt,
     };
     await writeTaskAcceptIntent(env.fs, taskPath, intent);
     /** Populated only after bind returns; mid-bind failures roll back inside bind. */
@@ -709,7 +713,9 @@ function exactStringListEqual(
 }
 
 function canonicalAcceptOutputNodeIds(outputNodeIds: readonly string[]): string[] {
-  return [...new Set(outputNodeIds)].sort((a, b) => a.localeCompare(b));
+  // Preserve the established first-occurrence bind/result order while removing
+  // duplicates. The persisted intent makes that normalized order immutable.
+  return [...new Set(outputNodeIds)];
 }
 
 function normalizeAcceptRetryOutputNodeIds(
@@ -1197,7 +1203,7 @@ function assertTaskAcceptRequestMatchesIntent(
   const outputNodeIds = normalizeAcceptRetryOutputNodeIds(options.outputNodeIds);
   if (
     options.deliveryId !== intent.deliveryId ||
-    options.actor !== intent.actor ||
+    canonicalTaskAcceptActor(options.actor) !== intent.actor ||
     !exactStringListEqual(outputNodeIds, intent.outputNodeIds)
   ) {
     throw new TaskLifecycleError(
@@ -1205,6 +1211,10 @@ function assertTaskAcceptRequestMatchesIntent(
       "This task.accept request differs from the persisted accept operation that was recovered."
     );
   }
+}
+
+function canonicalTaskAcceptActor(actor: string): string {
+  return actor.trim();
 }
 
 async function reconcilePendingTaskAccept(
@@ -1298,14 +1308,19 @@ function assertTaskAcceptIntentCanConverge(
     delivery.status === "ready"
       ? task.state === "delivered"
       : delivery.status === "accepted" &&
-        (task.state === "delivered" || task.state === "accepted");
+        (task.state === "delivered" ||
+          (task.state === "accepted" &&
+            task.updatedAt === intent.updatedAt &&
+            task.wait == null));
   const deliveryMatches =
     delivery.status === "ready"
       ? isReadyDeliveryModeForTask(task, delivery.integrationMode) && !delivery.review
       : delivery.status === "accepted" &&
         delivery.integrationMode === "manual-accept" &&
+        delivery.updatedAt === intent.updatedAt &&
         delivery.review?.decision === "accept" &&
-        delivery.review.by === intent.actor;
+        delivery.review.by === intent.actor &&
+        delivery.review.note === undefined;
   if (
     delivery.sourceNodeId !== primaryNodeId(task) ||
     !exactStringListEqual(delivery.commits, intent.commits) ||

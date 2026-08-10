@@ -13,7 +13,7 @@ import {
   taskWait,
   type TaskAcceptOptions,
 } from "../src/core/task-lifecycle.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { loadTent, nodeNotePath } from "../src/core/tree.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { makeTent } from "./helpers.js";
@@ -165,6 +165,28 @@ async function crashAndRecover(
   await assertAccepted(f);
 }
 
+async function acceptLeavingFinalIntent(
+  f: Awaited<ReturnType<typeof fixture>>
+): Promise<void> {
+  const crashEnv = lifecycleEnv(f.root, new CrashFs(f.root, {
+    operation: "remove",
+    path: (path) => path === acceptIntentPath(f.taskPath),
+    timing: "before",
+  }));
+  await assert.rejects(() => taskAccept(crashEnv as never, f.taskPath, f.options));
+  assert.equal(await f.baseFs.exists(acceptIntentPath(f.taskPath)), true);
+  await assertAccepted(f);
+}
+
+async function authorityBytes(f: Awaited<ReturnType<typeof fixture>>): Promise<string[]> {
+  return Promise.all([
+    f.baseFs.readFile(f.taskPath),
+    f.baseFs.readFile(f.deliveryPath),
+    f.baseFs.readFile(acceptIntentPath(f.taskPath)),
+    ...f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path))),
+  ]);
+}
+
 for (const timing of ["before", "after"] as const) {
   test(`accept intent write ${timing} crash recovers exactly`, async () => {
     const f = await fixture();
@@ -253,6 +275,55 @@ test("zero-Output accept intent recovers without inventing provenance", async ()
   await assertAccepted(f, []);
 });
 
+test("accept canonicalizes actor and preserves first-seen Output order through recovery", async () => {
+  const f = await fixture();
+  const options = { ...f.options, actor: "  user  " };
+  const crashEnv = lifecycleEnv(f.root, new CrashFs(f.root, {
+    operation: "writeFile",
+    path: (path) => path === acceptIntentPath(f.taskPath),
+    timing: "after",
+  }));
+  await assert.rejects(() => taskAccept(crashEnv as never, f.taskPath, options));
+  const intent = JSON.parse(await f.baseFs.readFile(acceptIntentPath(f.taskPath))) as {
+    actor: string;
+    outputNodeIds: string[];
+  };
+  assert.equal(intent.actor, "user");
+  assert.deepEqual(intent.outputNodeIds, [f.outputIds[1], f.outputIds[0]]);
+
+  const recovered = await taskAccept(f.env as never, f.taskPath, options);
+  assert.deepEqual(recovered.boundOutputIds, [f.outputIds[1], f.outputIds[0]]);
+  assert.deepEqual(recovered.changedOutputIds, [f.outputIds[1], f.outputIds[0]]);
+  await assertAccepted(f);
+});
+
+test("invalid accept clock fails before WAL or authority mutation", async () => {
+  const f = await fixture();
+  const before = await Promise.all([
+    f.baseFs.readFile(f.taskPath),
+    f.baseFs.readFile(f.deliveryPath),
+    ...f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path))),
+  ]);
+  const invalidClockEnv = {
+    ...f.env,
+    clock: { now: () => "not-an-instant" },
+  };
+
+  await assert.rejects(
+    () => taskAccept(invalidClockEnv as never, f.taskPath, f.options),
+    /Task accept intent updatedAt/
+  );
+  assert.equal(await f.baseFs.exists(acceptIntentPath(f.taskPath)), false);
+  assert.deepEqual(
+    await Promise.all([
+      f.baseFs.readFile(f.taskPath),
+      f.baseFs.readFile(f.deliveryPath),
+      ...f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path))),
+    ]),
+    before
+  );
+});
+
 test("reject after a partial accept converges accept first and never rejects bound Outputs", async () => {
   const f = await fixture();
   const firstOutput = nodeNotePath(f.outputPaths[0]!);
@@ -325,7 +396,7 @@ test("corrupt or mismatched accept intent fails closed with zero authority mutat
       deliveryId: f.deliveryId,
       actor: "user",
       commits: [],
-      outputNodeIds: [...f.outputIds.slice(0, 2)].sort(),
+      outputNodeIds: [f.outputIds[1]!, f.outputIds[0]!],
       updatedAt: "2026-08-10T09:30:00.000Z",
     });
     await f.baseFs.writeFile(acceptIntentPath(f.taskPath), JSON.stringify(raw, null, 2) + "\n");
@@ -372,6 +443,47 @@ test("accept intent refuses Delivery commit drift before any authority write", a
     outputBefore
   );
 });
+
+for (const drift of [
+  "delivery timestamp",
+  "delivery review note",
+  "task timestamp",
+  "task wait",
+] as const) {
+  test(`accepted-state recovery rejects ${drift} and retains intent without mutation`, async () => {
+    const f = await fixture();
+    await acceptLeavingFinalIntent(f);
+
+    if (drift === "delivery timestamp" || drift === "delivery review note") {
+      const delivery = await loadDelivery(f.baseFs, f.deliveryPath);
+      if (drift === "delivery timestamp") {
+        delivery.updatedAt = "2026-08-10T09:30:00.001Z";
+      } else {
+        delivery.review = { by: "user", decision: "accept", note: "must not survive" };
+      }
+      await writeDelivery(f.baseFs, delivery);
+    } else if (drift === "task timestamp") {
+      await patchTaskEnvelope(f.baseFs, f.taskPath, {
+        updatedAt: "2026-08-10T09:30:00.001Z",
+      });
+    } else {
+      await patchTaskEnvelope(f.baseFs, f.taskPath, {
+        wait: { reason: "external", summary: "accepted Task must not wait" },
+      });
+    }
+    const before = await authorityBytes(f);
+
+    await assert.rejects(
+      () => taskWait(f.env as never, f.taskPath, { reason: "external", summary: "must fail closed" }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code?: string }).code === "DELIVERY_CHANGED"
+    );
+    assert.deepEqual(await authorityBytes(f), before);
+    assert.equal(await f.baseFs.exists(acceptIntentPath(f.taskPath)), true);
+  });
+}
 
 test("simultaneous accept and reject intents fail loud before either decision mutates", async () => {
   const f = await fixture();
