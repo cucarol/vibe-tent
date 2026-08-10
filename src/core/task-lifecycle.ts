@@ -10,11 +10,12 @@ import {
 } from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
-  loadDeliveries,
+  loadDelivery,
   removeNonAcceptedDeliveriesForTask,
   writeDelivery,
   type DeliveryRecord,
 } from "./delivery.js";
+import { normalizeArtifactRefs } from "./artifact.js";
 import {
   bindOutputsToDeliveryUnlocked,
   restoreOutputBindSnapshots,
@@ -22,7 +23,7 @@ import {
   type OutputBindSnapshot,
 } from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
-import { loadTent, type LoadedTent } from "./tree.js";
+import { join, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import {
   ackTaskEnvelope,
@@ -114,7 +115,7 @@ export interface TaskRejectOptions {
 
 export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     const requestedSessionId = options.claimWrite?.sessionId;
     if (task.sessionId && requestedSessionId && requestedSessionId !== task.sessionId) {
       throw new Error(
@@ -168,7 +169,7 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
 
 export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitOptions): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "wait", "waiting");
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
@@ -187,7 +188,7 @@ export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitO
 
 export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     // Idempotent: already running after concurrent approve + session.live is fine.
     if (task.state === "running" && !task.wait) return task;
     assertTransition(task.state, "resume", "running");
@@ -246,11 +247,13 @@ export async function prepareTaskDeliver(
   options: TaskDeliverOptions
 ): Promise<TaskDeliverPrepared> {
   return withMutation(env.fs, async (): Promise<TaskDeliverPrepared> => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
+    const recovered = await recoverExistingTaskDeliver(env, taskPath, task, options);
+    if (recovered) return recovered;
     assertDeliverPreconditions(task);
     const nodeId = primaryNodeId(task);
     if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
-    await assertNoReadyDelivery(env.fs, task.id || taskPath);
+    await assertNoReadyDelivery(env.fs, task);
 
     const routing = resolveDeliverRouting(task.acceptMode, options.decision);
 
@@ -262,6 +265,7 @@ export async function prepareTaskDeliver(
       targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
+      taskLastOutcome: options.lastOutcome,
       status: "ready",
       integrationMode: routing.integrationMode,
       deliveriesDir: deliveryDirForTask(task),
@@ -271,7 +275,7 @@ export async function prepareTaskDeliver(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
-      ...(options.lastOutcome ? { lastOutcome: options.lastOutcome } : {}),
+      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
       updatedAt: env.clock.now(),
     });
     if (routing.autoIntegrate) {
@@ -298,7 +302,41 @@ export async function finalizeTaskDeliverAuto(
   prepared: Extract<TaskDeliverPrepared, { kind: "auto" }>
 ): Promise<TaskDeliverResult> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    let task = await preflightTaskMutation(env, taskPath);
+    const persisted = await requireTaskDeliveryById(env.fs, task, prepared.deliveryId);
+    if (task.activeDeliveryId !== persisted.id) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery changed during auto-accept; refusing state write."
+      );
+    }
+
+    if (persisted.status === "accepted") {
+      if (!isAutoIntegrationMode(persisted.integrationMode)) {
+        throw new TaskLifecycleError(
+          "DELIVERY_CHANGED",
+          "Accepted delivery is not an auto-integrate candidate; refusing recovery."
+        );
+      }
+      if (task.state === "delivered") {
+        task = await patchTaskEnvelope(env.fs, taskPath, {
+          state: "accepted",
+          activeDeliveryId: persisted.id,
+          ...(persisted.taskLastOutcome ? { lastOutcome: persisted.taskLastOutcome } : {}),
+          wait: null,
+          updatedAt: env.clock.now(),
+        });
+      } else if (task.state !== "accepted") {
+        throw new TaskLifecycleError(
+          "INVALID_TRANSITION",
+          `Cannot recover accepted Delivery while Task is ${task.state}.`
+        );
+      }
+      assertTaskDeliverCandidateMatches(task, persisted, options);
+      assertPreparedDeliveryMatches(persisted, prepared);
+      return { task, delivery: persisted, autoIntegrated: true };
+    }
+
     assertTransition(task.state, "accept", "accepted");
     const nodeId = primaryNodeId(task);
     if (!nodeId || nodeId !== prepared.sourceNodeId) {
@@ -328,6 +366,8 @@ export async function finalizeTaskDeliverAuto(
     if (!routing.autoIntegrate) {
       throw new Error("Task acceptMode changed during integrate; refusing state write.");
     }
+    assertTaskDeliverCandidateMatches(task, delivery, options);
+    assertPreparedDeliveryMatches(delivery, prepared);
 
     delivery.status = "accepted";
     delivery.integrationMode = routing.integrationMode;
@@ -339,7 +379,7 @@ export async function finalizeTaskDeliverAuto(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
-      ...(options.lastOutcome ? { lastOutcome: options.lastOutcome } : {}),
+      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
       wait: null,
       updatedAt: env.clock.now(),
     });
@@ -380,7 +420,7 @@ export async function prepareTaskAccept(
   options: TaskAcceptOptions
 ): Promise<TaskAcceptPrepared> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
       env.fs,
@@ -417,7 +457,7 @@ export async function finalizeTaskAccept(
   prepared: TaskAcceptPrepared
 ): Promise<TaskAcceptResult> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
       env.fs,
@@ -579,7 +619,15 @@ export async function taskReject(
   options: TaskRejectOptions
 ): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const recovered = await reconcilePendingTaskReject(env, taskPath);
+    if (recovered) {
+      assertTaskRejectRequestMatchesIntent(recovered.intent, options);
+      return { task: recovered.task, delivery: recovered.delivery };
+    }
+    let task = await loadTaskEnvelope(env.fs, taskPath);
+    task = await reconcileCommittedTaskDelivery(env, taskPath, task);
+    const completed = await recoverCompletedTaskReject(env.fs, task, options);
+    if (completed) return completed;
     const resume = options.resume !== false;
     const event = resume ? "reject-resume" : "reject-terminal";
     const to: TaskState = resume ? "running" : "rejected";
@@ -598,28 +646,53 @@ export async function taskReject(
       action: "reject",
     });
 
-    delivery.status = "rejected";
-    delivery.review = {
-      by: options.actor,
-      decision: "reject",
+    const intent: TaskRejectIntent = {
+      type: TASK_REJECT_INTENT_TYPE,
+      version: 1,
+      taskId: task.id || task.path,
+      deliveryId: delivery.id,
+      to,
+      actor: options.actor,
       note: options.note?.trim() || "Rejected; waiting for resubmission.",
-    };
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
-
-    // Terminal reject ends occupation via task state only (no FM owner clear).
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: to,
-      // Keep activeDeliveryId for history; new deliver checks ready-only.
       updatedAt: env.clock.now(),
-    });
-    return { task: next, delivery };
+    };
+    await writeTaskRejectIntent(env.fs, taskPath, intent);
+    return completeTaskRejectIntent(env, taskPath, task, delivery, intent);
   });
+}
+
+async function recoverCompletedTaskReject(
+  fs: FsAdapter,
+  task: TaskEnvelope,
+  options: TaskRejectOptions
+): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord } | undefined> {
+  if (
+    !task.activeDeliveryId ||
+    (task.state !== "running" && task.state !== "rejected")
+  ) {
+    return undefined;
+  }
+  const delivery = await requireTaskDeliveryById(fs, task, task.activeDeliveryId);
+  if (delivery.status !== "rejected" || delivery.review?.decision !== "reject") {
+    return undefined;
+  }
+  const completedIntent: TaskRejectIntent = {
+    type: TASK_REJECT_INTENT_TYPE,
+    version: 1,
+    taskId: task.id || task.path,
+    deliveryId: delivery.id,
+    to: task.state,
+    actor: delivery.review.by,
+    note: delivery.review.note || "Rejected; waiting for resubmission.",
+    updatedAt: delivery.updatedAt || task.updatedAt || "",
+  };
+  assertTaskRejectRequestMatchesIntent(completedIntent, options);
+  return { task, delivery };
 }
 
 export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "interrupted") {
       // Repair legacy/racy terminal projections idempotently. An interrupted
       // Task never has an active Delivery; a delivered outcome is impossible.
@@ -670,11 +743,16 @@ export async function taskFail(
   options: TaskFailOptions = {}
 ): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "failed") {
       // Already terminal non-active — ensure non-accepted deliveries are cleared (repair path).
       await releaseOccupationForTask(env, task);
-      return task;
+      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") return task;
+      return patchTaskEnvelope(env.fs, taskPath, {
+        activeDeliveryId: null,
+        ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
+        updatedAt: env.clock.now(),
+      });
     }
     assertTransition(task.state, "fail", "failed");
     await releaseOccupationForTask(env, task);
@@ -682,6 +760,8 @@ export async function taskFail(
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "failed",
       wait: null,
+      activeDeliveryId: null,
+      ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
       updatedAt: env.clock.now(),
     });
   });
@@ -694,7 +774,7 @@ async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promis
 
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "cancel", "interrupted");
     await env.fs.remove(taskPath);
   });
@@ -724,8 +804,8 @@ function assertDeliverPreconditions(task: TaskEnvelope): void {
   }
 }
 
-async function assertNoReadyDelivery(fs: FsAdapter, taskId: string): Promise<void> {
-  const existing = await loadDeliveries(fs, { taskId });
+async function assertNoReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<void> {
+  const existing = await loadTaskDeliveries(fs, task);
   if (existing.some((d) => d.status === "ready")) {
     throw new Error("A delivery is already ready for review; accept or reject it first.");
   }
@@ -733,16 +813,14 @@ async function assertNoReadyDelivery(fs: FsAdapter, taskId: string): Promise<voi
 
 async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord> {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs, { taskId: task.id || task.path })).find(
-      (d) => d.id === task.activeDeliveryId
-    );
+    const byId = (await loadTaskDeliveries(fs, task)).find((d) => d.id === task.activeDeliveryId);
     if (byId && byId.status === "ready") return byId;
     // Fall through: try path via role
     if (byId) {
       // reload by path if status drifted
     }
   }
-  const ready = (await loadDeliveries(fs, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await loadTaskDeliveries(fs, task)).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
@@ -768,6 +846,438 @@ async function requireExpectedActiveReadyDelivery(
     );
   }
   return delivery;
+}
+
+const TASK_REJECT_INTENT_TYPE = "task-delivery-reject-intent";
+
+type TaskRejectIntent = {
+  type: typeof TASK_REJECT_INTENT_TYPE;
+  version: 1;
+  taskId: string;
+  deliveryId: string;
+  to: "running" | "rejected";
+  actor: string;
+  note: string;
+  updatedAt: string;
+};
+
+/**
+ * Exact-Task internal intent only. It bridges the otherwise underivable
+ * reject-resume vs terminal-reject choice while Delivery and Task are written.
+ * It carries no authority: taskReject writes it only after reviewer validation.
+ */
+function taskRejectIntentPath(taskPath: string): string {
+  if (!taskPath.endsWith(".md")) {
+    throw new Error(`Task reject recovery requires a canonical markdown Task path: ${taskPath}.`);
+  }
+  return `${taskPath.slice(0, -3)}.delivery-reject-intent.json`;
+}
+
+async function writeTaskRejectIntent(
+  fs: FsAdapter,
+  taskPath: string,
+  intent: TaskRejectIntent
+): Promise<void> {
+  await fs.writeFile(taskRejectIntentPath(taskPath), JSON.stringify(intent, null, 2) + "\n");
+}
+
+async function loadTaskRejectIntent(
+  fs: FsAdapter,
+  taskPath: string
+): Promise<TaskRejectIntent | undefined> {
+  const path = taskRejectIntentPath(taskPath);
+  if (!(await fs.exists(path))) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(path));
+  } catch {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path}.`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path}.`);
+  }
+  const value = raw as Record<string, unknown>;
+  if (
+    value.type !== TASK_REJECT_INTENT_TYPE ||
+    value.version !== 1 ||
+    typeof value.taskId !== "string" ||
+    typeof value.deliveryId !== "string" ||
+    (value.to !== "running" && value.to !== "rejected") ||
+    typeof value.actor !== "string" ||
+    !value.actor.trim() ||
+    typeof value.note !== "string" ||
+    !value.note.trim() ||
+    typeof value.updatedAt !== "string" ||
+    !value.updatedAt.trim()
+  ) {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path}.`);
+  }
+  return value as TaskRejectIntent;
+}
+
+async function reconcilePendingTaskReject(
+  env: OpsEnv,
+  taskPath: string
+): Promise<
+  { task: TaskEnvelope; delivery: DeliveryRecord; intent: TaskRejectIntent } | undefined
+> {
+  const intent = await loadTaskRejectIntent(env.fs, taskPath);
+  if (!intent) return undefined;
+  const task = await loadTaskEnvelope(env.fs, taskPath);
+  if (intent.taskId !== (task.id || task.path) || task.activeDeliveryId !== intent.deliveryId) {
+    throw new Error(`Exact-Task reject recovery intent does not match Task ${task.id || task.path}.`);
+  }
+  assertReviewAuthority({
+    actor: intent.actor,
+    executorRoleId: task.roleId,
+    reviewer: task.reviewer,
+    action: "reject",
+  });
+  const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
+  const completed = await completeTaskRejectIntent(env, taskPath, task, delivery, intent);
+  return { ...completed, intent };
+}
+
+/** Exact-Task WAL order for every public lifecycle mutation. */
+async function preflightTaskMutation(
+  env: OpsEnv,
+  taskPath: string
+): Promise<TaskEnvelope> {
+  const rejected = await reconcilePendingTaskReject(env, taskPath);
+  const task = rejected?.task ?? await loadTaskEnvelope(env.fs, taskPath);
+  return reconcileCommittedTaskDelivery(env, taskPath, task);
+}
+
+function assertTaskRejectRequestMatchesIntent(
+  intent: TaskRejectIntent,
+  options: TaskRejectOptions
+): void {
+  const expectedTo = options.resume === false ? "rejected" : "running";
+  const expectedNote = options.note?.trim() || "Rejected; waiting for resubmission.";
+  if (
+    options.deliveryId !== intent.deliveryId ||
+    options.actor !== intent.actor ||
+    expectedTo !== intent.to ||
+    expectedNote !== intent.note
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "This task.reject request differs from the persisted reject operation that was recovered."
+    );
+  }
+}
+
+async function completeTaskRejectIntent(
+  env: OpsEnv,
+  taskPath: string,
+  task: TaskEnvelope,
+  delivery: DeliveryRecord,
+  intent: TaskRejectIntent
+): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
+  if (delivery.status === "ready") {
+    delivery.status = "rejected";
+    delivery.review = {
+      by: intent.actor,
+      decision: "reject",
+      note: intent.note,
+    };
+    delivery.updatedAt = intent.updatedAt;
+    await writeDelivery(env.fs, delivery);
+  } else if (
+    delivery.status !== "rejected" ||
+    delivery.review?.decision !== "reject" ||
+    delivery.review.by !== intent.actor ||
+    delivery.review.note !== intent.note
+  ) {
+    throw new Error(`Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`);
+  }
+
+  let next = task;
+  if (task.state === "delivered") {
+    next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: intent.to,
+      // Keep activeDeliveryId for history; new deliver checks ready-only.
+      updatedAt: intent.updatedAt,
+    });
+  } else if (task.state !== intent.to) {
+    throw new Error(
+      `Exact-Task reject recovery expected Task state delivered|${intent.to}, got ${task.state}.`
+    );
+  }
+
+  await env.fs.remove(taskRejectIntentPath(taskPath));
+  return { task: next, delivery };
+}
+
+async function recoverExistingTaskDeliver(
+  env: OpsEnv,
+  taskPath: string,
+  task: TaskEnvelope,
+  options: TaskDeliverOptions
+): Promise<TaskDeliverPrepared | undefined> {
+  const deliveries = await loadTaskDeliveries(env.fs, task);
+  const ready = deliveries.filter((delivery) => delivery.status === "ready");
+  if (ready.length > 1) {
+    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
+  }
+
+  let delivery = task.activeDeliveryId
+    ? deliveries.find((candidate) => candidate.id === task.activeDeliveryId)
+    : undefined;
+  if ((!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) && ready.length === 1) {
+    delivery = ready[0];
+  }
+  if (!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) return undefined;
+  assertCommittedDeliveryMatchesTask(task, delivery);
+
+  let next = task;
+  if (delivery.status === "ready") {
+    if (task.state === "running") {
+      next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "delivered",
+        activeDeliveryId: delivery.id,
+        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        updatedAt: env.clock.now(),
+      });
+    } else if (task.state !== "delivered" || task.activeDeliveryId !== delivery.id) {
+      return undefined;
+    }
+  } else {
+    if (!isAutoIntegrationMode(delivery.integrationMode)) return undefined;
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
+      next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery.id,
+        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        wait: null,
+        updatedAt: env.clock.now(),
+      });
+    } else if (task.state !== "accepted" || task.activeDeliveryId !== delivery.id) {
+      return undefined;
+    }
+  }
+
+  assertTaskDeliverCandidateMatches(next, delivery, options);
+  if (delivery.status === "accepted") {
+    return {
+      kind: "done",
+      result: { task: next, delivery, autoIntegrated: true },
+    };
+  }
+  if (isAutoIntegrationMode(delivery.integrationMode)) {
+    return {
+      kind: "auto",
+      sourceNodeId: delivery.sourceNodeId,
+      deliveryId: delivery.id,
+      commits: [...delivery.commits],
+      ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+    };
+  }
+  return {
+    kind: "done",
+    result: { task: next, delivery, autoIntegrated: false },
+  };
+}
+
+/**
+ * Reconcile only an already-committed exact-Task Delivery WAL. This helper has
+ * no caller-supplied candidate data, so competing lifecycle operations cannot
+ * overwrite the prior deliver operation while repairing its Task projection.
+ */
+async function reconcileCommittedTaskDelivery(
+  env: OpsEnv,
+  taskPath: string,
+  task: TaskEnvelope
+): Promise<TaskEnvelope> {
+  const deliveries = await loadTaskDeliveries(env.fs, task);
+  const ready = deliveries.filter((delivery) => delivery.status === "ready");
+  if (ready.length > 1) {
+    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
+  }
+  let delivery = task.activeDeliveryId
+    ? deliveries.find((candidate) => candidate.id === task.activeDeliveryId)
+    : undefined;
+  if ((!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) && ready.length === 1) {
+    delivery = ready[0];
+  }
+  if (!delivery) return task;
+  if (delivery.status === "ready" || delivery.status === "accepted") {
+    assertCommittedDeliveryMatchesTask(task, delivery);
+  }
+
+  if (delivery.status === "ready") {
+    if (task.state === "running") {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        state: "delivered",
+        activeDeliveryId: delivery.id,
+        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        updatedAt: env.clock.now(),
+      });
+    }
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) return task;
+    throwCommittedDeliveryStateMismatch(task, delivery);
+  }
+  if (delivery.status === "accepted") {
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery.id,
+        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        wait: null,
+        updatedAt: env.clock.now(),
+      });
+    }
+    if (task.state === "accepted" && task.activeDeliveryId === delivery.id) return task;
+    throwCommittedDeliveryStateMismatch(task, delivery);
+  }
+  return task;
+}
+
+function throwCommittedDeliveryStateMismatch(
+  task: TaskEnvelope,
+  delivery: DeliveryRecord
+): never {
+  throw new TaskLifecycleError(
+    "DELIVERY_CHANGED",
+    `Committed Delivery ${delivery.id} (${delivery.status}) conflicts with Task ${task.id || task.path} state ${task.state}; refusing mutation.`
+  );
+}
+
+function assertCommittedDeliveryMatchesTask(
+  task: TaskEnvelope,
+  delivery: DeliveryRecord
+): void {
+  const nodeId = primaryNodeId(task);
+  const modeMatches = delivery.status === "ready"
+    ? (task.acceptMode === "review-required" && delivery.integrationMode === null) ||
+      (task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept") ||
+      (task.acceptMode === "agent-decide" &&
+        (delivery.integrationMode === null || delivery.integrationMode === "agent-decided-integrate"))
+    : delivery.status === "accepted"
+      ? delivery.integrationMode === "manual-accept" ||
+        (task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept") ||
+        (task.acceptMode === "agent-decide" && delivery.integrationMode === "agent-decided-integrate")
+      : true;
+  if (!nodeId || delivery.sourceNodeId !== nodeId || !modeMatches) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted Delivery source or integration mode does not match its exact Task; refusing recovery."
+    );
+  }
+}
+
+function assertTaskDeliverCandidateMatches(
+  task: TaskEnvelope,
+  delivery: DeliveryRecord,
+  options: TaskDeliverOptions
+): void {
+  const routing = resolveDeliverRouting(task.acceptMode, options.decision);
+  const nodeId = primaryNodeId(task);
+  const expectedCommits = [...new Set((options.commits ?? []).map((value) => value.trim()).filter(Boolean))];
+  const expectedTargetHead = options.targetHead?.trim() || undefined;
+  const expectedChecks = options.checks ?? [];
+  const expectedArtifacts = normalizeArtifactRefs(options.artifactRefs ?? []);
+  if (
+    !nodeId ||
+    delivery.sourceNodeId !== nodeId ||
+    delivery.summary !== options.summary.trim() ||
+    delivery.integrationMode !== routing.integrationMode ||
+    !exactStringListEqual(delivery.commits, expectedCommits) ||
+    (delivery.targetHead?.trim() || undefined) !== expectedTargetHead ||
+    delivery.taskLastOutcome !== options.lastOutcome ||
+    !exactDeliveryChecksEqual(delivery.checks, expectedChecks) ||
+    !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted Delivery candidate differs from this task.deliver retry; refusing duplicate publication."
+    );
+  }
+}
+
+function exactDeliveryChecksEqual(
+  current: readonly DeliveryCheck[],
+  expected: readonly DeliveryCheck[]
+): boolean {
+  return (
+    current.length === expected.length &&
+    current.every((check, index) => {
+      const candidate = expected[index];
+      return (
+        !!candidate &&
+        check.name === candidate.name &&
+        check.command === candidate.command &&
+        check.exitCode === candidate.exitCode
+      );
+    })
+  );
+}
+
+function exactArtifactRefsEqual(
+  current: readonly ArtifactRef[],
+  expected: readonly ArtifactRef[]
+): boolean {
+  return (
+    current.length === expected.length &&
+    current.every((ref, index) => {
+      const candidate = expected[index];
+      return (
+        !!candidate &&
+        ref.kind === candidate.kind &&
+        ref.target === candidate.target &&
+        ref.label === candidate.label
+      );
+    })
+  );
+}
+
+function assertPreparedDeliveryMatches(
+  delivery: DeliveryRecord,
+  prepared: Extract<TaskDeliverPrepared, { kind: "auto" }>
+): void {
+  if (
+    delivery.id !== prepared.deliveryId ||
+    delivery.sourceNodeId !== prepared.sourceNodeId ||
+    !exactStringListEqual(delivery.commits, prepared.commits) ||
+    (delivery.targetHead?.trim() || undefined) !== prepared.targetHead
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Ready delivery changed during auto-accept; refusing state write."
+    );
+  }
+}
+
+function isAutoIntegrationMode(mode: DeliveryRecord["integrationMode"]): boolean {
+  return mode === "auto-accept" || mode === "agent-decided-integrate";
+}
+
+async function requireTaskDeliveryById(
+  fs: FsAdapter,
+  task: TaskEnvelope,
+  deliveryId: string
+): Promise<DeliveryRecord> {
+  const delivery = (await loadTaskDeliveries(fs, task)).find((candidate) => candidate.id === deliveryId);
+  if (!delivery) {
+    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No delivery for this exact task and id.");
+  }
+  return delivery;
+}
+
+/** Exact Task namespace only; never scans mounted workspaces or unrelated owners. */
+async function loadTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord[]> {
+  const dir = deliveryDirForTask(task);
+  if (!(await fs.exists(dir))) return [];
+  const taskId = task.id || task.path;
+  const out: DeliveryRecord[] = [];
+  const entries = (await fs.listDir(dir))
+    .filter((entry) => !entry.isDir && entry.name.endsWith(".md"))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const delivery = await loadDelivery(fs, join(dir, entry.name));
+    if (delivery.taskId === taskId) out.push(delivery);
+  }
+  return out;
 }
 
 function requireNodeById(tent: LoadedTent, nodeId: string): Node {
