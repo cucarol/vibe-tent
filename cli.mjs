@@ -2555,6 +2555,9 @@ async function loadTaskEnvelope(fs10, path11) {
   if (sessionId && !isSessionId(sessionId)) {
     throw new Error(`Invalid task envelope format: ${path11} (invalid sessionId).`);
   }
+  if (typeof data.id !== "string" || !isTaskId(data.id)) {
+    throw new Error(`Invalid task envelope format: ${path11} (canonical task id is required).`);
+  }
   const state = parseTaskState(data.state);
   const actors = resolveActorsFromDisk(data);
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
@@ -2579,6 +2582,7 @@ async function loadTaskEnvelope(fs10, path11) {
     ...sessionId ? { sessionId } : {},
     manifest: data.manifest,
     state,
+    id: data.id,
     parentActor: actors.parentActor,
     reviewer: actors.reviewer,
     prompt: body.trim() || void 0,
@@ -2588,7 +2592,6 @@ async function loadTaskEnvelope(fs10, path11) {
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode
   };
-  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;

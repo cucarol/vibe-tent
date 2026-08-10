@@ -414,9 +414,9 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs21, path23) {
+async function backupCorruptRegistry(fs22, path23) {
   const backupPath = `${path23}.corrupt-${timestamp()}`;
-  await fs21.writeFile(backupPath, await fs21.readFile(path23));
+  await fs22.writeFile(backupPath, await fs22.readFile(path23));
   return backupPath;
 }
 function warnRegistryRecovered(path23, backupPath, action, extra = "") {
@@ -500,17 +500,11 @@ function roleTempRoot(roleId) {
 function roleTasksDir(roleId) {
   return `${roleTempRoot(roleId)}/tasks`;
 }
-function roleDeliveriesDir(roleId) {
-  return `${roleTempRoot(roleId)}/deliveries`;
-}
 function sessionTempRoot(sessionId) {
   return `${TEMP_DIR}/${SESSIONS_TEMP_DIR}/${safeOperationalSegment(sessionId, "session")}`;
 }
 function sessionTasksDir(sessionId) {
   return `${sessionTempRoot(sessionId)}/tasks`;
-}
-function sessionDeliveriesDir(sessionId) {
-  return `${sessionTempRoot(sessionId)}/deliveries`;
 }
 function taskManifestPath(ownerRoot, taskId) {
   const safeTask = safeOperationalSegment(taskId, "task");
@@ -522,19 +516,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs21) {
-  if (!await fs21.exists(ORDER_PATH)) return {};
+async function loadOrder(fs22) {
+  if (!await fs22.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs21.readFile(ORDER_PATH));
+    return JSON.parse(await fs22.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs21, ORDER_PATH);
-    await saveOrder(fs21, {});
+    const backupPath = await backupCorruptRegistry(fs22, ORDER_PATH);
+    await saveOrder(fs22, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs21, map) {
-  await fs21.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs22, map) {
+  await fs22.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -616,10 +610,10 @@ function assertValidNodeType(type, registry) {
   }
   throw new Error(`Unknown type: ${trimmed}.`);
 }
-async function loadTypeRegistry(fs21) {
-  if (!await fs21.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs22) {
+  if (!await fs22.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs21.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs22.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -678,8 +672,8 @@ function isRecord(value) {
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs21, action) {
-  return fs21.withLock ? fs21.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs22, action) {
+  return fs22.withLock ? fs22.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/relations.ts
@@ -883,9 +877,9 @@ function assertRawRelationsCanonicalForMutation(value) {
   }
   return out;
 }
-async function loadCanonicalRelationsForMutation(fs21, nodePath8) {
+async function loadCanonicalRelationsForMutation(fs22, nodePath8) {
   const notePath = nodeNotePath(nodePath8);
-  const { data } = parseFrontmatter(await fs21.readFile(notePath));
+  const { data } = parseFrontmatter(await fs22.readFile(notePath));
   return assertRawRelationsCanonicalForMutation(data.relations);
 }
 function relationToFrontmatterItem(record) {
@@ -909,13 +903,13 @@ function nodeKeyOrder(existing) {
     ...existing.filter((key2) => !NODE_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
-async function writeNodeRelations(fs21, node2, relations) {
+async function writeNodeRelations(fs22, node2, relations) {
   const path23 = nodeNotePath(node2.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path23));
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
   const value = relationsToFrontmatterValue(relations);
   if (value === void 0) delete data.relations;
   else data.relations = value;
-  await fs21.writeFile(path23, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
 function assertSourceMutable(node2) {
   if (node2.invalid) {
@@ -967,13 +961,13 @@ function listRelationsForNode(tent, nodeId) {
     incoming
   };
 }
-async function createRelation(fs21, sourceId, input, rand = Math.random, loadedTent) {
-  return withTentMutation(fs21, async () => {
-    const tent = loadedTent ?? await loadTent(fs21);
+async function createRelation(fs22, sourceId, input, rand = Math.random, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const node2 = tent.byId.get(sourceId);
     if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
     assertSourceMutable(node2);
-    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, node2.path);
     const kind = normalizeRelationKind(input.kind);
     const direction = normalizeRelationDirection(input.direction);
     const label = normalizeRelationLabel(input.label);
@@ -988,19 +982,19 @@ async function createRelation(fs21, sourceId, input, rand = Math.random, loadedT
     const record = { id, kind, direction, target };
     if (label !== void 0) record.label = label;
     const next = [...base.map(cloneRelation), record];
-    await writeNodeRelations(fs21, node2, next);
+    await writeNodeRelations(fs22, node2, next);
     node2.relations = next.map(cloneRelation);
     node2.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(record);
   });
 }
-async function updateRelation(fs21, sourceId, relationId, patch, loadedTent) {
-  return withTentMutation(fs21, async () => {
-    const tent = loadedTent ?? await loadTent(fs21);
+async function updateRelation(fs22, sourceId, relationId, patch, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const node2 = tent.byId.get(sourceId);
     if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
     assertSourceMutable(node2);
-    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, node2.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
@@ -1020,25 +1014,25 @@ async function updateRelation(fs21, sourceId, relationId, patch, loadedTent) {
       assertResolvedTargetUsable(tent, current.target);
     }
     const next = base.map((r, i) => i === idx ? current : cloneRelation(r));
-    await writeNodeRelations(fs21, node2, next);
+    await writeNodeRelations(fs22, node2, next);
     node2.relations = next.map(cloneRelation);
     node2.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(current);
   });
 }
-async function deleteRelation(fs21, sourceId, relationId, loadedTent) {
-  return withTentMutation(fs21, async () => {
-    const tent = loadedTent ?? await loadTent(fs21);
+async function deleteRelation(fs22, sourceId, relationId, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const node2 = tent.byId.get(sourceId);
     if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
     assertSourceMutable(node2);
-    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, node2.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
     const next = base.filter((_, i) => i !== idx).map(cloneRelation);
-    await writeNodeRelations(fs21, node2, next);
+    await writeNodeRelations(fs22, node2, next);
     node2.relations = next.map(cloneRelation);
     const fmValue = relationsToFrontmatterValue(next);
     if (fmValue === void 0) delete node2.fm.relations;
@@ -1137,19 +1131,19 @@ function contentEtag(content3) {
 }
 
 // src/core/tree.ts
-async function loadTent(fs21) {
+async function loadTent(fs22) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs21);
-  const top = await fs21.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs22);
+  const top = await fs22.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadNodeInto(fs21, entry.name, null, typeRegistry, roots);
+    await loadNodeInto(fs22, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs21);
+  const order = await loadOrder(fs22);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -1181,13 +1175,13 @@ function sortChildren(node2, order) {
   node2.children = sortByOrder(node2.children, order[node2.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of node2.children) sortChildren(c, order);
 }
-async function loadNode(fs21, path23, parent, registry) {
+async function loadNode(fs22, path23, parent, registry) {
   if (isOperationalPath(path23)) return null;
   const boxFile = nodeNotePath(path23);
-  if (!await fs21.exists(boxFile)) {
+  if (!await fs22.exists(boxFile)) {
     return null;
   }
-  const raw = await fs21.readFile(boxFile);
+  const raw = await fs22.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -1220,11 +1214,11 @@ async function loadNode(fs21, path23, parent, registry) {
     node2.invalidRootId = path23;
     node2.invalidReason = parseError ? `Invalid frontmatter: ${parseError}` : schemaError;
   }
-  const sub = await fs21.listDir(path23);
+  const sub = await fs22.listDir(path23);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadNodeInto(fs21, join(path23, entry.name), node2, registry, node2.children);
+    await loadNodeInto(fs22, join(path23, entry.name), node2, registry, node2.children);
   }
   return node2;
 }
@@ -1274,18 +1268,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadNodeInto(fs21, path23, parent, registry, target) {
+async function loadNodeInto(fs22, path23, parent, registry, target) {
   if (isOperationalPath(path23)) return;
-  const node2 = await loadNode(fs21, path23, parent, registry);
+  const node2 = await loadNode(fs22, path23, parent, registry);
   if (node2) {
     target.push(node2);
     return;
   }
-  const sub = await fs21.listDir(path23);
+  const sub = await fs22.listDir(path23);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadNodeInto(fs21, join(path23, entry.name), parent, registry, target);
+    await loadNodeInto(fs22, join(path23, entry.name), parent, registry, target);
   }
 }
 function resolveSubtree(node2, registry, inheritedInvalid, inheritedArchived = false) {
@@ -2544,26 +2538,26 @@ function sortTasksDeterministically(tasks) {
 }
 
 // src/core/task.ts
-async function loadTaskEnvelopes(fs21) {
+async function loadTaskEnvelopes(fs22) {
   const tasks = [];
-  if (!await fs21.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs21.listDir(TEMP_DIR)) {
+  if (!await fs22.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name !== ROLES_TEMP_DIR && entry.name !== SESSIONS_TEMP_DIR) continue;
     const ownerRoot = join(TEMP_DIR, entry.name);
-    for (const ownerEntry of await fs21.listDir(ownerRoot)) {
+    for (const ownerEntry of await fs22.listDir(ownerRoot)) {
       if (!ownerEntry.isDir) continue;
-      await collectTaskFiles(fs21, join(ownerRoot, ownerEntry.name, "tasks"), tasks);
+      await collectTaskFiles(fs22, join(ownerRoot, ownerEntry.name, "tasks"), tasks);
     }
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function collectTaskFiles(fs21, taskDir, tasks) {
-  if (!await fs21.exists(taskDir)) return;
-  for (const entry of await fs21.listDir(taskDir)) {
+async function collectTaskFiles(fs22, taskDir, tasks) {
+  if (!await fs22.exists(taskDir)) return;
+  for (const entry of await fs22.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path23 = join(taskDir, entry.name);
-    tasks.push(await loadTaskEnvelope(fs21, path23));
+    tasks.push(await loadTaskEnvelope(fs22, path23));
   }
 }
 function taskExecutionLabel(task) {
@@ -2645,9 +2639,9 @@ function resolveDispatchActors(input) {
     reviewer: input.reviewer
   });
 }
-async function loadTaskEnvelope(fs21, path23) {
-  if (!await fs21.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs21.readFile(path23));
+async function loadTaskEnvelope(fs22, path23) {
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "task" || typeof data.manifest !== "string") {
     throw new Error(`Invalid task envelope format: ${path23}.`);
   }
@@ -2661,6 +2655,9 @@ async function loadTaskEnvelope(fs21, path23) {
   }
   if (sessionId && !isSessionId(sessionId)) {
     throw new Error(`Invalid task envelope format: ${path23} (invalid sessionId).`);
+  }
+  if (typeof data.id !== "string" || !isTaskId(data.id)) {
+    throw new Error(`Invalid task envelope format: ${path23} (canonical task id is required).`);
   }
   const state = parseTaskState(data.state);
   const actors = resolveActorsFromDisk(data);
@@ -2686,6 +2683,7 @@ async function loadTaskEnvelope(fs21, path23) {
     ...sessionId ? { sessionId } : {},
     manifest: data.manifest,
     state,
+    id: data.id,
     parentActor: actors.parentActor,
     reviewer: actors.reviewer,
     prompt: body.trim() || void 0,
@@ -2695,7 +2693,6 @@ async function loadTaskEnvelope(fs21, path23) {
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode
   };
-  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
@@ -2828,7 +2825,7 @@ function extractTaskUserPrompt(task) {
   if (match) return match[1].trim();
   return body;
 }
-async function ensureRoleInit(fs21, role, tentName) {
+async function ensureRoleInit(fs22, role, tentName) {
   if (!role.id || !isRoleId(role.id)) {
     throw new Error(`Role init requires a canonical Role id for ${role.name}.`);
   }
@@ -2848,10 +2845,10 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs21.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  await fs22.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path23;
 }
-async function writeTaskEnvelope(fs21, clock, input) {
+async function writeTaskEnvelope(fs22, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   if ("deliveryPolicy" in input) {
@@ -2867,7 +2864,7 @@ async function writeTaskEnvelope(fs21, clock, input) {
     throw new Error(`Invalid Task sessionId: ${sessionId}.`);
   }
   const dir = roleId ? roleTasksDir(roleId) : sessionTasksDir(sessionId);
-  await ensureDir(fs21, dir);
+  await ensureDir(fs22, dir);
   const requestedId = input.id?.trim() || "";
   if (requestedId && !isTaskId(requestedId)) {
     throw new Error(`Invalid Task id: ${requestedId}.`);
@@ -2880,7 +2877,7 @@ async function writeTaskEnvelope(fs21, clock, input) {
   });
   const primaryRef = nodeContext.workNodeIds[0];
   const stem = taskStem(clock.now(), primaryRef);
-  const path23 = await uniqueMarkdownPath(fs21, dir, stem);
+  const path23 = await uniqueMarkdownPath(fs22, dir, stem);
   input.onPathAllocated?.(path23);
   const now = clock.now();
   const actors = resolveDispatchActors({
@@ -2942,15 +2939,15 @@ ${pointers || "(none)"}
 
 ${userPrompt}
 `;
-  await fs21.writeFile(path23, serializeFrontmatter(data, body));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body));
   return path23;
 }
-async function ackTaskEnvelope(fs21, path23) {
-  await patchTaskEnvelope(fs21, path23, {
+async function ackTaskEnvelope(fs22, path23) {
+  await patchTaskEnvelope(fs22, path23, {
     state: "running"
   });
 }
-async function patchTaskEnvelope(fs21, path23, patch) {
+async function patchTaskEnvelope(fs22, path23, patch) {
   if ("acceptMode" in patch || "deliveryPolicy" in patch) {
     throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
   }
@@ -2959,8 +2956,8 @@ async function patchTaskEnvelope(fs21, path23, patch) {
       "Task Context Card Node snapshots are frozen; patch contextGeneration only."
     );
   }
-  if (!await fs21.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const raw = await fs21.readFile(path23);
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const raw = await fs22.readFile(path23);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
   if (patch.state) {
@@ -3070,8 +3067,8 @@ async function patchTaskEnvelope(fs21, path23, patch) {
   }
   if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Task roleId: ${roleId}.`);
   if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Task sessionId: ${sessionId}.`);
-  await fs21.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs21, path23);
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs22, path23);
 }
 function primaryNodeId(task) {
   return taskReferencedNodeIds(task)[0];
@@ -3095,15 +3092,15 @@ function taskStem(now, claimId) {
   const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs21, dir, stem) {
+async function uniqueMarkdownPath(fs22, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
     const path23 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs21.exists(path23)) return path23;
+    if (!await fs22.exists(path23)) return path23;
   }
 }
-async function ensureDir(fs21, path23) {
-  if (!await fs21.exists(path23)) await fs21.mkdir(path23);
+async function ensureDir(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 
 // src/core/claim.ts
@@ -3138,82 +3135,82 @@ function isFrozen(node2) {
 }
 
 // src/core/tags.ts
-async function loadTagRegistry(fs21) {
-  if (!await fs21.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+async function loadTagRegistry(fs22) {
+  if (!await fs22.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
-    return normalizeRegistry2(JSON.parse(await fs21.readFile(TAGS_REGISTRY_PATH)));
+    return normalizeRegistry2(JSON.parse(await fs22.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs21, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromNodes(fs21);
-    await saveTagRegistryUnlocked(fs21, recovered);
+    const backupPath = await backupCorruptRegistry(fs22, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromNodes(fs22);
+    await saveTagRegistryUnlocked(fs22, recovered);
     warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
     return recovered;
   }
 }
-async function saveTagRegistryUnlocked(fs21, registry) {
-  await fs21.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+async function saveTagRegistryUnlocked(fs22, registry) {
+  await fs22.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
-async function addRegistryTag(fs21, name) {
-  await withTentMutation(fs21, async () => addRegistryTagUnlocked(fs21, name));
+async function addRegistryTag(fs22, name) {
+  await withTentMutation(fs22, async () => addRegistryTagUnlocked(fs22, name));
 }
-async function addRegistryTagUnlocked(fs21, name) {
+async function addRegistryTagUnlocked(fs22, name) {
   const tag = normalizeTagName(name);
-  const registry = await loadTagRegistry(fs21);
+  const registry = await loadTagRegistry(fs22);
   if (!registry.tags.includes(tag)) {
     registry.tags.push(tag);
-    await saveTagRegistryUnlocked(fs21, registry);
+    await saveTagRegistryUnlocked(fs22, registry);
   }
 }
-async function addTag(fs21, nodeId, name) {
-  await withTentMutation(fs21, async () => {
+async function addTag(fs22, nodeId, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs21);
+    const tent = await loadTent(fs22);
     if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
     const node2 = tent.byId.get(nodeId);
     if (!node2) throw new Error(`Node not found: ${nodeId}.`);
     if (!isUsableNode(node2)) throw new Error("Invalid or archived nodes cannot be tagged.");
     assertContentMutable(node2, "tagged");
-    await addRegistryTagUnlocked(fs21, tag);
+    await addRegistryTagUnlocked(fs22, tag);
     const tags = uniqueSorted([...node2.tags, tag]);
-    await writeNodeTags(fs21, node2, tags);
+    await writeNodeTags(fs22, node2, tags);
   });
 }
-async function removeTag(fs21, nodeId, name) {
-  await withTentMutation(fs21, async () => {
+async function removeTag(fs22, nodeId, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs21);
+    const tent = await loadTent(fs22);
     if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
     const node2 = tent.byId.get(nodeId);
     if (!node2) throw new Error(`Node not found: ${nodeId}.`);
     if (!isUsableNode(node2)) throw new Error("Invalid or archived nodes cannot be tagged.");
     assertContentMutable(node2, "tagged");
-    await writeNodeTags(fs21, node2, node2.tags.filter((item) => item !== tag));
+    await writeNodeTags(fs22, node2, node2.tags.filter((item) => item !== tag));
   });
 }
-async function removeRegistryTag(fs21, name) {
-  await withTentMutation(fs21, async () => {
+async function removeRegistryTag(fs22, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const registry = await loadTagRegistry(fs21);
-    await saveTagRegistryUnlocked(fs21, { tags: registry.tags.filter((item) => item !== tag) });
-    const tent = await loadTent(fs21);
+    const registry = await loadTagRegistry(fs22);
+    await saveTagRegistryUnlocked(fs22, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs22);
     for (const node2 of tent.byId.values()) {
       if (node2.tags.includes(tag)) {
-        await writeNodeTags(fs21, node2, node2.tags.filter((item) => item !== tag));
+        await writeNodeTags(fs22, node2, node2.tags.filter((item) => item !== tag));
       }
     }
   });
 }
-async function syncTagRegistryAfterNodeTagsChange(fs21, previousTags, nextTags) {
-  await withTentMutation(fs21, async () => {
-    await syncTagRegistryAfterNodeTagsChangeUnlocked(fs21, previousTags, nextTags);
+async function syncTagRegistryAfterNodeTagsChange(fs22, previousTags, nextTags) {
+  await withTentMutation(fs22, async () => {
+    await syncTagRegistryAfterNodeTagsChangeUnlocked(fs22, previousTags, nextTags);
   });
 }
-async function syncTagRegistryAfterNodeTagsChangeUnlocked(fs21, previousTags, nextTags) {
+async function syncTagRegistryAfterNodeTagsChangeUnlocked(fs22, previousTags, nextTags) {
   const previous2 = new Set(normalizeTagList(previousTags));
   const next = normalizeTagList(nextTags);
   const added = next.filter((tag) => !previous2.has(tag));
   for (const tag of added) {
-    await addRegistryTagUnlocked(fs21, tag);
+    await addRegistryTagUnlocked(fs22, tag);
   }
 }
 function normalizeTagName(name) {
@@ -3222,13 +3219,13 @@ function normalizeTagName(name) {
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
-async function writeNodeTags(fs21, node2, tags) {
+async function writeNodeTags(fs22, node2, tags) {
   const path23 = nodeNotePath(node2.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path23));
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs21.writeFile(path23, serializeFrontmatter(data, body, nodeKeyOrder2(keyOrder)));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, nodeKeyOrder2(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -3242,8 +3239,8 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
-async function recoverTagRegistryFromNodes(fs21) {
-  const tent = await loadTent(fs21);
+async function recoverTagRegistryFromNodes(fs22) {
+  const tent = await loadTent(fs22);
   const tags = [];
   for (const node2 of tent.byPath.values()) {
     tags.push(...node2.tags);
@@ -3279,29 +3276,29 @@ function isRecord3(value) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs21) {
-  const { registry } = await readRolesRegistryState(fs21);
+async function loadRolesRegistry(fs22) {
+  const { registry } = await readRolesRegistryState(fs22);
   return registry;
 }
-async function loadRolesRegistryForMutation(fs21) {
-  return loadRolesRegistry(fs21);
+async function loadRolesRegistryForMutation(fs22) {
+  return loadRolesRegistry(fs22);
 }
-async function readRolesRegistryState(fs21) {
-  if (!await fs21.exists(ROLES_REGISTRY_PATH)) {
+async function readRolesRegistryState(fs22) {
+  if (!await fs22.exists(ROLES_REGISTRY_PATH)) {
     return {
       registry: cloneDefaultRoles(),
       recovered: false
     };
   }
   try {
-    const rawText = await fs21.readFile(ROLES_REGISTRY_PATH);
+    const rawText = await fs22.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
     const registry = normalizeRolesRegistry(parsed);
     return { registry, recovered: false };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs21, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -3314,9 +3311,9 @@ async function readRolesRegistryState(fs21) {
     };
   }
 }
-async function createRole(fs21, definition2, rand = Math.random) {
-  await withTentMutation(fs21, async () => {
-    const registry = await loadRolesRegistryForMutation(fs21);
+async function createRole(fs22, definition2, rand = Math.random) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const usedIds = roleIdSet(registry.roles);
     const role = normalizeRoleDefinition(definition2, {
       usedIds,
@@ -3332,7 +3329,7 @@ async function createRole(fs21, definition2, rand = Math.random) {
       throw new Error(`Role id already exists: ${role.id}.`);
     }
     registry.roles.push(role);
-    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
 function assertRoleNameAvailable(name) {
@@ -3340,9 +3337,9 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${name}.`);
   }
 }
-async function updateRole(fs21, ref, patch) {
-  await withTentMutation(fs21, async () => {
-    const registry = await loadRolesRegistryForMutation(fs21);
+async function updateRole(fs22, ref, patch) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const index2 = findRoleIndex(registry.roles, ref);
     if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
     const current = registry.roles[index2];
@@ -3368,12 +3365,12 @@ async function updateRole(fs21, ref, patch) {
       next.displayName = dn || current.name;
     }
     registry.roles[index2] = next;
-    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
-async function deleteRole(fs21, ref, confirmation) {
-  await withTentMutation(fs21, async () => {
-    const registry = await loadRolesRegistryForMutation(fs21);
+async function deleteRole(fs22, ref, confirmation) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const index2 = findRoleIndex(registry.roles, ref);
     if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
     const role = registry.roles[index2];
@@ -3383,7 +3380,7 @@ async function deleteRole(fs21, ref, confirmation) {
       );
     }
     registry.roles.splice(index2, 1);
-    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
   });
 }
 function resolveRole(roles, ref) {
@@ -3494,9 +3491,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs21, path23, value) {
-  if (!await fs21.exists(".tent")) await fs21.mkdir(".tent");
-  await fs21.writeFile(path23, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs22, path23, value) {
+  if (!await fs22.exists(".tent")) await fs22.mkdir(".tent");
+  await fs22.writeFile(path23, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -3615,6 +3612,7 @@ var KEY_ORDER = [
   "targetHead",
   "checksJson",
   "artifactRefsJson",
+  "taskLastOutcome",
   "integrationMode",
   "reviewBy",
   "reviewDecision",
@@ -3622,16 +3620,16 @@ var KEY_ORDER = [
   "createdAt",
   "updatedAt"
 ];
-async function createDeliveryUnlocked(fs21, clock, input) {
+async function createDeliveryUnlocked(fs22, clock, input) {
   const summary = input.summary.trim();
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
   const deliveriesDir = input.deliveriesDir.trim();
   if (!deliveriesDir) throw new Error("Delivery deliveriesDir cannot be empty.");
-  await ensureDir2(fs21, deliveriesDir);
+  await ensureDir2(fs22, deliveriesDir);
   const path23 = join(deliveriesDir, `${id}.md`);
-  if (await fs21.exists(path23)) throw new Error(`Delivery already exists: ${path23}.`);
+  if (await fs22.exists(path23)) throw new Error(`Delivery already exists: ${path23}.`);
   const commits = uniqueCommits(input.commits ?? []);
   const targetHead = normalizeTargetHead(input.targetHead);
   const record = {
@@ -3645,17 +3643,18 @@ async function createDeliveryUnlocked(fs21, clock, input) {
     ...targetHead ? { targetHead } : {},
     checks: input.checks ?? [],
     artifactRefs: normalizeArtifactRefs(input.artifactRefs ?? []),
+    ...input.taskLastOutcome ? { taskLastOutcome: input.taskLastOutcome } : {},
     integrationMode: input.integrationMode ?? null,
     createdAt: now,
     updatedAt: now
   };
-  await writeDelivery(fs21, record);
+  await writeDelivery(fs22, record);
   return record;
 }
-async function loadDelivery(fs21, inputPath) {
+async function loadDelivery(fs22, inputPath) {
   const path23 = normalizeDeliveryPath(inputPath);
-  if (!await fs21.exists(path23)) throw new Error(`Delivery not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs21.readFile(path23));
+  if (!await fs22.exists(path23)) throw new Error(`Delivery not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
     throw new Error(`Invalid delivery format: ${path23}.`);
   }
@@ -3679,6 +3678,7 @@ async function loadDelivery(fs21, inputPath) {
     ...targetHead ? { targetHead } : {},
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseArtifactRefsField(data.artifactRefsJson, path23),
+    ...parseTaskLastOutcome(data.taskLastOutcome, path23),
     integrationMode: parseIntegrationMode(data.integrationMode),
     review: reviewBy && reviewDecision ? {
       by: reviewBy,
@@ -3689,25 +3689,44 @@ async function loadDelivery(fs21, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs21, filter) {
+var DELIVERY_IDENTITY_PREFIX_MAX_BYTES = 1024;
+async function peekDeliveryTaskId(fs22, inputPath) {
+  const path23 = normalizeDeliveryPath(inputPath);
+  if (!fs22.readBinaryBounded) {
+    throw new Error("Delivery identity discovery requires bounded prefix reads.");
+  }
+  let bounded;
+  try {
+    bounded = await fs22.readBinaryBounded(path23, DELIVERY_IDENTITY_PREFIX_MAX_BYTES);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+  const raw = new TextDecoder("utf-8").decode(bounded.bytes);
+  const identity = raw.match(
+    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/i
+  );
+  return identity?.[2];
+}
+async function loadDeliveries(fs22, filter) {
   const out = [];
-  if (!await fs21.exists(TEMP_DIR)) return out;
-  for (const entry of await fs21.listDir(TEMP_DIR)) {
+  if (!await fs22.exists(TEMP_DIR)) return out;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir || entry.name !== ROLES_TEMP_DIR && entry.name !== SESSIONS_TEMP_DIR) continue;
     const ownerRoot = join(TEMP_DIR, entry.name);
-    for (const ownerEntry of await fs21.listDir(ownerRoot)) {
+    for (const ownerEntry of await fs22.listDir(ownerRoot)) {
       if (!ownerEntry.isDir) continue;
-      await collectDeliveryFiles(fs21, join(ownerRoot, ownerEntry.name, "deliveries"), filter, out);
+      await collectDeliveryFiles(fs22, join(ownerRoot, ownerEntry.name, "deliveries"), filter, out);
     }
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function collectDeliveryFiles(fs21, dir, filter, out) {
-  if (!await fs21.exists(dir)) return;
-  for (const entry of await fs21.listDir(dir)) {
+async function collectDeliveryFiles(fs22, dir, filter, out) {
+  if (!await fs22.exists(dir)) return;
+  for (const entry of await fs22.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     try {
-      const d = await loadDelivery(fs21, join(dir, entry.name));
+      const d = await loadDelivery(fs22, join(dir, entry.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
       if (filter?.sourceNodeId && d.sourceNodeId !== filter.sourceNodeId) continue;
       out.push(d);
@@ -3715,13 +3734,13 @@ async function collectDeliveryFiles(fs21, dir, filter, out) {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForTask(fs21, taskId) {
-  for (const delivery of await loadDeliveries(fs21, { taskId })) {
+async function removeNonAcceptedDeliveriesForTask(fs22, taskId) {
+  for (const delivery of await loadDeliveries(fs22, { taskId })) {
     if (delivery.status === "accepted") continue;
-    if (await fs21.exists(delivery.path)) await fs21.remove(delivery.path);
+    if (await fs22.exists(delivery.path)) await fs22.remove(delivery.path);
   }
 }
-async function writeDelivery(fs21, record) {
+async function writeDelivery(fs22, record) {
   const artifactRefs = normalizeArtifactRefs(record.artifactRefs);
   const data = {
     type: "delivery",
@@ -3733,6 +3752,7 @@ async function writeDelivery(fs21, record) {
     targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
     artifactRefsJson: artifactRefs.length ? JSON.stringify(artifactRefs) : void 0,
+    taskLastOutcome: record.taskLastOutcome,
     integrationMode: record.integrationMode,
     reviewBy: record.review?.by,
     reviewDecision: record.review?.decision,
@@ -3740,7 +3760,7 @@ async function writeDelivery(fs21, record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
-  await fs21.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+  await fs22.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
   const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -3761,6 +3781,11 @@ function parseIntegrationMode(value) {
     return value;
   }
   throw new Error(`Invalid delivery integrationMode: ${String(value)}.`);
+}
+function parseTaskLastOutcome(value, deliveryPath) {
+  if (value === void 0) return {};
+  if (value === "delivered") return { taskLastOutcome: "delivered" };
+  throw new Error(`Invalid delivery taskLastOutcome: ${deliveryPath}.`);
 }
 function parseJsonArrayField(value, parse2) {
   if (typeof value !== "string" || !value.trim()) return [];
@@ -3798,8 +3823,8 @@ function parseArtifactRefsField(value, deliveryPath) {
     throw new Error(`Invalid delivery artifact refs: ${deliveryPath}.`);
   }
 }
-async function ensureDir2(fs21, path23) {
-  if (!await fs21.exists(path23)) await fs21.mkdir(path23);
+async function ensureDir2(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -3931,13 +3956,13 @@ function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
   }
   return { outputIds, nodes };
 }
-async function restoreOutputBindSnapshots(fs21, snapshots) {
+async function restoreOutputBindSnapshots(fs22, snapshots) {
   if (snapshots.length === 0) return;
   const failures = [];
   for (let i = snapshots.length - 1; i >= 0; i--) {
     const snap = snapshots[i];
     try {
-      await fs21.writeFile(snap.notePath, snap.raw);
+      await fs22.writeFile(snap.notePath, snap.raw);
       const prev = snap.previousDeliveryId;
       if (prev === void 0) {
         delete snap.node.fm[OUTPUT_PROVENANCE_FIELD];
@@ -3960,7 +3985,7 @@ async function restoreOutputBindSnapshots(fs21, snapshots) {
     );
   }
 }
-async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, deliveryId) {
+async function bindOutputsToDeliveryUnlocked(fs22, tent, outputNodeIds, deliveryId) {
   const { outputIds, nodes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
   const planned = [];
   for (let i = 0; i < nodes.length; i++) {
@@ -3969,7 +3994,7 @@ async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, delivery
     const { alreadyBound } = assertOutputBindable(node2, deliveryId);
     if (alreadyBound) continue;
     const notePath = nodeNotePath(node2.path);
-    const raw = await fs21.readFile(notePath);
+    const raw = await fs22.readFile(notePath);
     planned.push({
       node: node2,
       outputId,
@@ -3985,7 +4010,7 @@ async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, delivery
       const { data, body, keyOrder } = parseFrontmatter(item.raw);
       data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
       const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
-      await fs21.writeFile(item.notePath, nextRaw);
+      await fs22.writeFile(item.notePath, nextRaw);
       snapshots.push({
         outputId: item.outputId,
         notePath: item.notePath,
@@ -3998,7 +4023,7 @@ async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, delivery
     }
   } catch (err) {
     try {
-      await restoreOutputBindSnapshots(fs21, snapshots);
+      await restoreOutputBindSnapshots(fs22, snapshots);
     } catch (rollbackErr) {
       if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
       throw new OutputProvenanceError(
@@ -4095,10 +4120,10 @@ function projectOutputProvenance(node2, indexes) {
   }
   return base;
 }
-async function loadProvenanceIndexes(fs21, tent) {
-  const loadedTent = tent ?? await loadTent(fs21);
-  const deliveries = await loadDeliveries(fs21);
-  const tasks = await loadTaskEnvelopes(fs21);
+async function loadProvenanceIndexes(fs22, tent) {
+  const loadedTent = tent ?? await loadTent(fs22);
+  const deliveries = await loadDeliveries(fs22);
+  const tasks = await loadTaskEnvelopes(fs22);
   const deliveriesById = /* @__PURE__ */ new Map();
   for (const d of deliveries) deliveriesById.set(d.id, d);
   const tasksById = /* @__PURE__ */ new Map();
@@ -4107,8 +4132,8 @@ async function loadProvenanceIndexes(fs21, tent) {
   }
   return { tent: loadedTent, deliveriesById, tasksById };
 }
-async function resolveOutputProvenance(fs21, selector, preloaded) {
-  const indexes = preloaded ?? await loadProvenanceIndexes(fs21);
+async function resolveOutputProvenance(fs22, selector, preloaded) {
+  const indexes = preloaded ?? await loadProvenanceIndexes(fs22);
   const node2 = resolveOutputNode(indexes.tent, selector);
   return projectOutputProvenance(node2, indexes);
 }
@@ -4141,9 +4166,10 @@ function outputKeyOrder(existing) {
 }
 
 // src/core/task-lifecycle.ts
+var DEFAULT_TASK_REJECT_NOTE = "Rejected; waiting for resubmission.";
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     const requestedSessionId = options.claimWrite?.sessionId;
     if (task.sessionId && requestedSessionId && requestedSessionId !== task.sessionId) {
       throw new Error(
@@ -4187,7 +4213,7 @@ async function taskClaim(env, taskPath, options = {}) {
 }
 async function taskWait(env, taskPath, options) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "wait", "waiting");
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
@@ -4205,7 +4231,7 @@ async function taskWait(env, taskPath, options) {
 }
 async function taskResume(env, taskPath) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "running" && !task.wait) return task;
     assertTransition(task.state, "resume", "running");
     return patchTaskEnvelope(env.fs, taskPath, {
@@ -4215,22 +4241,35 @@ async function taskResume(env, taskPath) {
     });
   });
 }
+async function reconcileTaskLifecycle(env, taskPath) {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    const rejectResume = await completedTaskRejectResume(env.fs, task);
+    return {
+      task,
+      ...rejectResume ? { rejectResume } : {}
+    };
+  });
+}
 async function prepareTaskDeliver(env, taskPath, options) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
+    const recovered = await recoverExistingTaskDeliver(env, taskPath, task, options);
+    if (recovered) return recovered;
     assertDeliverPreconditions(task);
     const nodeId = primaryNodeId(task);
     if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
-    await assertNoReadyDelivery(env.fs, task.id || taskPath);
+    await assertNoReadyDelivery(env.fs, task);
     const routing = resolveDeliverRouting(task.acceptMode, options.decision);
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-      taskId: task.id || taskPath,
+      taskId: requireCanonicalTaskId(task),
       sourceNodeId: nodeId,
       summary: options.summary,
       commits: options.commits,
       targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
+      taskLastOutcome: options.lastOutcome,
       status: "ready",
       integrationMode: routing.integrationMode,
       deliveriesDir: deliveryDirForTask(task)
@@ -4239,7 +4278,7 @@ async function prepareTaskDeliver(env, taskPath, options) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
-      ...options.lastOutcome ? { lastOutcome: options.lastOutcome } : {},
+      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
       updatedAt: env.clock.now()
     });
     if (routing.autoIntegrate) {
@@ -4254,9 +4293,80 @@ async function prepareTaskDeliver(env, taskPath, options) {
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
   });
 }
+async function recoverCommittedTaskDeliver(env, taskPath, expected) {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    const delivery = await findCommittedTaskDelivery(env.fs, task);
+    if (!delivery || delivery.status !== "ready" && delivery.status !== "accepted") {
+      return void 0;
+    }
+    assertCommittedDeliveryMatchesTask(task, delivery);
+    if (delivery.summary !== expected.summary.trim() || delivery.taskLastOutcome !== expected.lastOutcome) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Persisted Delivery report or outcome does not match the managed report draft."
+      );
+    }
+    const prepared = delivery.status === "accepted" ? {
+      kind: "done",
+      result: { task, delivery, autoIntegrated: isAutoIntegrationMode(delivery.integrationMode) }
+    } : isAutoIntegrationMode(delivery.integrationMode) ? {
+      kind: "auto",
+      sourceNodeId: delivery.sourceNodeId,
+      deliveryId: delivery.id,
+      commits: [...delivery.commits],
+      ...delivery.targetHead ? { targetHead: delivery.targetHead } : {}
+    } : {
+      kind: "done",
+      result: { task, delivery, autoIntegrated: false }
+    };
+    const options = {
+      summary: delivery.summary,
+      commits: [...delivery.commits],
+      checks: delivery.checks.map((check) => ({ ...check })),
+      artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
+      ...delivery.targetHead ? { targetHead: delivery.targetHead } : {},
+      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+      ...delivery.integrationMode === "agent-decided-integrate" ? { decision: "integrate" } : {}
+    };
+    return { task, delivery, prepared, options };
+  });
+}
 async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    let task = await preflightTaskMutation(env, taskPath);
+    const persisted = await requireTaskDeliveryById(env.fs, task, prepared.deliveryId);
+    if (task.activeDeliveryId !== persisted.id) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery changed during auto-accept; refusing state write."
+      );
+    }
+    if (persisted.status === "accepted") {
+      if (!isAutoIntegrationMode(persisted.integrationMode)) {
+        throw new TaskLifecycleError(
+          "DELIVERY_CHANGED",
+          "Accepted delivery is not an auto-integrate candidate; refusing recovery."
+        );
+      }
+      if (task.state === "delivered") {
+        task = await patchTaskEnvelope(env.fs, taskPath, {
+          state: "accepted",
+          activeDeliveryId: persisted.id,
+          ...persisted.taskLastOutcome ? { lastOutcome: persisted.taskLastOutcome } : {},
+          wait: null,
+          updatedAt: env.clock.now()
+        });
+      } else if (task.state !== "accepted") {
+        throw new TaskLifecycleError(
+          "INVALID_TRANSITION",
+          `Cannot recover accepted Delivery while Task is ${task.state}.`
+        );
+      }
+      assertTaskDeliverCandidateMatches(task, persisted, options);
+      assertPreparedDeliveryMatches(persisted, prepared);
+      return { task, delivery: persisted, autoIntegrated: true };
+    }
     assertTransition(task.state, "accept", "accepted");
     const nodeId = primaryNodeId(task);
     if (!nodeId || nodeId !== prepared.sourceNodeId) {
@@ -4285,6 +4395,8 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
     if (!routing.autoIntegrate) {
       throw new Error("Task acceptMode changed during integrate; refusing state write.");
     }
+    assertTaskDeliverCandidateMatches(task, delivery, options);
+    assertPreparedDeliveryMatches(delivery, prepared);
     delivery.status = "accepted";
     delivery.integrationMode = routing.integrationMode;
     delivery.updatedAt = env.clock.now();
@@ -4292,7 +4404,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
-      ...options.lastOutcome ? { lastOutcome: options.lastOutcome } : {},
+      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
       wait: null,
       updatedAt: env.clock.now()
     });
@@ -4301,7 +4413,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
 }
 async function prepareTaskAccept(env, taskPath, options) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
       env.fs,
@@ -4327,7 +4439,7 @@ async function prepareTaskAccept(env, taskPath, options) {
 }
 async function finalizeTaskAccept(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
       env.fs,
@@ -4395,24 +4507,24 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
 function exactStringListEqual(current, prepared) {
   return current.length === prepared.length && current.every((value, index2) => value === prepared[index2]);
 }
-async function compensateAcceptAfterOutputBind(fs21, args) {
+async function compensateAcceptAfterOutputBind(fs22, args) {
   const failures = [];
   try {
-    await fs21.writeFile(args.deliveryPath, args.deliveryRawBefore);
+    await fs22.writeFile(args.deliveryPath, args.deliveryRawBefore);
   } catch (err) {
     failures.push(
       `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await fs21.writeFile(args.taskPath, args.taskRawBefore);
+    await fs22.writeFile(args.taskPath, args.taskRawBefore);
   } catch (err) {
     failures.push(
       `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await restoreOutputBindSnapshots(fs21, args.outputSnapshots);
+    await restoreOutputBindSnapshots(fs22, args.outputSnapshots);
   } catch (err) {
     failures.push(
       `outputs: ${err instanceof Error ? err.message : String(err)}`
@@ -4427,7 +4539,16 @@ async function compensateAcceptAfterOutputBind(fs21, args) {
 }
 async function taskReject(env, taskPath, options) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const recovered = await reconcilePendingTaskReject(env, taskPath);
+    if (recovered) {
+      assertTaskRejectRequestMatchesIntent(recovered.intent, options);
+      const task2 = await preflightTaskMutation(env, taskPath);
+      return { task: task2, delivery: recovered.delivery };
+    }
+    let task = await loadTaskEnvelope(env.fs, taskPath);
+    task = await reconcileCommittedTaskDelivery(env, taskPath, task);
+    const completed = await recoverCompletedTaskReject(env.fs, task, options);
+    if (completed) return completed;
     const resume = options.resume !== false;
     const event = resume ? "reject-resume" : "reject-terminal";
     const to = resume ? "running" : "rejected";
@@ -4443,25 +4564,66 @@ async function taskReject(env, taskPath, options) {
       reviewer: task.reviewer,
       action: "reject"
     });
-    delivery.status = "rejected";
-    delivery.review = {
-      by: options.actor,
-      decision: "reject",
-      note: options.note?.trim() || "Rejected; waiting for resubmission."
-    };
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: to,
-      // Keep activeDeliveryId for history; new deliver checks ready-only.
+    const intent = {
+      type: TASK_REJECT_INTENT_TYPE,
+      version: 1,
+      taskId: requireCanonicalTaskId(task),
+      deliveryId: delivery.id,
+      to,
+      actor: options.actor,
+      note: options.note?.trim() || DEFAULT_TASK_REJECT_NOTE,
       updatedAt: env.clock.now()
-    });
-    return { task: next, delivery };
+    };
+    await writeTaskRejectIntent(env.fs, taskPath, intent);
+    return completeTaskRejectIntent(env, taskPath, task, delivery, intent);
   });
+}
+async function recoverCompletedTaskReject(fs22, task, options) {
+  if (!task.activeDeliveryId || task.state !== "running" && task.state !== "rejected") {
+    return void 0;
+  }
+  const delivery = await requireTaskDeliveryById(fs22, task, task.activeDeliveryId);
+  if (delivery.status !== "rejected" || delivery.review?.decision !== "reject") {
+    return void 0;
+  }
+  const completedIntent = {
+    type: TASK_REJECT_INTENT_TYPE,
+    version: 1,
+    taskId: requireCanonicalTaskId(task),
+    deliveryId: delivery.id,
+    to: task.state,
+    actor: delivery.review.by,
+    note: delivery.review.note || DEFAULT_TASK_REJECT_NOTE,
+    updatedAt: delivery.updatedAt || task.updatedAt || ""
+  };
+  assertTaskRejectRequestMatchesIntent(completedIntent, options);
+  return { task, delivery };
+}
+async function completedTaskRejectResume(fs22, task) {
+  if (task.state !== "running" || !task.activeDeliveryId) return void 0;
+  const delivery = await requireTaskDeliveryById(fs22, task, task.activeDeliveryId);
+  if (delivery.status !== "rejected") return void 0;
+  if (delivery.sourceNodeId !== primaryNodeId(task) || !isReadyDeliveryModeForTask(task, delivery.integrationMode)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Rejected Delivery ${delivery.id} source or integration mode does not match its exact Task.`
+    );
+  }
+  if (delivery.review?.decision !== "reject" || !delivery.review.by?.trim() || typeof delivery.review.note !== "string") {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Rejected Delivery ${delivery.id} does not contain a complete review continuation.`
+    );
+  }
+  return {
+    deliveryId: delivery.id,
+    actor: delivery.review.by,
+    note: delivery.review.note
+  };
 }
 async function taskInterrupt(env, taskPath) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "interrupted") {
       await releaseOccupationForTask(env, task);
       if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
@@ -4491,10 +4653,15 @@ async function taskInterrupt(env, taskPath) {
 }
 async function taskFail(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "failed") {
       await releaseOccupationForTask(env, task);
-      return task;
+      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") return task;
+      return patchTaskEnvelope(env.fs, taskPath, {
+        activeDeliveryId: null,
+        ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+        updatedAt: env.clock.now()
+      });
     }
     assertTransition(task.state, "fail", "failed");
     await releaseOccupationForTask(env, task);
@@ -4502,24 +4669,31 @@ async function taskFail(env, taskPath, options = {}) {
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "failed",
       wait: null,
+      activeDeliveryId: null,
+      ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
       updatedAt: env.clock.now()
     });
   });
 }
 async function releaseOccupationForTask(env, task) {
-  await removeNonAcceptedDeliveriesForTask(env.fs, task.id || task.path);
+  await removeNonAcceptedDeliveriesForTask(env.fs, requireCanonicalTaskId(task));
 }
 async function taskCancel(env, taskPath) {
   return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "cancel", "interrupted");
     await env.fs.remove(taskPath);
   });
 }
 function deliveryDirForTask(task) {
-  if (task.roleId) return roleDeliveriesDir(task.roleId);
-  if (task.sessionId) return sessionDeliveriesDir(task.sessionId);
-  throw new Error(`Task ${task.id || task.path} has no Role or Session delivery namespace.`);
+  const normalized = task.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const match = /^(temp\/(?:roles|sessions)\/[^/]+)\/tasks\/[^/]+\.md$/.exec(normalized);
+  if (!match) {
+    throw new Error(
+      `Task ${requireCanonicalTaskId(task)} has no canonical owner delivery namespace.`
+    );
+  }
+  return `${match[1]}/deliveries`;
 }
 function assertDeliverPreconditions(task) {
   if (task.state !== "running") {
@@ -4529,35 +4703,33 @@ function assertDeliverPreconditions(task) {
     );
   }
 }
-async function assertNoReadyDelivery(fs21, taskId) {
-  const existing = await loadDeliveries(fs21, { taskId });
+async function assertNoReadyDelivery(fs22, task) {
+  const existing = await discoverTaskDeliveries(fs22, task);
   if (existing.some((d) => d.status === "ready")) {
     throw new Error("A delivery is already ready for review; accept or reject it first.");
   }
 }
-async function requireActiveReadyDelivery(fs21, task) {
+async function requireActiveReadyDelivery(fs22, task) {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs21, { taskId: task.id || task.path })).find(
-      (d) => d.id === task.activeDeliveryId
-    );
+    const byId = await loadTaskDeliveryById(fs22, task, task.activeDeliveryId);
     if (byId && byId.status === "ready") return byId;
     if (byId) {
     }
   }
-  const ready = (await loadDeliveries(fs21, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await discoverTaskDeliveries(fs22, task)).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
 }
-async function requireExpectedActiveReadyDelivery(fs21, task, deliveryId) {
+async function requireExpectedActiveReadyDelivery(fs22, task, deliveryId) {
   if (task.activeDeliveryId !== deliveryId) {
     throw new TaskLifecycleError(
       "DELIVERY_CHANGED",
       "The ready delivery changed; refresh before reviewing it."
     );
   }
-  const delivery = await requireActiveReadyDelivery(fs21, task);
+  const delivery = await requireActiveReadyDelivery(fs22, task);
   if (delivery.id !== deliveryId) {
     throw new TaskLifecycleError(
       "DELIVERY_CHANGED",
@@ -4565,6 +4737,316 @@ async function requireExpectedActiveReadyDelivery(fs21, task, deliveryId) {
     );
   }
   return delivery;
+}
+var TASK_REJECT_INTENT_TYPE = "task-delivery-reject-intent";
+function taskRejectIntentPath(taskPath) {
+  if (!taskPath.endsWith(".md")) {
+    throw new Error(`Task reject recovery requires a canonical markdown Task path: ${taskPath}.`);
+  }
+  return `${taskPath.slice(0, -3)}.delivery-reject-intent.json`;
+}
+async function writeTaskRejectIntent(fs22, taskPath, intent) {
+  await fs22.writeFile(taskRejectIntentPath(taskPath), JSON.stringify(intent, null, 2) + "\n");
+}
+async function loadTaskRejectIntent(fs22, taskPath) {
+  const path23 = taskRejectIntentPath(taskPath);
+  if (!await fs22.exists(path23)) return void 0;
+  let raw;
+  try {
+    raw = JSON.parse(await fs22.readFile(path23));
+  } catch {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path23}.`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path23}.`);
+  }
+  const value = raw;
+  if (value.type !== TASK_REJECT_INTENT_TYPE || value.version !== 1 || typeof value.taskId !== "string" || typeof value.deliveryId !== "string" || value.to !== "running" && value.to !== "rejected" || typeof value.actor !== "string" || !value.actor.trim() || typeof value.note !== "string" || !value.note.trim() || typeof value.updatedAt !== "string" || !value.updatedAt.trim()) {
+    throw new Error(`Invalid exact-Task reject recovery intent: ${path23}.`);
+  }
+  return value;
+}
+async function reconcilePendingTaskReject(env, taskPath) {
+  const intent = await loadTaskRejectIntent(env.fs, taskPath);
+  if (!intent) return void 0;
+  const task = await loadTaskEnvelope(env.fs, taskPath);
+  if (intent.taskId !== requireCanonicalTaskId(task) || task.activeDeliveryId !== intent.deliveryId) {
+    throw new Error(`Exact-Task reject recovery intent does not match Task ${requireCanonicalTaskId(task)}.`);
+  }
+  assertReviewAuthority({
+    actor: intent.actor,
+    executorRoleId: task.roleId,
+    reviewer: task.reviewer,
+    action: "reject"
+  });
+  const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
+  assertTaskRejectIntentCanConverge(task, delivery, intent);
+  const completed = await completeTaskRejectIntent(env, taskPath, task, delivery, intent);
+  return { ...completed, intent };
+}
+async function preflightTaskMutation(env, taskPath) {
+  const rejected = await reconcilePendingTaskReject(env, taskPath);
+  const task = rejected?.task ?? await loadTaskEnvelope(env.fs, taskPath);
+  return reconcileCommittedTaskDelivery(env, taskPath, task);
+}
+function assertTaskRejectRequestMatchesIntent(intent, options) {
+  const expectedTo = options.resume === false ? "rejected" : "running";
+  const expectedNote = options.note?.trim() || DEFAULT_TASK_REJECT_NOTE;
+  if (options.deliveryId !== intent.deliveryId || options.actor !== intent.actor || expectedTo !== intent.to || expectedNote !== intent.note) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "This task.reject request differs from the persisted reject operation that was recovered."
+    );
+  }
+}
+async function completeTaskRejectIntent(env, taskPath, task, delivery, intent) {
+  if (delivery.status === "ready") {
+    delivery.status = "rejected";
+    delivery.review = {
+      by: intent.actor,
+      decision: "reject",
+      note: intent.note
+    };
+    delivery.updatedAt = intent.updatedAt;
+    await writeDelivery(env.fs, delivery);
+  } else if (delivery.status !== "rejected" || delivery.review?.decision !== "reject" || delivery.review.by !== intent.actor || delivery.review.note !== intent.note) {
+    throw new Error(`Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`);
+  }
+  let next = task;
+  if (task.state === "delivered") {
+    next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: intent.to,
+      // Keep activeDeliveryId for history; new deliver checks ready-only.
+      updatedAt: intent.updatedAt
+    });
+  } else if (task.state !== intent.to) {
+    throw new Error(
+      `Exact-Task reject recovery expected Task state delivered|${intent.to}, got ${task.state}.`
+    );
+  }
+  await env.fs.remove(taskRejectIntentPath(taskPath));
+  return { task: next, delivery };
+}
+function assertTaskRejectIntentCanConverge(task, delivery, intent) {
+  if (task.state !== "delivered" && task.state !== intent.to) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task reject recovery cannot converge from Task state ${task.state}.`
+    );
+  }
+  if (delivery.sourceNodeId !== primaryNodeId(task) || !isReadyDeliveryModeForTask(task, delivery.integrationMode)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted reject Delivery source or integration mode does not match its exact Task."
+    );
+  }
+  if (delivery.status === "ready") {
+    if (delivery.review) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready Delivery already carries review authority; refusing reject recovery."
+      );
+    }
+    return;
+  }
+  if (delivery.status !== "rejected" || delivery.review?.decision !== "reject" || delivery.review.by !== intent.actor || delivery.review.note !== intent.note) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`
+    );
+  }
+}
+async function recoverExistingTaskDeliver(env, taskPath, task, options) {
+  const delivery = await findCommittedTaskDelivery(env.fs, task);
+  if (!delivery || delivery.status !== "ready" && delivery.status !== "accepted") return void 0;
+  assertCommittedDeliveryMatchesTask(task, delivery);
+  let next = task;
+  if (delivery.status === "ready") {
+    if (task.state === "running") {
+      next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "delivered",
+        activeDeliveryId: delivery.id,
+        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        updatedAt: env.clock.now()
+      });
+    } else if (task.state !== "delivered" || task.activeDeliveryId !== delivery.id) {
+      return void 0;
+    }
+  } else {
+    if (!isAutoIntegrationMode(delivery.integrationMode)) return void 0;
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
+      next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery.id,
+        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+    } else if (task.state !== "accepted" || task.activeDeliveryId !== delivery.id) {
+      return void 0;
+    }
+  }
+  assertTaskDeliverCandidateMatches(next, delivery, options);
+  if (delivery.status === "accepted") {
+    return {
+      kind: "done",
+      result: { task: next, delivery, autoIntegrated: true }
+    };
+  }
+  if (isAutoIntegrationMode(delivery.integrationMode)) {
+    return {
+      kind: "auto",
+      sourceNodeId: delivery.sourceNodeId,
+      deliveryId: delivery.id,
+      commits: [...delivery.commits],
+      ...delivery.targetHead ? { targetHead: delivery.targetHead } : {}
+    };
+  }
+  return {
+    kind: "done",
+    result: { task: next, delivery, autoIntegrated: false }
+  };
+}
+async function reconcileCommittedTaskDelivery(env, taskPath, task) {
+  const delivery = await findCommittedTaskDelivery(env.fs, task);
+  if (!delivery) return task;
+  if (delivery.status === "ready" || delivery.status === "accepted") {
+    assertCommittedDeliveryMatchesTask(task, delivery);
+  }
+  if (delivery.status === "ready") {
+    if (task.state === "running") {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        state: "delivered",
+        activeDeliveryId: delivery.id,
+        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        updatedAt: env.clock.now()
+      });
+    }
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) return task;
+    throwCommittedDeliveryStateMismatch(task, delivery);
+  }
+  if (delivery.status === "accepted") {
+    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery.id,
+        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+    }
+    if (task.state === "accepted" && task.activeDeliveryId === delivery.id) return task;
+    throwCommittedDeliveryStateMismatch(task, delivery);
+  }
+  return task;
+}
+function throwCommittedDeliveryStateMismatch(task, delivery) {
+  throw new TaskLifecycleError(
+    "DELIVERY_CHANGED",
+    `Committed Delivery ${delivery.id} (${delivery.status}) conflicts with Task ${requireCanonicalTaskId(task)} state ${task.state}; refusing mutation.`
+  );
+}
+function assertCommittedDeliveryMatchesTask(task, delivery) {
+  const nodeId = primaryNodeId(task);
+  const modeMatches = delivery.status === "ready" ? isReadyDeliveryModeForTask(task, delivery.integrationMode) : delivery.status === "accepted" ? delivery.integrationMode === "manual-accept" || task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept" || task.acceptMode === "agent-decide" && delivery.integrationMode === "agent-decided-integrate" : true;
+  if (!nodeId || delivery.sourceNodeId !== nodeId || !modeMatches) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted Delivery source or integration mode does not match its exact Task; refusing recovery."
+    );
+  }
+}
+function isReadyDeliveryModeForTask(task, integrationMode) {
+  return task.acceptMode === "review-required" && integrationMode === null || task.acceptMode === "auto-accept" && integrationMode === "auto-accept" || task.acceptMode === "agent-decide" && (integrationMode === null || integrationMode === "agent-decided-integrate");
+}
+function assertTaskDeliverCandidateMatches(task, delivery, options) {
+  const routing = resolveDeliverRouting(task.acceptMode, options.decision);
+  const nodeId = primaryNodeId(task);
+  const expectedCommits = [...new Set((options.commits ?? []).map((value) => value.trim()).filter(Boolean))];
+  const expectedTargetHead = options.targetHead?.trim() || void 0;
+  const expectedChecks = options.checks ?? [];
+  const expectedArtifacts = normalizeArtifactRefs(options.artifactRefs ?? []);
+  if (!nodeId || delivery.sourceNodeId !== nodeId || delivery.summary !== options.summary.trim() || delivery.integrationMode !== routing.integrationMode || !exactStringListEqual(delivery.commits, expectedCommits) || (delivery.targetHead?.trim() || void 0) !== expectedTargetHead || delivery.taskLastOutcome !== options.lastOutcome || !exactDeliveryChecksEqual(delivery.checks, expectedChecks) || !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted Delivery candidate differs from this task.deliver retry; refusing duplicate publication."
+    );
+  }
+}
+function exactDeliveryChecksEqual(current, expected) {
+  return current.length === expected.length && current.every((check, index2) => {
+    const candidate = expected[index2];
+    return !!candidate && check.name === candidate.name && check.command === candidate.command && check.exitCode === candidate.exitCode;
+  });
+}
+function exactArtifactRefsEqual(current, expected) {
+  return current.length === expected.length && current.every((ref, index2) => {
+    const candidate = expected[index2];
+    return !!candidate && ref.kind === candidate.kind && ref.target === candidate.target && ref.label === candidate.label;
+  });
+}
+function assertPreparedDeliveryMatches(delivery, prepared) {
+  if (delivery.id !== prepared.deliveryId || delivery.sourceNodeId !== prepared.sourceNodeId || !exactStringListEqual(delivery.commits, prepared.commits) || (delivery.targetHead?.trim() || void 0) !== prepared.targetHead) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Ready delivery changed during auto-accept; refusing state write."
+    );
+  }
+}
+function isAutoIntegrationMode(mode) {
+  return mode === "auto-accept" || mode === "agent-decided-integrate";
+}
+async function requireTaskDeliveryById(fs22, task, deliveryId) {
+  const delivery = await loadTaskDeliveryById(fs22, task, deliveryId);
+  if (!delivery) {
+    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No delivery for this exact task and id.");
+  }
+  return delivery;
+}
+async function loadTaskDeliveryById(fs22, task, deliveryId) {
+  const path23 = join(deliveryDirForTask(task), `${deliveryId}.md`);
+  if (!await fs22.exists(path23)) return void 0;
+  const delivery = await loadDelivery(fs22, path23);
+  if (delivery.id !== deliveryId || delivery.taskId !== requireCanonicalTaskId(task)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Delivery ${deliveryId} does not belong to exact Task ${requireCanonicalTaskId(task)}.`
+    );
+  }
+  return delivery;
+}
+async function findCommittedTaskDelivery(fs22, task) {
+  if (task.activeDeliveryId) {
+    const active = await loadTaskDeliveryById(fs22, task, task.activeDeliveryId);
+    if (active?.status === "ready" || active?.status === "accepted") return active;
+  }
+  const ready = (await discoverTaskDeliveries(fs22, task)).filter(
+    (delivery) => delivery.status === "ready"
+  );
+  if (ready.length > 1) {
+    throw new Error(`Task ${requireCanonicalTaskId(task)} has multiple ready Deliveries; refusing recovery.`);
+  }
+  return ready[0];
+}
+async function discoverTaskDeliveries(fs22, task) {
+  const dir = deliveryDirForTask(task);
+  if (!await fs22.exists(dir)) return [];
+  const taskId = requireCanonicalTaskId(task);
+  const out = [];
+  const entries = (await fs22.listDir(dir)).filter((entry) => !entry.isDir && entry.name.endsWith(".md")).sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const path23 = join(dir, entry.name);
+    if (await peekDeliveryTaskId(fs22, path23) !== taskId) continue;
+    const delivery = await loadDelivery(fs22, path23);
+    if (entry.name !== `${delivery.id}.md` || delivery.taskId !== taskId) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        `Delivery identity does not match its exact Task path: ${path23}.`
+      );
+    }
+    out.push(delivery);
+  }
+  return out;
 }
 function requireNodeById(tent, nodeId) {
   if (tent.duplicateIds.has(nodeId)) {
@@ -4574,8 +5056,15 @@ function requireNodeById(tent, nodeId) {
   if (!node2) throw new Error(`Node not found: ${nodeId}.`);
   return node2;
 }
-async function withMutation(fs21, action) {
-  return withTentMutation(fs21, action);
+function requireCanonicalTaskId(task) {
+  const id = task.id?.trim() || "";
+  if (!isTaskId(id)) {
+    throw new Error(`Task ${task.path} is missing its canonical tk-* id.`);
+  }
+  return id;
+}
+async function withMutation(fs22, action) {
+  return withTentMutation(fs22, action);
 }
 
 // src/core/okf-index.ts
@@ -4769,13 +5258,13 @@ async function renameNodeUnlocked(env, nodeIdOrPath, newNameRaw) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackRename(fs21, args) {
+async function rollbackRename(fs22, args) {
   const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs21.writeFile(write.writePath, write.originalContent);
+      await fs22.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -4785,23 +5274,23 @@ async function rollbackRename(fs21, args) {
   try {
     const expectedNew = nodeNotePath(newPath);
     const legacyAfterMove = join(newPath, `${oldName}.md`);
-    if ((identityRenamed || await fs21.exists(expectedNew)) && await fs21.exists(expectedNew) && !await fs21.exists(legacyAfterMove)) {
-      await fs21.move(expectedNew, legacyAfterMove);
+    if ((identityRenamed || await fs22.exists(expectedNew)) && await fs22.exists(expectedNew) && !await fs22.exists(legacyAfterMove)) {
+      await fs22.move(expectedNew, legacyAfterMove);
     }
   } catch (err) {
     restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
       const expectedNew = nodeNotePath(newPath);
       const legacyAfterMove = join(newPath, `${oldName}.md`);
-      if (!await fs21.exists(legacyAfterMove) && await fs21.exists(expectedNew)) {
+      if (!await fs22.exists(legacyAfterMove) && await fs22.exists(expectedNew)) {
         try {
-          await fs21.move(expectedNew, legacyAfterMove);
+          await fs22.move(expectedNew, legacyAfterMove);
         } catch {
         }
       }
-      await fs21.move(newPath, oldPath);
+      await fs22.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
@@ -4852,18 +5341,18 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs21, newNodePath, oldName) {
+async function ensureIdentityFileName(fs22, newNodePath, oldName) {
   const expected = nodeNotePath(newNodePath);
-  if (await fs21.exists(expected)) return false;
+  if (await fs22.exists(expected)) return false;
   const legacy = join(newNodePath, `${oldName}.md`);
-  if (await fs21.exists(legacy)) {
-    await fs21.move(legacy, expected);
+  if (await fs22.exists(legacy)) {
+    await fs22.move(legacy, expected);
     return true;
   }
-  const entries = await fs21.listDir(newNodePath);
+  const entries = await fs22.listDir(newNodePath);
   const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newNodePath, e.name));
   if (candidates.length === 1) {
-    await fs21.move(candidates[0], expected);
+    await fs22.move(candidates[0], expected);
     return true;
   }
   throw new Error(`Identity note missing after rename: expected ${expected}.`);
@@ -5062,22 +5551,22 @@ async function forkNodeUnlocked(env, nodeId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs21, parentPath, base) {
+async function uniqueSiblingPath(fs22, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join(parentPath, name);
-    if (!await fs21.exists(candidate)) return candidate;
+    if (!await fs22.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs21, from, to) {
-  await fs21.mkdir(to);
-  for (const entry of await fs21.listDir(from)) {
+async function copyTree(fs22, from, to) {
+  await fs22.mkdir(to);
+  for (const entry of await fs22.listDir(from)) {
     const src = join(from, entry.name);
     const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs21, src, dst);
-    else await fs21.writeFile(dst, await fs21.readFile(src));
+    if (entry.isDir) await copyTree(fs22, src, dst);
+    else await fs22.writeFile(dst, await fs22.readFile(src));
   }
 }
 function collectSubtree2(node2, out = []) {
@@ -5089,12 +5578,12 @@ function relativePath2(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName2(fs21, newNodePath, oldNodePath) {
+async function ensureIdentityFileName2(fs22, newNodePath, oldNodePath) {
   const expected = nodeNotePath(newNodePath);
-  if (await fs21.exists(expected)) return;
+  if (await fs22.exists(expected)) return;
   const oldName = `${baseName(oldNodePath)}.md`;
   const copied = join(newNodePath, oldName);
-  if (await fs21.exists(copied)) await fs21.move(copied, expected);
+  if (await fs22.exists(copied)) await fs22.move(copied, expected);
 }
 
 // src/core/moveOps.ts
@@ -5258,13 +5747,13 @@ async function moveNodeUnlocked(env, nodeId, newParentId, position2) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackMove(fs21, args) {
+async function rollbackMove(fs22, args) {
   const { oldPath, newPath, completedWrites, orderSnapshot } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs21.writeFile(write.writePath, write.originalContent);
+      await fs22.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -5272,14 +5761,14 @@ async function rollbackMove(fs21, args) {
     }
   }
   try {
-    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
-      await fs21.move(newPath, oldPath);
+    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
+      await fs22.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    await saveOrder(fs21, JSON.parse(orderSnapshot));
+    await saveOrder(fs22, JSON.parse(orderSnapshot));
   } catch (err) {
     restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -5628,17 +6117,17 @@ async function setNodeModeUnlocked(env, nodeId, mode) {
   }
   await patchFrontmatter(env.fs, node2, { mode: void 0, archived: void 0 });
 }
-async function patchFrontmatter(fs21, node2, patch) {
+async function patchFrontmatter(fs22, node2, patch) {
   const boxFile = nodeNotePath(node2.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder3(keyOrder)));
+  await fs22.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder3(keyOrder)));
 }
-async function ensureDir3(fs21, path23) {
-  if (path23 && !await fs21.exists(path23)) await fs21.mkdir(path23);
+async function ensureDir3(fs22, path23) {
+  if (path23 && !await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -5687,13 +6176,13 @@ function requireNodeById2(tent, nodeId) {
   if (!node2) throw new Error(`Node not found: ${nodeId}.`);
   return node2;
 }
-async function withMutation2(fs21, action) {
-  return withTentMutation(fs21, action);
+async function withMutation2(fs22, action) {
+  return withTentMutation(fs22, action);
 }
 
 // src/core/typeManagement.ts
-async function createType(fs21, name, definition2) {
-  await withTentMutation(fs21, async () => {
+async function createType(fs22, name, definition2) {
+  await withTentMutation(fs22, async () => {
     assertTypeName(name);
     if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
       throw new Error(`Built-in primary types cannot be created: ${name}.`);
@@ -5704,23 +6193,23 @@ async function createType(fs21, name, definition2) {
     if (definition2.tier !== "modifier") {
       throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
     }
-    const registry = await loadTypeRegistry(fs21);
+    const registry = await loadTypeRegistry(fs22);
     if (registry[name]) throw new Error(`Type already exists: ${name}.`);
     registry[name] = { tier: "modifier" };
-    await writeTypeRegistryUnlocked(fs21, registry);
+    await writeTypeRegistryUnlocked(fs22, registry);
   });
 }
-async function createSecondaryType(fs21, name, _definition) {
+async function createSecondaryType(fs22, name, _definition) {
   void _definition;
-  await createType(fs21, name, { tier: "modifier" });
+  await createType(fs22, name, { tier: "modifier" });
 }
-async function inspectTypeDeletion(fs21, level, name) {
+async function inspectTypeDeletion(fs22, level, name) {
   void level;
-  const tent = await loadTent(fs21);
+  const tent = await loadTent(fs22);
   const registry = tent.typeRegistry;
   const nodes = [...tent.byId.values()];
   const referenced = nodes.filter((node2) => nodeReferencesTypeName(node2, name));
-  const tasks = await loadTaskEnvelopes(fs21);
+  const tasks = await loadTaskEnvelopes(fs22);
   const ownerMap = /* @__PURE__ */ new Map();
   const relatedIds = /* @__PURE__ */ new Set();
   for (const reference of referenced) {
@@ -5752,10 +6241,10 @@ async function inspectTypeDeletion(fs21, level, name) {
     activeOwners: [...ownerMap.values()]
   };
 }
-async function deleteCustomType(fs21, level, name, confirmation) {
-  return withTentMutation(fs21, async () => {
+async function deleteCustomType(fs22, level, name, confirmation) {
+  return withTentMutation(fs22, async () => {
     if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
-    const inspection = await inspectTypeDeletion(fs21, level, name);
+    const inspection = await inspectTypeDeletion(fs22, level, name);
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.activeOwners.length > 0) {
@@ -5763,7 +6252,7 @@ async function deleteCustomType(fs21, level, name, confirmation) {
         `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
       );
     }
-    const tent = await loadTent(fs21);
+    const tent = await loadTent(fs22);
     const rewrites = [];
     for (const node2 of tent.byId.values()) {
       const nextType = retypeAfterMarkerRemoval(node2.type, name);
@@ -5773,32 +6262,32 @@ async function deleteCustomType(fs21, level, name, confirmation) {
         );
       }
       if (nextType === node2.type) continue;
-      rewrites.push(await prepareNodeTypeRewrite(fs21, node2, nextType));
+      rewrites.push(await prepareNodeTypeRewrite(fs22, node2, nextType));
     }
-    const registry = await loadTypeRegistry(fs21);
-    const registryRaw = await fs21.readFile(TYPE_REGISTRY_PATH);
+    const registry = await loadTypeRegistry(fs22);
+    const registryRaw = await fs22.readFile(TYPE_REGISTRY_PATH);
     delete registry[name];
     const changed = [];
     let registryWriteAttempted = false;
     try {
       for (const rewrite of rewrites) {
-        await fs21.writeFile(rewrite.path, rewrite.nextRaw);
+        await fs22.writeFile(rewrite.path, rewrite.nextRaw);
         changed.push(rewrite);
       }
       registryWriteAttempted = true;
-      await writeTypeRegistryUnlocked(fs21, registry);
+      await writeTypeRegistryUnlocked(fs22, registry);
     } catch (error) {
       const rollbackErrors = [];
       if (registryWriteAttempted) {
         try {
-          await fs21.writeFile(TYPE_REGISTRY_PATH, registryRaw);
+          await fs22.writeFile(TYPE_REGISTRY_PATH, registryRaw);
         } catch (rollbackError) {
           rollbackErrors.push(`registry: ${errorMessage(rollbackError)}`);
         }
       }
       for (const rewrite of changed.reverse()) {
         try {
-          await fs21.writeFile(rewrite.path, rewrite.previousRaw);
+          await fs22.writeFile(rewrite.path, rewrite.previousRaw);
         } catch (rollbackError) {
           rollbackErrors.push(`${rewrite.path}: ${errorMessage(rollbackError)}`);
         }
@@ -5822,9 +6311,9 @@ function retypeAfterMarkerRemoval(type, markerName) {
   }
   return type;
 }
-async function prepareNodeTypeRewrite(fs21, node2, nextType) {
+async function prepareNodeTypeRewrite(fs22, node2, nextType) {
   const boxFile = nodeNotePath(node2.path);
-  const raw = await fs21.readFile(boxFile);
+  const raw = await fs22.readFile(boxFile);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   data.type = nextType;
   return {
@@ -5840,12 +6329,12 @@ async function prepareNodeTypeRewrite(fs21, node2, nextType) {
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-async function writeTypeRegistryUnlocked(fs21, registry) {
+async function writeTypeRegistryUnlocked(fs22, registry) {
   const slim = {};
   for (const [name, def] of Object.entries(registry)) {
     slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
   }
-  await fs21.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
+  await fs22.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
 }
 function assertTypeName(name) {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
@@ -5957,7 +6446,7 @@ function normalizeText(text3) {
   }
   return trimmed;
 }
-async function writeRoleCheckpoint(fs21, input) {
+async function writeRoleCheckpoint(fs22, input) {
   const role = assertRoleSegment(input.role);
   const text3 = normalizeText(input.text);
   const pointers = normalizePointers(input.pointers);
@@ -5993,14 +6482,14 @@ Dynamic tail only \u2014 not Delivery, not Task state, not stable Role init.
 
 ${text3}
 `;
-  await fs21.writeFile(path23, serializeFrontmatter(data, body));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body));
   return record;
 }
-async function readRoleCheckpoint(fs21, role) {
+async function readRoleCheckpoint(fs22, role) {
   const name = assertRoleSegment(role);
   const path23 = roleCheckpointPath(name);
-  if (!await fs21.exists(path23)) return null;
-  const raw = await fs21.readFile(path23);
+  if (!await fs22.exists(path23)) return null;
+  const raw = await fs22.readFile(path23);
   const parsed = parseFrontmatter(raw);
   const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
   if (type && type !== ROLE_CHECKPOINT_TYPE) {
@@ -6045,10 +6534,10 @@ async function readRoleCheckpoint(fs21, role) {
   formatRoleCheckpointTail(record);
   return record;
 }
-async function clearRoleCheckpoint(fs21, role) {
+async function clearRoleCheckpoint(fs22, role) {
   const path23 = roleCheckpointPath(role);
-  if (!await fs21.exists(path23)) return false;
-  await fs21.remove(path23);
+  if (!await fs22.exists(path23)) return false;
+  await fs22.remove(path23);
   return true;
 }
 function formatRoleCheckpointTail(record) {
@@ -7061,7 +7550,7 @@ function isNotFound(error) {
 }
 
 // src/service/session-context-generation.ts
-async function requireResolvedRoleFromRegistry(fs21, roleId, reason) {
+async function requireResolvedRoleFromRegistry(fs22, roleId, reason) {
   const key2 = roleId.trim();
   if (!key2) {
     throw new Error(
@@ -7070,7 +7559,7 @@ async function requireResolvedRoleFromRegistry(fs21, roleId, reason) {
   }
   let registry;
   try {
-    registry = await loadRolesRegistry(fs21);
+    registry = await loadRolesRegistry(fs22);
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -7275,7 +7764,7 @@ function bytesEqual(a, b) {
   }
   return true;
 }
-async function storeAttachmentBytes(fs21, nodeId, fileName, bytes, sourceNotePath) {
+async function storeAttachmentBytes(fs22, nodeId, fileName, bytes, sourceNotePath) {
   if (!nodeId.trim()) throw new Error("Node id is required");
   const safe = sanitizeAttachmentFileName(fileName);
   assertAttachmentSize(bytes.byteLength);
@@ -7284,14 +7773,14 @@ async function storeAttachmentBytes(fs21, nodeId, fileName, bytes, sourceNotePat
   if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${nodeId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
     throw new Error(`Attachment path rejected: ${rel}`);
   }
-  if (await fs21.exists(rel)) {
-    const existing = await fs21.readBinary(rel);
+  if (await fs22.exists(rel)) {
+    const existing = await fs22.readBinary(rel);
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
     return attachmentResult(rel, safe, sourceNotePath);
   }
-  await fs21.writeBinary(rel, bytes);
+  await fs22.writeBinary(rel, bytes);
   return attachmentResult(rel, safe, sourceNotePath);
 }
 function markdownAttachmentDestination(destination) {
@@ -9898,7 +10387,7 @@ var attention = {
 };
 function resolveAllAttention(events, context) {
   let index2 = -1;
-  let open4;
+  let open5;
   let group;
   let text3;
   let openingSequence;
@@ -9908,16 +10397,16 @@ function resolveAllAttention(events, context) {
   let offset;
   while (++index2 < events.length) {
     if (events[index2][0] === "enter" && events[index2][1].type === "attentionSequence" && events[index2][1]._close) {
-      open4 = index2;
-      while (open4--) {
-        if (events[open4][0] === "exit" && events[open4][1].type === "attentionSequence" && events[open4][1]._open && // If the markers are the same:
-        context.sliceSerialize(events[open4][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
-          if ((events[open4][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open4][1].end.offset - events[open4][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
+      open5 = index2;
+      while (open5--) {
+        if (events[open5][0] === "exit" && events[open5][1].type === "attentionSequence" && events[open5][1]._open && // If the markers are the same:
+        context.sliceSerialize(events[open5][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
+          if ((events[open5][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open5][1].end.offset - events[open5][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
             continue;
           }
-          use = events[open4][1].end.offset - events[open4][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
+          use = events[open5][1].end.offset - events[open5][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
           const start = {
-            ...events[open4][1].end
+            ...events[open5][1].end
           };
           const end = {
             ...events[index2][1].start
@@ -9928,7 +10417,7 @@ function resolveAllAttention(events, context) {
             type: use > 1 ? "strongSequence" : "emphasisSequence",
             start,
             end: {
-              ...events[open4][1].end
+              ...events[open5][1].end
             }
           };
           closingSequence = {
@@ -9941,7 +10430,7 @@ function resolveAllAttention(events, context) {
           text3 = {
             type: use > 1 ? "strongText" : "emphasisText",
             start: {
-              ...events[open4][1].end
+              ...events[open5][1].end
             },
             end: {
               ...events[index2][1].start
@@ -9956,18 +10445,18 @@ function resolveAllAttention(events, context) {
               ...closingSequence.end
             }
           };
-          events[open4][1].end = {
+          events[open5][1].end = {
             ...openingSequence.start
           };
           events[index2][1].start = {
             ...closingSequence.end
           };
           nextEvents = [];
-          if (events[open4][1].end.offset - events[open4][1].start.offset) {
-            nextEvents = push(nextEvents, [["enter", events[open4][1], context], ["exit", events[open4][1], context]]);
+          if (events[open5][1].end.offset - events[open5][1].start.offset) {
+            nextEvents = push(nextEvents, [["enter", events[open5][1], context], ["exit", events[open5][1], context]]);
           }
           nextEvents = push(nextEvents, [["enter", group, context], ["enter", openingSequence, context], ["exit", openingSequence, context], ["enter", text3, context]]);
-          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open4 + 1, index2), context));
+          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open5 + 1, index2), context));
           nextEvents = push(nextEvents, [["exit", text3, context], ["enter", closingSequence, context], ["exit", closingSequence, context], ["exit", group, context]]);
           if (events[index2][1].end.offset - events[index2][1].start.offset) {
             offset = 2;
@@ -9975,8 +10464,8 @@ function resolveAllAttention(events, context) {
           } else {
             offset = 0;
           }
-          splice(events, open4 - 1, index2 - open4 + 3, nextEvents);
-          index2 = open4 + nextEvents.length - offset - 2;
+          splice(events, open5 - 1, index2 - open5 + 3, nextEvents);
+          index2 = open5 + nextEvents.length - offset - 2;
           break;
         }
       }
@@ -10008,10 +10497,10 @@ function tokenizeAttention(effects, ok2) {
     }
     const token = effects.exit("attentionSequence");
     const after = classifyCharacter(code);
-    const open4 = !after || after === 2 && before || attentionMarkers2.includes(code);
+    const open5 = !after || after === 2 && before || attentionMarkers2.includes(code);
     const close = !before || before === 2 && after || attentionMarkers2.includes(previous2);
-    token._open = Boolean(marker === 42 ? open4 : open4 && (before || !close));
-    token._close = Boolean(marker === 42 ? close : close && (after || !open4));
+    token._open = Boolean(marker === 42 ? open5 : open5 && (before || !close));
+    token._close = Boolean(marker === 42 ? close : close && (after || !open5));
     return ok2(code);
   }
 }
@@ -10035,9 +10524,9 @@ function tokenizeAutolink(effects, ok2, nok) {
     effects.consume(code);
     effects.exit("autolinkMarker");
     effects.enter("autolinkProtocol");
-    return open4;
+    return open5;
   }
-  function open4(code) {
+  function open5(code) {
     if (asciiAlpha(code)) {
       effects.consume(code);
       return schemeOrEmailAtext;
@@ -10237,9 +10726,9 @@ function tokenizeCharacterReference(effects, ok2, nok) {
     effects.enter("characterReferenceMarker");
     effects.consume(code);
     effects.exit("characterReferenceMarker");
-    return open4;
+    return open5;
   }
-  function open4(code) {
+  function open5(code) {
     if (code === 35) {
       effects.enter("characterReferenceMarkerNumeric");
       effects.consume(code);
@@ -11608,9 +12097,9 @@ function tokenizeHtmlFlow(effects, ok2, nok) {
     effects.enter("htmlFlow");
     effects.enter("htmlFlowData");
     effects.consume(code);
-    return open4;
+    return open5;
   }
-  function open4(code) {
+  function open5(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -11958,9 +12447,9 @@ function tokenizeHtmlText(effects, ok2, nok) {
     effects.enter("htmlText");
     effects.enter("htmlTextData");
     effects.consume(code);
-    return open4;
+    return open5;
   }
-  function open4(code) {
+  function open5(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -12286,12 +12775,12 @@ function resolveToLabelEnd(events, context) {
   let index2 = events.length;
   let offset = 0;
   let token;
-  let open4;
+  let open5;
   let close;
   let media;
   while (index2--) {
     token = events[index2][1];
-    if (open4) {
+    if (open5) {
       if (token.type === "link" || token.type === "labelLink" && token._inactive) {
         break;
       }
@@ -12300,7 +12789,7 @@ function resolveToLabelEnd(events, context) {
       }
     } else if (close) {
       if (events[index2][0] === "enter" && (token.type === "labelImage" || token.type === "labelLink") && !token._balanced) {
-        open4 = index2;
+        open5 = index2;
         if (token.type !== "labelLink") {
           offset = 2;
           break;
@@ -12311,9 +12800,9 @@ function resolveToLabelEnd(events, context) {
     }
   }
   const group = {
-    type: events[open4][1].type === "labelLink" ? "link" : "image",
+    type: events[open5][1].type === "labelLink" ? "link" : "image",
     start: {
-      ...events[open4][1].start
+      ...events[open5][1].start
     },
     end: {
       ...events[events.length - 1][1].end
@@ -12322,7 +12811,7 @@ function resolveToLabelEnd(events, context) {
   const label = {
     type: "label",
     start: {
-      ...events[open4][1].start
+      ...events[open5][1].start
     },
     end: {
       ...events[close][1].end
@@ -12331,20 +12820,20 @@ function resolveToLabelEnd(events, context) {
   const text3 = {
     type: "labelText",
     start: {
-      ...events[open4 + offset + 2][1].end
+      ...events[open5 + offset + 2][1].end
     },
     end: {
       ...events[close - 2][1].start
     }
   };
   media = [["enter", group, context], ["enter", label, context]];
-  media = push(media, events.slice(open4 + 1, open4 + offset + 3));
+  media = push(media, events.slice(open5 + 1, open5 + offset + 3));
   media = push(media, [["enter", text3, context]]);
-  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open4 + offset + 4, close - 3), context));
+  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open5 + offset + 4, close - 3), context));
   media = push(media, [["exit", text3, context], events[close - 2], events[close - 1], ["exit", label, context]]);
   media = push(media, events.slice(close + 1));
   media = push(media, [["exit", group, context]]);
-  splice(events, open4, events.length, media);
+  splice(events, open5, events.length, media);
   return events;
 }
 function tokenizeLabelEnd(effects, ok2, nok) {
@@ -12489,9 +12978,9 @@ function tokenizeLabelStartImage(effects, ok2, nok) {
     effects.enter("labelImageMarker");
     effects.consume(code);
     effects.exit("labelImageMarker");
-    return open4;
+    return open5;
   }
-  function open4(code) {
+  function open5(code) {
     if (code === 91) {
       effects.enter("labelMarker");
       effects.consume(code);
@@ -13795,8 +14284,8 @@ function compiler(options) {
     return length;
   }
   function opener(create, and) {
-    return open4;
-    function open4(token) {
+    return open5;
+    function open5(token) {
       enter.call(this, create(token), token);
       if (and) and.call(this, token);
     }
@@ -13828,18 +14317,18 @@ function compiler(options) {
   }
   function exit2(token, onExitError) {
     const node2 = this.stack.pop();
-    const open4 = this.tokenStack.pop();
-    if (!open4) {
+    const open5 = this.tokenStack.pop();
+    if (!open5) {
       throw new Error("Cannot close `" + token.type + "` (" + stringifyPosition({
         start: token.start,
         end: token.end
       }) + "): it\u2019s not open");
-    } else if (open4[0].type !== token.type) {
+    } else if (open5[0].type !== token.type) {
       if (onExitError) {
-        onExitError.call(this, token, open4[0]);
+        onExitError.call(this, token, open5[0]);
       } else {
-        const handler = open4[1] || defaultOnError;
-        handler.call(this, token, open4[0]);
+        const handler = open5[1] || defaultOnError;
+        handler.call(this, token, open5[0]);
       }
     }
     node2.position.end = point2(token.end);
@@ -15145,22 +15634,22 @@ function parseAcpSessionConfigSnapshot(value) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs21, clock, role, nodeId, body) {
-  return withTentMutation(fs21, async () => submitProposalUnlocked(fs21, clock, role, nodeId, body));
+async function submitProposal(fs22, clock, role, nodeId, body) {
+  return withTentMutation(fs22, async () => submitProposalUnlocked(fs22, clock, role, nodeId, body));
 }
-async function submitProposalUnlocked(fs21, clock, roleInput, nodeId, body) {
+async function submitProposalUnlocked(fs22, clock, roleInput, nodeId, body) {
   const text3 = body.trim();
   if (!text3) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs21);
+  const tent = await loadTent(fs22);
   if (tent.duplicateIds.has(nodeId)) {
     throw new Error(`Duplicate Node id '${nodeId}' found; repair the duplicate Nodes before using this id.`);
   }
   const node2 = tent.byId.get(nodeId);
   if (!node2) throw new Error(`Node not found: ${nodeId}.`);
   const path23 = proposalPath(role, node2.id);
-  if (await fs21.exists(path23)) {
-    const current = await loadProposal(fs21, path23);
+  if (await fs22.exists(path23)) {
+    const current = await loadProposal(fs22, path23);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
@@ -15171,32 +15660,32 @@ async function submitProposalUnlocked(fs21, clock, roleInput, nodeId, body) {
     createdAt: clock.now(),
     body: text3
   };
-  await ensureDir4(fs21, join("temp", role, "proposals"));
-  await writeProposal(fs21, proposal);
+  await ensureDir4(fs22, join("temp", role, "proposals"));
+  await writeProposal(fs22, proposal);
   return proposal;
 }
-async function loadProposals(fs21) {
+async function loadProposals(fs22) {
   const proposals = [];
-  if (!await fs21.exists("temp")) return proposals;
-  for (const roleDir of await fs21.listDir("temp")) {
+  if (!await fs22.exists("temp")) return proposals;
+  for (const roleDir of await fs22.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs21.exists(dir)) continue;
-    for (const entry of await fs21.listDir(dir)) {
+    if (!await fs22.exists(dir)) continue;
+    for (const entry of await fs22.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
       const path23 = join(dir, entry.name);
       try {
-        proposals.push(await loadProposal(fs21, path23));
+        proposals.push(await loadProposal(fs22, path23));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs21, inputPath) {
+async function loadProposal(fs22, inputPath) {
   const path23 = normalizeProposalPath(inputPath);
-  if (!await fs21.exists(path23)) throw new Error(`Proposal not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs21.readFile(path23));
+  if (!await fs22.exists(path23)) throw new Error(`Proposal not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "proposal" || typeof data.nodeId !== "string" || !isNodeId(data.nodeId) || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
     throw new Error(`Invalid proposal format: ${path23}.`);
   }
@@ -15209,20 +15698,20 @@ async function loadProposal(fs21, inputPath) {
     body: body.trim()
   };
 }
-async function acceptProposal(fs21, inputPath) {
-  await withTentMutation(fs21, async () => {
-    const proposal = await loadProposal(fs21, inputPath);
+async function acceptProposal(fs22, inputPath) {
+  await withTentMutation(fs22, async () => {
+    const proposal = await loadProposal(fs22, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
     proposal.status = "accepted";
-    await writeProposal(fs21, proposal);
+    await writeProposal(fs22, proposal);
   });
 }
-async function rejectProposal(fs21, inputPath) {
-  await withTentMutation(fs21, async () => {
-    const proposal = await loadProposal(fs21, inputPath);
+async function rejectProposal(fs22, inputPath) {
+  await withTentMutation(fs22, async () => {
+    const proposal = await loadProposal(fs22, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
     proposal.status = "rejected";
-    await writeProposal(fs21, proposal);
+    await writeProposal(fs22, proposal);
   });
 }
 function proposalPath(role, nodeId) {
@@ -15236,7 +15725,7 @@ function normalizeProposalPath(input) {
   }
   return path23;
 }
-async function writeProposal(fs21, proposal) {
+async function writeProposal(fs22, proposal) {
   const data = {
     type: "proposal",
     nodeId: proposal.nodeId,
@@ -15244,13 +15733,13 @@ async function writeProposal(fs21, proposal) {
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs21.writeFile(
+  await fs22.writeFile(
     proposal.path,
     serializeFrontmatter(data, proposal.body + "\n", ["type", "nodeId", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs21, path23) {
-  if (!await fs21.exists(path23)) await fs21.mkdir(path23);
+async function ensureDir4(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
@@ -16062,16 +16551,16 @@ function isTerminalTaskState(state) {
 function isPurgeableDeliveryStatus(status) {
   return TERMINAL_DELIVERY_STATUSES.has(status);
 }
-async function previewOperationalRetention(fs21, options = {}) {
+async function previewOperationalRetention(fs22, options = {}) {
   const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
   const nowMs = resolveNowMs(options.now);
   const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
   const cutoff = new Date(cutoffMs).toISOString();
   const skipped = [];
   const warnings = [];
-  const { tasks, skipped: taskSkipped } = await scanTasks(fs21);
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs22);
   skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs21);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs22);
   skipped.push(...deliverySkipped);
   for (const s of skipped) {
     warnings.push(`skipped ${s.path}: ${s.reason}`);
@@ -16094,7 +16583,7 @@ async function previewOperationalRetention(fs21, options = {}) {
   const claimedDeliveryPaths = /* @__PURE__ */ new Set();
   let pinnedDeliveryIds;
   try {
-    const tent = await loadTent(fs21);
+    const tent = await loadTent(fs22);
     pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
   } catch (err) {
     throw new RetentionError(
@@ -16217,15 +16706,15 @@ async function previewOperationalRetention(fs21, options = {}) {
     candidateDeliveryCount
   };
 }
-async function purgeOperationalRetention(fs21, options = {}) {
-  return withTentMutation(fs21, async () => {
-    const preview = await previewOperationalRetention(fs21, options);
+async function purgeOperationalRetention(fs22, options = {}) {
+  return withTentMutation(fs22, async () => {
+    const preview = await previewOperationalRetention(fs22, options);
     const purgedTaskPaths = [];
     const purgedDeliveryPaths = [];
     for (const c of preview.candidates) {
       if (c.kind === "task-group" && c.taskPath) {
         try {
-          const live = await loadTaskEnvelope(fs21, c.taskPath);
+          const live = await loadTaskEnvelope(fs22, c.taskPath);
           if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
             preview.warnings.push(
               `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
@@ -16241,7 +16730,7 @@ async function purgeOperationalRetention(fs21, options = {}) {
         let deliveryValidationFailed = false;
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs21, dp);
+            const liveD = await loadDelivery(fs22, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
@@ -16259,8 +16748,8 @@ async function purgeOperationalRetention(fs21, options = {}) {
         }
         if (deliveryValidationFailed) continue;
         try {
-          if (await fs21.exists(c.taskPath)) {
-            await fs21.remove(c.taskPath);
+          if (await fs22.exists(c.taskPath)) {
+            await fs22.remove(c.taskPath);
             purgedTaskPaths.push(c.taskPath);
           }
         } catch (err) {
@@ -16271,8 +16760,8 @@ async function purgeOperationalRetention(fs21, options = {}) {
         }
         for (const dp of c.deliveryPaths) {
           try {
-            if (await fs21.exists(dp)) {
-              await fs21.remove(dp);
+            if (await fs22.exists(dp)) {
+              await fs22.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -16286,15 +16775,15 @@ async function purgeOperationalRetention(fs21, options = {}) {
       if (c.kind === "orphan-delivery") {
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs21, dp);
+            const liveD = await loadDelivery(fs22, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of delivery ${dp}: status=${liveD.status}`
               );
               continue;
             }
-            if (await fs21.exists(dp)) {
-              await fs21.remove(dp);
+            if (await fs22.exists(dp)) {
+              await fs22.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -16316,14 +16805,14 @@ async function purgeOperationalRetention(fs21, options = {}) {
     };
   });
 }
-async function scanTasks(fs21) {
+async function scanTasks(fs22) {
   const tasks = [];
   const skipped = [];
-  if (!await fs21.exists("temp")) return { tasks, skipped };
-  for (const namespace of await fs21.listDir("temp")) {
+  if (!await fs22.exists("temp")) return { tasks, skipped };
+  for (const namespace of await fs22.listDir("temp")) {
     if (!namespace.isDir || namespace.name !== "roles" && namespace.name !== "sessions") continue;
     const namespaceRoot = join("temp", namespace.name);
-    for (const ownerEntry of await fs21.listDir(namespaceRoot)) {
+    for (const ownerEntry of await fs22.listDir(namespaceRoot)) {
       if (!ownerEntry.isDir) continue;
       if (!isSafeRoleSegment(ownerEntry.name)) {
         skipped.push({
@@ -16332,18 +16821,18 @@ async function scanTasks(fs21) {
         });
         continue;
       }
-      await scanTaskDir(fs21, join(namespaceRoot, ownerEntry.name, "tasks"), tasks, skipped);
+      await scanTaskDir(fs22, join(namespaceRoot, ownerEntry.name, "tasks"), tasks, skipped);
     }
   }
   return { tasks, skipped };
 }
-async function scanTaskDir(fs21, taskDir, tasks, skipped) {
-  if (!await fs21.exists(taskDir)) return;
-  for (const entry of await fs21.listDir(taskDir)) {
+async function scanTaskDir(fs22, taskDir, tasks, skipped) {
+  if (!await fs22.exists(taskDir)) return;
+  for (const entry of await fs22.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path23 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs21, path23));
+      tasks.push(await loadTaskEnvelope(fs22, path23));
     } catch (err) {
       skipped.push({
         path: path23,
@@ -16352,14 +16841,14 @@ async function scanTaskDir(fs21, taskDir, tasks, skipped) {
     }
   }
 }
-async function scanDeliveries(fs21) {
+async function scanDeliveries(fs22) {
   const deliveries = [];
   const skipped = [];
-  if (!await fs21.exists("temp")) return { deliveries, skipped };
-  for (const namespace of await fs21.listDir("temp")) {
+  if (!await fs22.exists("temp")) return { deliveries, skipped };
+  for (const namespace of await fs22.listDir("temp")) {
     if (!namespace.isDir || namespace.name !== "roles" && namespace.name !== "sessions") continue;
     const namespaceRoot = join("temp", namespace.name);
-    for (const ownerEntry of await fs21.listDir(namespaceRoot)) {
+    for (const ownerEntry of await fs22.listDir(namespaceRoot)) {
       if (!ownerEntry.isDir) continue;
       if (!isSafeRoleSegment(ownerEntry.name)) {
         skipped.push({
@@ -16369,7 +16858,7 @@ async function scanDeliveries(fs21) {
         continue;
       }
       await scanDeliveryDir(
-        fs21,
+        fs22,
         join(namespaceRoot, ownerEntry.name, "deliveries"),
         deliveries,
         skipped
@@ -16378,13 +16867,13 @@ async function scanDeliveries(fs21) {
   }
   return { deliveries, skipped };
 }
-async function scanDeliveryDir(fs21, dir, deliveries, skipped) {
-  if (!await fs21.exists(dir)) return;
-  for (const entry of await fs21.listDir(dir)) {
+async function scanDeliveryDir(fs22, dir, deliveries, skipped) {
+  if (!await fs22.exists(dir)) return;
+  for (const entry of await fs22.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path23 = join(dir, entry.name);
     try {
-      deliveries.push(await loadDelivery(fs21, path23));
+      deliveries.push(await loadDelivery(fs22, path23));
     } catch (err) {
       skipped.push({
         path: path23,
@@ -17044,9 +17533,9 @@ async function reclaimTaskWorktree(input) {
     };
   }
 }
-async function reclaimTaskWorktreeForEnvelope(fs21, workspaceRoot, task, options = {}) {
+async function reclaimTaskWorktreeForEnvelope(fs22, workspaceRoot, task, options = {}) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs21, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
   return reclaimTaskWorktree({
     workspaceRoot,
     task,
@@ -17076,9 +17565,9 @@ async function probeSessionSettledBeforeRemove(input, diagnostic) {
     }
   };
 }
-async function evaluateTaskWorktreeReclaimForEnvelope(fs21, workspaceRoot, task) {
+async function evaluateTaskWorktreeReclaimForEnvelope(fs22, workspaceRoot, task) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs21, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
   return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
 }
 async function removeTaskLaneDirectorySafe(lanePath, options = {}) {
@@ -17132,13 +17621,13 @@ async function evaluateAcceptedSettle(input) {
     };
   }
   const related = input.deliveries.filter((d) => d.taskId === input.taskId);
-  const open4 = related.filter((d) => d.status === "ready" || d.status === "draft");
-  if (open4.length > 0) {
+  const open5 = related.filter((d) => d.status === "ready" || d.status === "draft");
+  if (open5.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Accepted Task still has ${open4.length} open delivery(ies); refuse reclaim.`,
-      details: { deliveryIds: open4.map((d) => d.id) }
+      reason: `Accepted Task still has ${open5.length} open delivery(ies); refuse reclaim.`,
+      details: { deliveryIds: open5.map((d) => d.id) }
     };
   }
   const accepted = related.filter((d) => d.status === "accepted");
@@ -17498,8 +17987,8 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
   "task-worktree-reclaim-pending.json"
 );
 var queueChains = /* @__PURE__ */ new WeakMap();
-function withQueueCriticalSection(fs21, fn) {
-  const key2 = fs21;
+function withQueueCriticalSection(fs22, fn) {
+  const key2 = fs22;
   const prev = queueChains.get(key2) ?? Promise.resolve();
   const run = prev.then(fn, fn);
   queueChains.set(
@@ -17553,11 +18042,11 @@ function parseEntry(raw) {
     ...lastDiagnostic ? { lastDiagnostic } : {}
   };
 }
-async function readPending(fs21) {
-  if (!await fs21.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
+async function readPending(fs22) {
+  if (!await fs22.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
     return emptyFile();
   }
-  const raw = await fs21.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
+  const raw = await fs22.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -17579,26 +18068,26 @@ async function readPending(fs21) {
   }
   return { version: 1, entries };
 }
-async function writePending(fs21, file) {
+async function writePending(fs22, file) {
   const bodyObj = {
     version: 1,
     entries: file.entries
   };
   const body = JSON.stringify(bodyObj, null, 2) + "\n";
-  if (!await fs21.exists(TEMP_DIR)) {
-    await fs21.writeFile(join(TEMP_DIR, ".keep"), "");
+  if (!await fs22.exists(TEMP_DIR)) {
+    await fs22.writeFile(join(TEMP_DIR, ".keep"), "");
   }
-  await fs21.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
+  await fs22.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
 }
-async function enqueueTaskWorktreeReclaimPending(fs21, entry) {
+async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
   const taskId = entry.taskId.trim();
   const taskPath = entry.taskPath.trim();
   const workspaceRoot = entry.workspaceRoot.trim();
   if (!taskId || !taskPath || !workspaceRoot) {
     throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
   }
-  return withQueueCriticalSection(fs21, async () => {
-    const file = await readPending(fs21);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const next = {
       taskId,
       taskPath,
@@ -17610,22 +18099,22 @@ async function enqueueTaskWorktreeReclaimPending(fs21, entry) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs21, { version: 1, entries: without });
+    await writePending(fs22, { version: 1, entries: without });
     return next;
   });
 }
-async function dequeueTaskWorktreeReclaimPending(fs21, taskId) {
+async function dequeueTaskWorktreeReclaimPending(fs22, taskId) {
   const id = taskId.trim();
   if (!id) return false;
-  return withQueueCriticalSection(fs21, async () => {
-    const file = await readPending(fs21);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const next = file.entries.filter((e) => e.taskId !== id);
     if (next.length === file.entries.length) return false;
-    await writePending(fs21, { version: 1, entries: next });
+    await writePending(fs22, { version: 1, entries: next });
     return true;
   });
 }
-async function recordTaskWorktreeReclaimNeedsAttention(fs21, input) {
+async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
   const taskId = input.taskId.trim();
   const taskPath = input.taskPath.trim();
   const workspaceRoot = input.workspaceRoot.trim();
@@ -17637,8 +18126,8 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs21, input) {
     reason: input.reason,
     attemptedAt
   };
-  return withQueueCriticalSection(fs21, async () => {
-    const file = await readPending(fs21);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const existing = file.entries.find((e) => e.taskId === taskId);
     const next = {
       taskId,
@@ -17652,19 +18141,19 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs21, input) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs21, { version: 1, entries: without });
+    await writePending(fs22, { version: 1, entries: without });
     return next;
   });
 }
-async function listTaskWorktreeReclaimPending(fs21) {
-  return withQueueCriticalSection(fs21, async () => {
-    const file = await readPending(fs21);
+async function listTaskWorktreeReclaimPending(fs22) {
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     return [...file.entries];
   });
 }
-async function listTaskWorktreeReclaimPendingForWorkspace(fs21, workspaceRoot, sameRoot) {
+async function listTaskWorktreeReclaimPendingForWorkspace(fs22, workspaceRoot, sameRoot) {
   const root = workspaceRoot.trim();
-  const all2 = await listTaskWorktreeReclaimPending(fs21);
+  const all2 = await listTaskWorktreeReclaimPending(fs22);
   return all2.filter((e) => sameRoot(e.workspaceRoot, root));
 }
 
@@ -17702,17 +18191,17 @@ function normalizeWorkspaceSettings(value) {
 function defaultWorkspaceSettings() {
   return { ...DEFAULT_SETTINGS };
 }
-async function loadWorkspaceSettings(fs21) {
-  if (!await fs21.exists(WORKSPACE_SETTINGS_PATH)) {
+async function loadWorkspaceSettings(fs22) {
+  if (!await fs22.exists(WORKSPACE_SETTINGS_PATH)) {
     return defaultWorkspaceSettings();
   }
   let parsed;
   try {
-    parsed = JSON.parse(await fs21.readFile(WORKSPACE_SETTINGS_PATH));
+    parsed = JSON.parse(await fs22.readFile(WORKSPACE_SETTINGS_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs21, WORKSPACE_SETTINGS_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, WORKSPACE_SETTINGS_PATH);
     const reset = defaultWorkspaceSettings();
-    await writeSettingsUnlocked(fs21, reset);
+    await writeSettingsUnlocked(fs22, reset);
     warnRegistryRecovered(
       WORKSPACE_SETTINGS_PATH,
       backupPath,
@@ -17723,15 +18212,15 @@ async function loadWorkspaceSettings(fs21) {
   }
   return normalizeWorkspaceSettings(parsed);
 }
-async function updateWorkspaceSettings(fs21, patch) {
-  return withTentMutation(fs21, async () => {
+async function updateWorkspaceSettings(fs22, patch) {
+  return withTentMutation(fs22, async () => {
     if (!isRecord6(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
       );
     }
-    const before = await loadWorkspaceSettings(fs21);
+    const before = await loadWorkspaceSettings(fs22);
     const nextRaw = { ...before };
     for (const [key2, value] of Object.entries(patch)) {
       if (key2 === "defaultAcceptMode") {
@@ -17751,7 +18240,7 @@ async function updateWorkspaceSettings(fs21, patch) {
     const next = normalizeWorkspaceSettings(nextRaw);
     const changed = !settingsEqual(before, next);
     if (changed) {
-      await writeSettingsUnlocked(fs21, next);
+      await writeSettingsUnlocked(fs22, next);
     }
     return { settings: next, changed };
   });
@@ -17763,7 +18252,7 @@ var WorkspaceSettingsError = class extends Error {
     this.name = "WorkspaceSettingsError";
   }
 };
-async function writeSettingsUnlocked(fs21, settings) {
+async function writeSettingsUnlocked(fs22, settings) {
   const known = ["defaultAcceptMode"];
   const ordered = {};
   for (const key2 of known) {
@@ -17773,7 +18262,7 @@ async function writeSettingsUnlocked(fs21, settings) {
   for (const key2 of rest) {
     ordered[key2] = settings[key2];
   }
-  await fs21.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs22.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
 function settingsEqual(a, b) {
   return stableStringify(a) === stableStringify(b);
@@ -17981,7 +18470,7 @@ function parseAnnotationFile(value) {
 function emptyFile2() {
   return { annotations: [] };
 }
-async function writeFileUnlocked(fs21, file) {
+async function writeFileUnlocked(fs22, file) {
   const ordered = {
     annotations: file.annotations.map((a) => {
       const row = {
@@ -18001,14 +18490,14 @@ async function writeFileUnlocked(fs21, file) {
       return row;
     })
   };
-  await fs21.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs22.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
-async function loadAnnotations(fs21) {
-  if (!await fs21.exists(ANNOTATIONS_PATH)) {
+async function loadAnnotations(fs22) {
+  if (!await fs22.exists(ANNOTATIONS_PATH)) {
     return emptyFile2();
   }
   try {
-    const parsed = JSON.parse(await fs21.readFile(ANNOTATIONS_PATH));
+    const parsed = JSON.parse(await fs22.readFile(ANNOTATIONS_PATH));
     const file = parseAnnotationFile(parsed);
     if (!file) {
       throw new Error("invalid annotation file shape");
@@ -18017,9 +18506,9 @@ async function loadAnnotations(fs21) {
       annotations: file.annotations.map(cloneRecord)
     };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs21, ANNOTATIONS_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, ANNOTATIONS_PATH);
     const reset = emptyFile2();
-    await writeFileUnlocked(fs21, reset);
+    await writeFileUnlocked(fs22, reset);
     warnRegistryRecovered(
       ANNOTATIONS_PATH,
       backupPath,
@@ -18029,12 +18518,12 @@ async function loadAnnotations(fs21) {
     return reset;
   }
 }
-async function listAnnotationRecords(fs21, nodeId) {
-  const file = await loadAnnotations(fs21);
+async function listAnnotationRecords(fs22, nodeId) {
+  const file = await loadAnnotations(fs22);
   const rows = nodeId ? file.annotations.filter((a) => a.nodeId === nodeId) : file.annotations;
   return rows.map(cloneRecord);
 }
-async function createAnnotation(fs21, input, opts) {
+async function createAnnotation(fs22, input, opts) {
   const clock = opts?.clock ?? defaultClock();
   const rand = opts?.rand ?? Math.random;
   if (!isRequiredString(input.nodeId)) {
@@ -18050,8 +18539,8 @@ async function createAnnotation(fs21, input, opts) {
     throw new AnnotationError("INVALID_INPUT", "quote must be a non-empty string");
   }
   validateAnnotationAnchor(input.documentBody, input.quote, input.start, input.end);
-  return withTentMutation(fs21, async () => {
-    const file = await loadAnnotations(fs21);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const existing = new Set(file.annotations.map((a) => a.id));
     const now = clock.now();
     const record = {
@@ -18068,14 +18557,14 @@ async function createAnnotation(fs21, input, opts) {
       updatedAt: now
     };
     file.annotations.push(record);
-    await writeFileUnlocked(fs21, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(record);
   });
 }
-async function resolveAnnotation(fs21, id, opts) {
+async function resolveAnnotation(fs22, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs21, async () => {
-    const file = await loadAnnotations(fs21);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -18092,14 +18581,14 @@ async function resolveAnnotation(fs21, id, opts) {
       resolvedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs21, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(next);
   });
 }
-async function reopenAnnotation(fs21, id, opts) {
+async function reopenAnnotation(fs22, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs21, async () => {
-    const file = await loadAnnotations(fs21);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -18121,7 +18610,7 @@ async function reopenAnnotation(fs21, id, opts) {
       };
       if (current.resolvedAt !== void 0) {
         file.annotations[idx] = cleaned;
-        await writeFileUnlocked(fs21, file);
+        await writeFileUnlocked(fs22, file);
       }
       return cloneRecord(file.annotations[idx]);
     }
@@ -18140,17 +18629,17 @@ async function reopenAnnotation(fs21, id, opts) {
       updatedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs21, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(next);
   });
 }
-async function deleteAnnotation(fs21, id) {
-  return withTentMutation(fs21, async () => {
-    const file = await loadAnnotations(fs21);
+async function deleteAnnotation(fs22, id) {
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) return null;
     const [removed] = file.annotations.splice(idx, 1);
-    await writeFileUnlocked(fs21, file);
+    await writeFileUnlocked(fs22, file);
     return removed ? cloneRecord(removed) : null;
   });
 }
@@ -18858,7 +19347,7 @@ function add(index2, key2, concept) {
 }
 
 // src/service/decision-request-store.ts
-import * as fs6 from "node:fs/promises";
+import * as fs7 from "node:fs/promises";
 import * as path7 from "node:path";
 
 // src/core/decision-request.ts
@@ -19028,7 +19517,105 @@ function escalateDecisionRequest(request) {
   };
 }
 
+// src/service/authority-store-corruption.ts
+import * as fs6 from "node:fs/promises";
+var LATCH_SUFFIX = ".corrupt-latch.json";
+var MAX_LATCH_BYTES = 4096;
+var AuthorityStoreCorruptError = class extends Error {
+  constructor(code, filePath, reason, backupPath) {
+    super(`${code}: ${reason}`);
+    this.code = code;
+    this.filePath = filePath;
+    this.reason = reason;
+    this.backupPath = backupPath;
+    this.name = "AuthorityStoreCorruptError";
+  }
+};
+function latchPath(filePath) {
+  return `${filePath}${LATCH_SUFFIX}`;
+}
+async function readBoundedUtf8(filePath) {
+  const handle = await fs6.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(MAX_LATCH_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.length - offset,
+        offset
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_LATCH_BYTES) {
+      throw new Error("corruption latch exceeds byte bound");
+    }
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+async function readAuthorityStoreCorruption(filePath, expectedCode) {
+  const file = latchPath(filePath);
+  let raw;
+  try {
+    raw = await readBoundedUtf8(file);
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    return new AuthorityStoreCorruptError(
+      expectedCode,
+      filePath,
+      "persisted corruption latch is unreadable"
+    );
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    const row = parsed;
+    if (Object.keys(row).some((key2) => !["code", "reason", "createdAt"].includes(key2)) || row.code !== expectedCode || typeof row.reason !== "string" || !row.reason || Buffer.byteLength(row.reason, "utf8") > 256 || typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt))) {
+      throw new Error();
+    }
+    return new AuthorityStoreCorruptError(
+      expectedCode,
+      filePath,
+      row.reason
+    );
+  } catch {
+    return new AuthorityStoreCorruptError(
+      expectedCode,
+      filePath,
+      "persisted corruption latch is invalid"
+    );
+  }
+}
+async function persistAuthorityStoreCorruption(filePath, code, reason, options) {
+  const file = latchPath(filePath);
+  try {
+    await (options?.writeLatch ?? writeJsonAtomic)(file, {
+      code,
+      reason,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  } catch {
+    return new AuthorityStoreCorruptError(
+      code,
+      filePath,
+      `${reason}; corruption latch persistence failed`
+    );
+  }
+  let backupPath;
+  try {
+    backupPath = await backupCorruptMachineFile(filePath);
+    warnCorruptMachineState(filePath, backupPath, "ignored");
+  } catch {
+  }
+  return new AuthorityStoreCorruptError(code, filePath, reason, backupPath);
+}
+
 // src/service/decision-request-store.ts
+var DECISION_REQUEST_STORE_CORRUPT = "DECISION_REQUEST_STORE_CORRUPT";
 var PENDING_FIELDS = /* @__PURE__ */ new Set([
   "id",
   "taskId",
@@ -19113,6 +19700,7 @@ var DecisionRequestStore = class {
   constructor(dataDir, options) {
     this.items = /* @__PURE__ */ new Map();
     this.loaded = false;
+    this.corruptError = null;
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
@@ -19128,29 +19716,35 @@ var DecisionRequestStore = class {
     return run;
   }
   async ensureLoaded() {
+    this.throwIfCorrupt();
     if (this.loaded) return;
     await this.enqueue(async () => {
+      this.throwIfCorrupt();
       if (this.loaded) return;
+      const persistedCorruption = await readAuthorityStoreCorruption(
+        this.file,
+        DECISION_REQUEST_STORE_CORRUPT
+      );
+      if (persistedCorruption) {
+        this.corruptError = persistedCorruption;
+        this.items.clear();
+        this.loaded = true;
+        return;
+      }
       try {
-        const raw = await fs6.readFile(this.file, "utf8");
+        const raw = await fs7.readFile(this.file, "utf8");
         const parsed = JSON.parse(raw);
         if (!isRecord9(parsed) || Object.keys(parsed).some((key2) => key2 !== "items")) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("root must contain only items");
         }
         if (!Array.isArray(parsed.items)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("items must be an array");
         }
         const loaded = /* @__PURE__ */ new Map();
         for (const item of parsed.items) {
           const record = parseRecord(item);
           if (!record || loaded.has(record.id)) {
-            await this.quarantineCorrupt();
-            this.loaded = true;
-            return;
+            return this.latchCorrupt("items contains an invalid or duplicate row");
           }
           loaded.set(record.id, record);
         }
@@ -19162,28 +19756,26 @@ var DecisionRequestStore = class {
           return;
         }
         if (error instanceof SyntaxError) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("invalid JSON");
         }
         throw error;
       }
     });
   }
   async listPending(workspaceId) {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()].filter(
       (item) => item.status === "pending" && (workspaceId === void 0 || item.workspaceId === workspaceId)
     ).map(cloneRecord2);
   }
   async getExact(workspaceId, taskPath, requestId) {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = this.items.get(requestId);
     if (!item || item.workspaceId !== workspaceId || item.taskPath !== taskPath) return void 0;
     return cloneRecord2(item);
   }
   async getPendingForTask(workspaceId, taskPath) {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = [...this.items.values()].find(
       (candidate) => candidate.status === "pending" && candidate.workspaceId === workspaceId && candidate.taskPath === taskPath
     );
@@ -19195,7 +19787,7 @@ var DecisionRequestStore = class {
    */
   async removePendingForTask(workspaceId, taskPath) {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = [...this.items.values()].find(
@@ -19211,7 +19803,7 @@ var DecisionRequestStore = class {
   }
   async add(input) {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const request = validateDecisionRequest(input.request);
@@ -19243,7 +19835,7 @@ var DecisionRequestStore = class {
   }
   async answerExact(input) {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = this.items.get(input.requestId);
@@ -19276,7 +19868,7 @@ var DecisionRequestStore = class {
   }
   async escalateExact(workspaceId, taskPath, requestId) {
     if (this.closed) throw new Error("DecisionRequest store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("DecisionRequest store is closed");
       const current = this.items.get(requestId);
@@ -19304,7 +19896,13 @@ var DecisionRequestStore = class {
   shutdown() {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closed = true;
-    this.shutdownPromise = this.ensureLoaded().then(() => void 0);
+    this.shutdownPromise = this.corruptError ? Promise.resolve() : this.ensureLoaded().then(
+      () => void 0,
+      (error) => {
+        if (error === this.corruptError) return;
+        throw error;
+      }
+    );
     return this.shutdownPromise;
   }
   async persistSnapshot(snapshot) {
@@ -19313,10 +19911,22 @@ var DecisionRequestStore = class {
     const answered = items.filter((item) => item.status === "answered").sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 100);
     await this.writeState(this.file, { items: [...pending, ...answered] });
   }
-  async quarantineCorrupt() {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
+  throwIfCorrupt() {
+    if (this.corruptError) throw this.corruptError;
+  }
+  async requireHealthy() {
+    await this.ensureLoaded();
+    this.throwIfCorrupt();
+  }
+  async latchCorrupt(reason) {
+    this.throwIfCorrupt();
     this.items.clear();
+    this.loaded = true;
+    this.corruptError = await persistAuthorityStoreCorruption(
+      this.file,
+      DECISION_REQUEST_STORE_CORRUPT,
+      reason
+    );
   }
 };
 function makeDecisionRequestId(rand = Math.random) {
@@ -19329,8 +19939,9 @@ function makeDecisionRequestId(rand = Math.random) {
 }
 
 // src/service/task-input-store.ts
-import * as fs7 from "node:fs/promises";
+import * as fs8 from "node:fs/promises";
 import * as path8 from "node:path";
+var TASK_INPUT_STORE_CORRUPT = "TASK_INPUT_STORE_CORRUPT";
 function cloneInput(item) {
   return {
     ...item,
@@ -19459,6 +20070,7 @@ var TaskInputStore = class {
   constructor(dataDir, options) {
     this.items = /* @__PURE__ */ new Map();
     this.loaded = false;
+    this.corruptError = null;
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
@@ -19476,37 +20088,41 @@ var TaskInputStore = class {
     return run;
   }
   async ensureLoaded() {
+    this.throwIfCorrupt();
     if (this.loaded) return;
     return this.enqueue(async () => {
+      this.throwIfCorrupt();
       if (this.loaded) return;
+      const persistedCorruption = await readAuthorityStoreCorruption(
+        this.file,
+        TASK_INPUT_STORE_CORRUPT
+      );
+      if (persistedCorruption) {
+        this.corruptError = persistedCorruption;
+        this.items.clear();
+        this.loaded = true;
+        return;
+      }
       try {
-        const raw = await fs7.readFile(this.file, "utf8");
+        const raw = await fs8.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
         } catch {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("invalid JSON");
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("root must be an object");
         }
         const items = parsed.items;
         if (items !== void 0 && !Array.isArray(items)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          return this.latchCorrupt("items must be an array");
         }
         const loaded = /* @__PURE__ */ new Map();
         for (const item of items ?? []) {
           const restored = parseInput(item);
-          if (!restored) {
-            await this.quarantineCorrupt();
-            this.loaded = true;
-            return;
+          if (!restored || loaded.has(restored.id)) {
+            return this.latchCorrupt("items contains an invalid or duplicate row");
           }
           loaded.set(restored.id, restored);
         }
@@ -19531,7 +20147,7 @@ var TaskInputStore = class {
         "TaskInput.listRetryableForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()].filter(
       (i) => (i.status === "pending" || i.status === "failed") && i.workspaceId === workspaceId && i.taskPath === taskPath
     ).map(cloneInput);
@@ -19556,7 +20172,7 @@ var TaskInputStore = class {
         "TaskInput.listForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return [...this.items.values()].filter(
       (i) => i.workspaceId === workspaceId && i.taskPath === taskPath
     ).map(cloneInput).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
@@ -19579,7 +20195,7 @@ var TaskInputStore = class {
         "TaskInput.get requires workspaceId and taskPath (no id-only lookup)"
       );
     }
-    await this.ensureLoaded();
+    await this.requireHealthy();
     const item = this.items.get(id);
     if (!item) return void 0;
     if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
@@ -19589,7 +20205,7 @@ var TaskInputStore = class {
   }
   async add(item) {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       if (this.items.has(item.id)) {
@@ -19622,7 +20238,7 @@ var TaskInputStore = class {
       throw new Error("TaskInput.rebindOpenSessions requires non-empty sessionId");
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const isRebindable = (status) => status === "pending" || status === "failed" || status === "processing";
@@ -19679,7 +20295,7 @@ var TaskInputStore = class {
    */
   async markProcessing(id) {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19712,7 +20328,7 @@ var TaskInputStore = class {
    */
   async markDelivered(id, resolvedBy = "service", opts) {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19747,7 +20363,7 @@ var TaskInputStore = class {
    */
   async markFailed(id, error, resolvedBy = "service") {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19783,7 +20399,7 @@ var TaskInputStore = class {
    */
   async markUncertain(id, error, resolvedBy = "service", opts) {
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19824,7 +20440,7 @@ var TaskInputStore = class {
       );
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19869,7 +20485,7 @@ var TaskInputStore = class {
       );
     }
     if (this.closed) throw new Error("TaskInput store is closed");
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
@@ -19901,7 +20517,7 @@ var TaskInputStore = class {
    * Delivered/processing stay: delivered already processed; processing is in-flight.
    */
   async cancelTask(workspaceId, taskPath, resolvedBy = "service") {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       const next = new Map(this.items);
       const cancelled = [];
@@ -19932,7 +20548,7 @@ var TaskInputStore = class {
    * Never rewrites delivered/consumed/processing rows.
    */
   async cancelSession(sessionId, resolvedBy = "service") {
-    await this.ensureLoaded();
+    await this.requireHealthy();
     return this.enqueue(async () => {
       const next = new Map(this.items);
       const cancelled = [];
@@ -19961,7 +20577,13 @@ var TaskInputStore = class {
   shutdown() {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closed = true;
-    this.shutdownPromise = this.ensureLoaded().then(() => void 0);
+    this.shutdownPromise = this.corruptError ? Promise.resolve() : this.ensureLoaded().then(
+      () => void 0,
+      (error) => {
+        if (error === this.corruptError) return;
+        throw error;
+      }
+    );
     return this.shutdownPromise;
   }
   async persistSnapshot(snapshot) {
@@ -19971,7 +20593,7 @@ var TaskInputStore = class {
       throw err;
     }
     const items = [...snapshot.values()];
-    const open4 = items.filter(
+    const open5 = items.filter(
       (i) => i.status === "pending" || i.status === "processing" || i.status === "failed" || i.status === "uncertain" || i.status === "delivered"
     );
     const terminal = items.filter((i) => i.status === "consumed" || i.status === "cancelled").sort(
@@ -19979,12 +20601,24 @@ var TaskInputStore = class {
         a.consumedAt || a.cancelledAt || a.updatedAt || ""
       )
     ).slice(0, 100);
-    await this.writeState(this.file, { items: [...open4, ...terminal] });
+    await this.writeState(this.file, { items: [...open5, ...terminal] });
   }
-  async quarantineCorrupt() {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
+  throwIfCorrupt() {
+    if (this.corruptError) throw this.corruptError;
+  }
+  async requireHealthy() {
+    await this.ensureLoaded();
+    this.throwIfCorrupt();
+  }
+  async latchCorrupt(reason) {
+    this.throwIfCorrupt();
     this.items.clear();
+    this.loaded = true;
+    this.corruptError = await persistAuthorityStoreCorruption(
+      this.file,
+      TASK_INPUT_STORE_CORRUPT,
+      reason
+    );
   }
 };
 function makeTaskInputId(rand = Math.random) {
@@ -20437,11 +21071,11 @@ var RPC_UNAUTHORIZED = -32001;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/connections.ts
-import * as fs14 from "node:fs/promises";
+import * as fs15 from "node:fs/promises";
 import * as path13 from "node:path";
 
 // src/adapters/fake/index.ts
-import * as fs8 from "node:fs";
+import * as fs9 from "node:fs";
 import * as os2 from "node:os";
 import * as path9 from "node:path";
 var FAKE_ADAPTER_ID = "fake-cli";
@@ -20513,7 +21147,7 @@ var FakeProviderAdapter = class {
         os2.tmpdir(),
         `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
       );
-      fs8.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+      fs9.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
     }
     const script = buildInlineScript(fake);
     const env = {
@@ -20566,7 +21200,7 @@ function createFakeAdapter(options) {
 }
 
 // src/adapters/grok-acp/index.ts
-import * as fs12 from "node:fs";
+import * as fs13 from "node:fs";
 import * as os3 from "node:os";
 import * as path11 from "node:path";
 
@@ -22197,12 +22831,12 @@ function mapAcpProcessExit(code, signal) {
 }
 
 // src/fs/node-fs.ts
-import * as fs10 from "node:fs/promises";
+import * as fs11 from "node:fs/promises";
 import * as nodePath5 from "node:path";
 
 // src/fs/mutation-lock.ts
 import { randomUUID } from "node:crypto";
-import * as fs9 from "node:fs/promises";
+import * as fs10 from "node:fs/promises";
 var MUTATION_LOCK_STALE_MS = 12e4;
 async function withFileMutationLock(lockPath, action, options) {
   const now = options.now ?? Date.now;
@@ -22215,11 +22849,11 @@ async function withFileMutationLock(lockPath, action, options) {
     pid: process.pid,
     createdAt: new Date(now()).toISOString()
   };
-  await fs9.mkdir(dirnameOf(lockPath), { recursive: true });
+  await fs10.mkdir(dirnameOf(lockPath), { recursive: true });
   let handle;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      handle = await fs9.open(lockPath, "wx");
+      handle = await fs10.open(lockPath, "wx");
       break;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
@@ -22229,8 +22863,8 @@ async function withFileMutationLock(lockPath, action, options) {
       }
       const quarantine = `${lockPath}.stale-${randomUUID()}`;
       try {
-        await fs9.rename(lockPath, quarantine);
-        await fs9.rm(quarantine, { force: true }).catch(() => void 0);
+        await fs10.rename(lockPath, quarantine);
+        await fs10.rm(quarantine, { force: true }).catch(() => void 0);
       } catch (renameError) {
         if (isNotFound2(renameError)) continue;
         throw renameError;
@@ -22249,26 +22883,26 @@ async function withFileMutationLock(lockPath, action, options) {
 async function releaseMutationLockIfOwned(lockPath, ownerToken) {
   const quarantine = `${lockPath}.releasing-${ownerToken}`;
   try {
-    await fs9.rename(lockPath, quarantine);
+    await fs10.rename(lockPath, quarantine);
   } catch (error) {
     if (isNotFound2(error)) return false;
     return false;
   }
   const current = await readMutationLockRecord(quarantine);
   if (current?.ownerToken === ownerToken) {
-    await fs9.rm(quarantine, { force: true }).catch(() => void 0);
+    await fs10.rm(quarantine, { force: true }).catch(() => void 0);
     return true;
   }
   try {
-    await fs9.rename(quarantine, lockPath);
+    await fs10.rename(quarantine, lockPath);
   } catch {
-    await fs9.rm(quarantine, { force: true }).catch(() => void 0);
+    await fs10.rm(quarantine, { force: true }).catch(() => void 0);
   }
   return false;
 }
 async function readMutationLockRecord(lockPath) {
   try {
-    const raw = await fs9.readFile(lockPath, "utf8");
+    const raw = await fs10.readFile(lockPath, "utf8");
     const value = JSON.parse(raw);
     if (typeof value.ownerToken !== "string" || !value.ownerToken || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.createdAt !== "string") {
       return null;
@@ -22282,7 +22916,7 @@ async function readMutationLockRecord(lockPath) {
 async function mayReclaimLock(lockPath, now = Date.now, staleMs = MUTATION_LOCK_STALE_MS, isProcessAliveFn = processIsAlive) {
   let mtimeMs;
   try {
-    const stat2 = await fs9.stat(lockPath);
+    const stat2 = await fs10.stat(lockPath);
     mtimeMs = stat2.mtimeMs;
   } catch (error) {
     if (isNotFound2(error)) return false;
@@ -22299,7 +22933,7 @@ async function mayReclaimLock(lockPath, now = Date.now, staleMs = MUTATION_LOCK_
 }
 async function readRecordedPid(lockPath) {
   try {
-    const raw = await fs9.readFile(lockPath, "utf8");
+    const raw = await fs10.readFile(lockPath, "utf8");
     const value = JSON.parse(raw);
     if (typeof value.pid === "number" && Number.isInteger(value.pid) && value.pid > 0) {
       return value.pid;
@@ -22347,26 +22981,26 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs10.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs11.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path23) {
-    return fs10.readFile(this.abs(path23), "utf8");
+    return fs11.readFile(this.abs(path23), "utf8");
   }
   async writeFile(path23, content3) {
     const abs = this.abs(path23);
-    await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
+    await fs11.mkdir(nodePath5.dirname(abs), { recursive: true });
     await this.atomicReplace(abs, content3, "utf8");
   }
   async readBinary(path23) {
-    const buf = await fs10.readFile(this.abs(path23));
+    const buf = await fs11.readFile(this.abs(path23));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
   async readBinaryBounded(path23, maxBytes) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
       throw new Error(`Invalid binary read limit: ${maxBytes}`);
     }
-    const handle = await fs10.open(this.abs(path23), "r");
+    const handle = await fs11.open(this.abs(path23), "r");
     try {
       const bytes = new Uint8Array(maxBytes);
       let offset = 0;
@@ -22386,17 +23020,17 @@ var NodeFs = class {
   }
   async writeBinary(path23, data) {
     const abs = this.abs(path23);
-    await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
+    await fs11.mkdir(nodePath5.dirname(abs), { recursive: true });
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await this.atomicReplace(abs, payload);
   }
   async atomicReplace(abs, data, encoding) {
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      await fs10.writeFile(tmp, data, encoding);
+      await fs11.writeFile(tmp, data, encoding);
       await this.renameReplacingWithRetry(tmp, abs);
     } catch (err) {
-      await fs10.rm(tmp, { force: true }).catch(() => void 0);
+      await fs11.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
@@ -22404,7 +23038,7 @@ var NodeFs = class {
     const attempts = process.platform === "win32" ? 10 : 1;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        await fs10.rename(from, to);
+        await fs11.rename(from, to);
         return;
       } catch (err) {
         const code = err.code;
@@ -22417,21 +23051,21 @@ var NodeFs = class {
   }
   async exists(path23) {
     try {
-      await fs10.access(this.abs(path23));
+      await fs11.access(this.abs(path23));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path23) {
-    await fs10.mkdir(this.abs(path23), { recursive: true });
+    await fs11.mkdir(this.abs(path23), { recursive: true });
   }
   async move(from, to) {
-    await fs10.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
-    await fs10.rename(this.abs(from), this.abs(to));
+    await fs11.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
+    await fs11.rename(this.abs(from), this.abs(to));
   }
   async remove(path23) {
-    await fs10.rm(this.abs(path23), { recursive: true, force: true });
+    await fs11.rm(this.abs(path23), { recursive: true, force: true });
   }
   async withLock(path23, action) {
     return withFileMutationLock(this.abs(path23), action, {
@@ -22442,7 +23076,7 @@ var NodeFs = class {
 };
 
 // src/adapters/acp/connection.ts
-import * as fs11 from "node:fs";
+import * as fs12 from "node:fs";
 import * as path10 from "node:path";
 function readAcpExtras(extras) {
   if (!extras || typeof extras !== "object") return {};
@@ -22521,7 +23155,7 @@ function defaultNpxLaunch() {
     const root = dir.trim().replace(/^"|"$/g, "");
     if (root) candidates.push(path10.join(root, "node_modules", "npm", "bin", "npx-cli.js"));
   }
-  const npxCli = candidates.find((candidate) => fs11.existsSync(candidate));
+  const npxCli = candidates.find((candidate) => fs12.existsSync(candidate));
   if (!npxCli) {
     throw new Error(
       "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an explicit ACP executable"
@@ -22529,7 +23163,7 @@ function defaultNpxLaunch() {
   }
   const adjacentNode = path10.resolve(npxCli, "..", "..", "..", "..", "node.exe");
   return {
-    command: fs11.existsSync(adjacentNode) ? adjacentNode : "node.exe",
+    command: fs12.existsSync(adjacentNode) ? adjacentNode : "node.exe",
     argsPrefix: [npxCli]
   };
 }
@@ -22702,13 +23336,13 @@ var GrokAcpProviderAdapter = class {
       );
     }
     if (!plan.command && opts.executable) {
-      if (!fs12.existsSync(opts.executable)) {
+      if (!fs13.existsSync(opts.executable)) {
         throw new Error(
           `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local Agent Connection \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
-      if (!fs12.existsSync(command)) {
+      if (!fs13.existsSync(command)) {
         throw new Error(
           `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 Agent Connection \u4E2D\u8BBE\u7F6E executable\u3002`
         );
@@ -23393,7 +24027,7 @@ function createPiAcpAdapter(options) {
 }
 
 // src/service/launch-secret-store.ts
-import * as fs13 from "node:fs/promises";
+import * as fs14 from "node:fs/promises";
 import * as path12 from "node:path";
 
 // src/service/launch-secret-protector.ts
@@ -23636,7 +24270,7 @@ var LaunchSecretStore = class {
   }
   async loadFromDisk() {
     try {
-      const raw = await fs13.readFile(this.file, "utf8");
+      const raw = await fs14.readFile(this.file, "utf8");
       let parsed;
       try {
         parsed = JSON.parse(raw);
@@ -23976,7 +24610,7 @@ async function loadAgentConnections(dataDir) {
   const file = connectionsPath(dataDir);
   let text3;
   try {
-    text3 = await fs14.readFile(file, "utf8");
+    text3 = await fs15.readFile(file, "utf8");
   } catch (err) {
     if (isNotFoundError(err)) return [];
     return quarantineConnections(file);
@@ -24027,7 +24661,7 @@ function defaultAgentConnections() {
 async function ensureDefaultAgentConnections(dataDir) {
   const file = connectionsPath(dataDir);
   try {
-    await fs14.access(file);
+    await fs15.access(file);
     return loadAgentConnections(dataDir);
   } catch (err) {
     if (!isNotFoundError(err)) throw err;
@@ -24169,7 +24803,7 @@ var RpcError = class extends Error {
 };
 
 // src/machine/skills.ts
-import * as fs15 from "node:fs/promises";
+import * as fs16 from "node:fs/promises";
 import * as os4 from "node:os";
 import * as path14 from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
@@ -24213,7 +24847,7 @@ async function listBundledSkillNames(packageRoot) {
   const sourceDir = bundledSkillsDir(packageRoot);
   let entries;
   try {
-    entries = await fs15.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs16.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -24267,7 +24901,7 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs15.mkdir(dest.dir, { recursive: true });
+    await fs16.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
       const source = path14.join(sourceDir, name);
       const target = path14.join(dest.dir, name);
@@ -24285,9 +24919,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists && force) {
-        await fs15.rm(target, { recursive: true, force: true });
+        await fs16.rm(target, { recursive: true, force: true });
       }
-      await fs15.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs16.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -24340,7 +24974,7 @@ function assertChildPath(parent, child) {
 }
 async function existsPath(target) {
   try {
-    await fs15.access(target);
+    await fs16.access(target);
     return true;
   } catch {
     return false;
@@ -25709,8 +26343,8 @@ function emitRegistryTagsUpdated(ctx, workspaceId, payload) {
     "self"
   );
 }
-async function assertDocsSemanticBaseEtag(fs21, notePath, node2, baseEtag, surface) {
-  const diskRaw = await fs21.readFile(notePath);
+async function assertDocsSemanticBaseEtag(fs22, notePath, node2, baseEtag, surface) {
+  const diskRaw = await fs22.readFile(notePath);
   const currentEtag = contentEtag(diskRaw);
   if (!baseEtag) {
     throw new RpcError(-32008, `${surface} requires baseEtag`, {
@@ -26825,7 +27459,7 @@ async function taskDispatch(ctx, p) {
     workspaceLane: projectTask(taskAfter).workspaceLane
   };
 }
-async function assertSubDispatchPreconditions(fs21, input) {
+async function assertSubDispatchPreconditions(fs22, input) {
   if (input.parentActor.kind !== "role") {
     throw new RpcError(
       -32602,
@@ -26847,7 +27481,7 @@ async function assertSubDispatchPreconditions(fs21, input) {
       { parentActor: input.parentActor, roleId: input.targetRoleId }
     );
   }
-  const registry = await loadRolesRegistry(fs21);
+  const registry = await loadRolesRegistry(fs22);
   const role = registry.roles.find((item) => item.id === dispatcher);
   if (!role) {
     throw new RpcError(
@@ -27543,12 +28177,26 @@ async function taskResumeRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  return ctx.mutations.run(workspaceId, async () => {
+  const resumed = await ctx.mutations.run(workspaceId, async () => {
+    await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskResume(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.resume");
-    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+    return task;
   });
+  const sessionId = resumed.sessionId?.trim();
+  if (sessionId) {
+    try {
+      await requestManagedAutoDeliverRetryFromDraft(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId
+      });
+    } catch {
+    }
+  }
+  const current = (await reconcileTaskLifecycle(mount.env, taskPath)).task;
+  return { workspaceId, taskPath, task: projectTask(current), state: current.state };
 }
 async function resolveDecisionCallerSession(ctx, caller) {
   const sessionId = caller.callerSessionId?.trim();
@@ -27697,6 +28345,89 @@ function parseDecisionRequestOptions(raw) {
   }
   return options;
 }
+function taskRejectResumeFeedbackId(deliveryId) {
+  if (!/^dl-[a-z0-9]+$/i.test(deliveryId)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Reject-resume continuation requires a canonical Delivery id: ${deliveryId}`,
+      { code: "TASK_REJECT_RESUME_CONTINUATION_CHANGED", deliveryId }
+    );
+  }
+  return `ti-rf-${deliveryId.slice(3).toLowerCase()}`;
+}
+function rejectResumeFeedbackMatches(item, input) {
+  const expectedSessionId = input.task.sessionId?.trim() || void 0;
+  const actualSessionId = item.sessionId?.trim() || void 0;
+  const expectedText = input.exactText ? input.note : input.note.trim() || DEFAULT_TASK_REJECT_NOTE;
+  const actualText = input.exactText ? item.text ?? "" : (item.text ?? "").trim() || DEFAULT_TASK_REJECT_NOTE;
+  const requiresCurrentSession = item.status === "pending" || item.status === "processing" || item.status === "failed";
+  return item.id === taskRejectResumeFeedbackId(input.deliveryId) && item.workspaceId === input.workspaceId && item.taskPath === input.taskPath && item.taskId === input.task.id && (!requiresCurrentSession || actualSessionId === expectedSessionId) && item.role === taskParentRoleId(input.task) && normalizeTaskInputKind(item.kind) === "review-feedback" && typeof item.text === "string" && actualText === expectedText;
+}
+async function reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath, options) {
+  const mount = ctx.host.require(workspaceId);
+  const reconciled = await reconcileTaskLifecycle(mount.env, taskPath);
+  const pending = reconciled.rejectResume;
+  if (!pending) return reconciled.task;
+  const inputId = taskRejectResumeFeedbackId(pending.deliveryId);
+  const item = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
+  if (!item || !rejectResumeFeedbackMatches(item, {
+    workspaceId,
+    taskPath,
+    task: reconciled.task,
+    deliveryId: pending.deliveryId,
+    note: pending.note,
+    exactText: false
+  })) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume continuation is incomplete; retry the exact task.reject request before mutating this Task.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_REQUIRED",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId
+      }
+    );
+  }
+  if (item.status === "uncertain") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback has uncertain delivery; acknowledge it with taskInput.ack before starting or replacing the Session.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_UNCERTAIN",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId
+      }
+    );
+  }
+  if (item.status === "cancelled") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback was cancelled; retry the exact task.reject request before mutating this Task.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_CANCELLED",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId
+      }
+    );
+  }
+  if (options?.blockOpenRejectResumeFeedback && (item.status === "pending" || item.status === "processing" || item.status === "failed")) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Reject-resume review feedback must run before new task input; retry the exact task.reject request if recovery is required.",
+      {
+        code: "TASK_REJECT_RESUME_CONTINUATION_OPEN",
+        taskPath,
+        deliveryId: pending.deliveryId,
+        inputId,
+        inputStatus: item.status
+      }
+    );
+  }
+  return reconciled.task;
+}
 async function taskSendInputRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -27727,7 +28458,9 @@ async function taskSendInputRpc(ctx, p) {
     );
   }
   const { current, input } = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
-    const current2 = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current2 = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath, {
+      blockOpenRejectResumeFeedback: true
+    });
     if (current2.state !== "running" && current2.state !== "waiting") {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -27895,21 +28628,15 @@ function enqueueManagedTaskInputBackground(ctx, item) {
   trackManagedTaskInputBackground(work);
 }
 async function scheduleRetryableTaskInputsAfterSessionBind(ctx, input) {
-  try {
-    const retryable = await ctx.taskInputs.listRetryableForTask(
-      input.workspaceId,
-      input.taskPath
-    );
-    retryable.sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
-    );
-    for (const item of retryable) {
-      enqueueManagedTaskInputBackground(ctx, item);
-    }
-  } catch (err) {
-    console.error(
-      `[taskInput] exact bind recovery scheduling failed for ${input.taskPath}: ${err instanceof Error ? err.message : String(err)}`
-    );
+  const retryable = await ctx.taskInputs.listRetryableForTask(
+    input.workspaceId,
+    input.taskPath
+  );
+  retryable.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  );
+  for (const item of retryable) {
+    enqueueManagedTaskInputBackground(ctx, item);
   }
 }
 function stopManagedTaskInputBackgroundAccept() {
@@ -28215,13 +28942,13 @@ async function assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, task) {
     }
   );
 }
-async function requireRoleNameById(fs21, roleId) {
-  const registry = await loadRolesRegistry(fs21);
+async function requireRoleNameById(fs22, roleId) {
+  const registry = await loadRolesRegistry(fs22);
   const role = registry.roles.find((item) => item.id === roleId);
   if (!role) throw new Error(`Role not found in registry: ${roleId}`);
   return role.name;
 }
-async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs21) {
+async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs22) {
   const hasRecordedLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch
   );
@@ -28240,7 +28967,7 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs21) {
   if (isTaskScoped && taskAsSub(task)) {
     const parentRole = taskParentRoleId(task);
     if (parentRole) {
-      const registry = await loadRolesRegistry(fs21);
+      const registry = await loadRolesRegistry(fs22);
       const role = registry.roles.find((item) => item.id === parentRole);
       if (!role) throw new Error(`Parent Role not found in registry: ${parentRole}`);
       targetBranch = (await ensureRoleWorkspace(mountedRoot, role.name)).branch;
@@ -28248,11 +28975,11 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs21) {
   }
   const lane = isTaskScoped ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
     ...targetBranch ? { targetBranch } : {}
-  }) : await ensureRoleWorkspace(mountedRoot, await requireRoleNameById(fs21, task.roleId));
+  }) : await ensureRoleWorkspace(mountedRoot, await requireRoleNameById(fs22, task.roleId));
   return { worktree: lane.worktree, branch: lane.branch };
 }
-async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task, fs21) {
-  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs21);
+async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task, fs22) {
+  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs22);
   if (!lane) return;
   const status = await inspectWorktreeDirtiness(lane.worktree);
   if (!status.dirty) return;
@@ -28698,6 +29425,21 @@ async function taskRejectRpc(ctx, p, callContext) {
         note: noteForDelivery,
         resume
       });
+      const reviewInput2 = resume ? await createRejectResumeReviewFeedback(ctx, {
+        workspaceId,
+        taskPath,
+        task: rejected.task,
+        deliveryId: rejected.delivery.id,
+        note: noteExact !== void 0 ? noteExact : rejected.delivery.review?.note || DEFAULT_TASK_REJECT_NOTE
+      }) : void 0;
+      if (reviewInput2 && afterTaskRejectContinuationPersistForTests) {
+        await afterTaskRejectContinuationPersistForTests({
+          workspaceId,
+          taskPath,
+          deliveryId,
+          inputId: reviewInput2.id
+        });
+      }
       let externalRestoreError;
       if (resume && rejected.task.roleId && rejected.task.sessionId) {
         try {
@@ -28718,7 +29460,7 @@ async function taskRejectRpc(ctx, p, callContext) {
         },
         "self"
       );
-      return { ...rejected, externalRestoreError };
+      return { ...rejected, reviewInput: reviewInput2, externalRestoreError };
     });
   });
   if (!resume) {
@@ -28731,12 +29473,7 @@ async function taskRejectRpc(ctx, p, callContext) {
       state: result.task.state
     };
   }
-  const reviewInput = await createRejectResumeReviewFeedback(ctx, {
-    workspaceId,
-    taskPath,
-    task: result.task,
-    note: noteExact
-  });
+  const reviewInput = result.reviewInput;
   const boundSessionId = result.task.sessionId?.trim() || "";
   if (!boundSessionId) {
     return {
@@ -28828,11 +29565,32 @@ async function taskRejectRpc(ctx, p, callContext) {
 async function createRejectResumeReviewFeedback(ctx, input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const text3 = typeof input.note === "string" ? input.note : "";
+  const id = taskRejectResumeFeedbackId(input.deliveryId);
+  const existing = await ctx.taskInputs.get(id, input.workspaceId, input.taskPath);
+  if (existing) {
+    if (!rejectResumeFeedbackMatches(existing, {
+      ...input,
+      note: text3,
+      exactText: true
+    })) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Reject-resume continuation ${id} conflicts with its exact Delivery request.`,
+        {
+          code: "TASK_REJECT_RESUME_CONTINUATION_CHANGED",
+          taskPath: input.taskPath,
+          deliveryId: input.deliveryId,
+          inputId: id
+        }
+      );
+    }
+    return existing;
+  }
   const record = await ctx.taskInputs.add({
-    id: makeTaskInputId(),
+    id,
     workspaceId: input.workspaceId,
     taskPath: input.taskPath,
-    taskId: input.task.id || void 0,
+    taskId: input.task.id,
     sessionId: input.task.sessionId || void 0,
     role: taskParentRoleId(input.task),
     kind: "review-feedback",
@@ -28989,7 +29747,7 @@ async function taskStartSessionRpc(ctx, p) {
     }
     const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
-      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       const sessionId = prepared.result.session.sessionId;
       if (current.state !== "running" && current.state !== "waiting" || current.sessionId !== sessionId) {
         throw new RpcError(
@@ -29070,7 +29828,7 @@ function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
 function assertTaskSessionPostStartOwnership(operation, taskPath, current, expected) {
   const actual = captureTaskSessionBindSnapshot(current);
   const immutableIdentityUnchanged = actual.taskId === expected.taskId && actual.sessionId === expected.sessionId && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) && JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) && actual.nodeContextJson === expected.nodeContextJson;
-  const validSameSessionProgress = current.state === "running" || current.state === "waiting" || current.state === "delivered" || current.state === "accepted";
+  const validSameSessionProgress = current.state === "running" || current.state === "waiting";
   if (immutableIdentityUnchanged && validSameSessionProgress) return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -29105,7 +29863,7 @@ async function stopUnboundManagedSession(ctx, sessionId, operation, detail) {
 async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, callerKind, opts) {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString2(p, "bootstrapPrompt");
-  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  let task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   const boundSessionId = task.sessionId?.trim() || "";
   if (!boundSessionId) {
     throw new RpcError(
@@ -29121,8 +29879,8 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
       { code: "BOUND_SESSION_MISSING", taskPath, sessionId: boundSessionId }
     );
   }
-  const exactTaskId = task.id || taskPath;
-  if (boundSession.workspace !== workspaceId || boundSession.lastTaskId !== exactTaskId && boundSession.lastTaskId !== taskPath) {
+  const exactTaskId = task.id;
+  if (boundSession.workspace !== workspaceId || boundSession.lastTaskId !== exactTaskId) {
     throw new RpcError(
       RPC_LIFECYCLE,
       `Bound Session ${boundSessionId} does not match the exact Task/workspace`,
@@ -29142,7 +29900,7 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
   }
   if (task.state === "queued" && callerKind === "user") {
     await taskClaimRpc(ctx, { workspaceId, taskPath });
-    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   }
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(
@@ -29164,7 +29922,7 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
       );
     }
     await taskResumeRpc(ctx, { workspaceId, taskPath });
-    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   }
   const callerBootstrapAppend = bootstrapPrompt;
   if (task.sessionId) {
@@ -29193,7 +29951,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   const { workspaceId, taskPath, connectionId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     if (current.state !== "running") {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -29237,8 +29995,8 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       { code: "BOUND_SESSION_MISSING", taskPath, sessionId: priorSessionId }
     );
   }
-  const exactTaskId = task.id || taskPath;
-  if (priorSession.workspace !== workspaceId || priorSession.connectionId !== connectionId || priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath) {
+  const exactTaskId = task.id;
+  if (priorSession.workspace !== workspaceId || priorSession.connectionId !== connectionId || priorSession.lastTaskId !== exactTaskId) {
     await parkTaskForUnavailableSession(ctx, {
       workspaceId,
       taskPath,
@@ -29335,7 +30093,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
   const bootstrapImageSystemRoot = bootstrapImageRefs.length > 0 ? mount.systemRoot : void 0;
   const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     assertTaskSessionBindSnapshot(
       "task.startSession",
       taskPath,
@@ -29357,7 +30115,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
           bootstrapImageRefs,
           bootstrapImageSystemRoot
         } : {},
-        lastTaskId: task.id || taskPath
+        lastTaskId: task.id
       });
     } else if (firstStart) {
       handle = await ctx.runtime.startSession({
@@ -29417,11 +30175,19 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   }
   let bound;
   try {
+    if (afterManagedSessionProviderStartForTests) {
+      await afterManagedSessionProviderStartForTests({
+        operation: "task.startSession",
+        workspaceId,
+        taskPath,
+        sessionId: handle.sessionId
+      });
+    }
     bound = await runTaskLifecycle(
       workspaceId,
       taskPath,
       () => ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
         assertTaskSessionBindSnapshot("task.startSession", taskPath, current, bindSnapshot);
         ctx.host.markSelfWrite(workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
@@ -29521,7 +30287,7 @@ async function taskReplaceSessionRpc(ctx, p) {
 }
 async function assertReplaceSessionEligible(ctx, workspaceId, taskPath) {
   const mount = ctx.host.require(workspaceId);
-  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const task = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
       code: "INVALID_TASK_STATE",
@@ -29548,7 +30314,7 @@ async function assertReplaceSessionEligible(ctx, workspaceId, taskPath) {
     });
   }
   const prior = await ctx.runtime.registry.read(priorSessionId);
-  if (!prior || !prior.connectionId || prior.workspace !== workspaceId || prior.lastTaskId !== (task.id || taskPath) && prior.lastTaskId !== taskPath) {
+  if (!prior || !prior.connectionId || prior.workspace !== workspaceId || prior.lastTaskId !== task.id) {
     throw new RpcError(
       RPC_LIFECYCLE,
       "task.replaceSession requires an exact managed Session binding",
@@ -29572,10 +30338,10 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
     await assertReplaceSessionEligible(ctx, workspaceId, taskPath);
-    let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     if (current.state === "waiting") {
       await taskResumeRpc(ctx, { workspaceId, taskPath });
-      current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
     }
     return ensureTaskWorkspaceLane(ctx, workspaceId, current);
   });
@@ -29610,14 +30376,34 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
       branch: task.branch || "HEAD",
       targetBranch: task.targetBranch
     } : void 0;
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      assertTaskSessionBindSnapshot(
+        "task.replaceSession",
+        taskPath,
+        current,
+        captureTaskSessionBindSnapshot(task)
+      );
+      return current;
+    });
     replacementSessionId = makeSessionId();
     await ctx.runtime.reserveSession({
       sessionId: replacementSessionId,
       connectionId,
-      lastTaskId: task.id || taskPath,
+      lastTaskId: task.id,
       workspace: workspaceId,
       workspaceLane,
       runtimeWorkspace: { cwd }
+    });
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
+      assertTaskSessionBindSnapshot(
+        "task.replaceSession",
+        taskPath,
+        current,
+        captureTaskSessionBindSnapshot(task)
+      );
+      return current;
     });
     try {
       await ctx.toolApprovals.cancelSession(priorSessionId, "denied");
@@ -29642,10 +30428,10 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-      let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      let current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       if (current.state === "waiting" && current.sessionId === priorSessionId && isSessionUnavailableParkedWait(current)) {
         await taskResumeRpc(ctx, { workspaceId, taskPath });
-        current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
       }
       assertTaskSessionBindSnapshot(
         "task.replaceSession",
@@ -29684,7 +30470,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
           workspaceId,
           taskPath,
           () => ctx.mutations.run(workspaceId, async () => {
-            const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+            const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
             assertTaskSessionBindSnapshot(
               "task.replaceSession",
               taskPath,
@@ -29802,11 +30588,19 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
       ...bootstrapImageRefs.length > 0 ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot } : {},
       workspace: workspaceId
     });
+    if (afterManagedSessionProviderStartForTests) {
+      await afterManagedSessionProviderStartForTests({
+        operation: "task.replaceSession",
+        workspaceId,
+        taskPath,
+        sessionId: handle.sessionId
+      });
+    }
     const bound = await runTaskLifecycle(
       workspaceId,
       taskPath,
       () => ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath);
         assertTaskSessionPostStartOwnership(
           "task.replaceSession",
           taskPath,
@@ -31533,7 +32327,7 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
       const rec = await ctx.runtime.registry.read(item.sessionId);
       if (rec) {
         const workspaceMatches = rec.workspace === item.workspaceId;
-        const taskMatches = (rec.lastTaskId === task.id || rec.lastTaskId === item.taskPath) && task.sessionId === item.sessionId;
+        const taskMatches = rec.lastTaskId === task.id && task.sessionId === item.sessionId;
         if (workspaceMatches && taskMatches) {
           return { actor: actorRaw, task };
         }
@@ -32437,6 +33231,15 @@ function managedDeliverKey(sessionId, taskPath) {
   return `${sessionId}::${taskPath}`;
 }
 async function requestManagedAutoDeliverRetryFromDraft(ctx, input) {
+  const draft = await ctx.managedDeliveryReportDrafts.get(
+    input.workspaceId,
+    input.taskPath
+  );
+  if (!draft) return;
+  const priorOutcome = parseTaskOutcomeReport(draft.assistantText);
+  if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
+    return;
+  }
   const key2 = managedDeliverKey(input.sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key2)) return;
   if (managedAutoDeliverInFlight.has(key2)) {
@@ -32758,28 +33561,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       report: rawReport
     };
   }
-  if (parsedOutcome.outcome !== "delivered") {
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: parsedOutcome.outcome,
-      report: parsedOutcome.report || rawReport
-    });
-    return;
-  }
   const summary = (parsedOutcome.report || rawReport).trim();
-  if (!summary) {
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: "delivered",
-      report: "",
-      emptyDeliveredBody: true
-    });
-    return;
-  }
   const draftText = rawReport;
   const key2 = managedDeliverKey(sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key2) || managedAutoDeliverInFlight.has(key2)) {
@@ -32791,99 +33573,156 @@ async function tryManagedAutoDeliver(ctx, input) {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
     const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-    if (!pre || pre.state !== "running") {
+    if (!pre || !["running", "delivered", "accepted"].includes(pre.state)) {
       return;
     }
-    if (pre.sessionId && pre.sessionId !== sessionId) {
+    if (pre.sessionId !== sessionId) {
       return;
     }
-    const existingReady = await loadDeliveries(mount.env.fs, {
-      taskId: pre.id || input.taskPath
-    });
-    if (existingReady.some((d) => d.status === "ready")) {
-      managedAutoDeliverDone.add(key2);
-      try {
-        await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
-      } catch {
+    const existingDraft = await ctx.managedDeliveryReportDrafts.get(
+      input.workspaceId,
+      input.taskPath
+    );
+    if (existingDraft) {
+      const exactExisting = existingDraft.sessionId === sessionId && existingDraft.assistantText.trim() === draftText;
+      if (!exactExisting) {
+        const priorOutcome = parseTaskOutcomeReport(existingDraft.assistantText);
+        const priorWasControl = priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input";
+        if (pre.state !== "running" || !priorWasControl) {
+          throw new Error(
+            "managed Delivery report draft conflicts with this Session or completion report"
+          );
+        }
+        await ctx.managedDeliveryReportDrafts.preserve({
+          workspaceId: input.workspaceId,
+          taskPath: input.taskPath,
+          taskId: pre.id,
+          sessionId,
+          assistantText: draftText
+        });
+      } else {
+        draftPreserved = true;
       }
+      draftPreserved = true;
+    } else {
+      await ctx.managedDeliveryReportDrafts.preserve({
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        taskId: pre.id,
+        sessionId,
+        assistantText: draftText
+      });
+      draftPreserved = true;
+    }
+    if (parsedOutcome.outcome !== "delivered") {
+      await handleManagedNonDeliveredOutcome(ctx, {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        sessionId,
+        outcome: parsedOutcome.outcome,
+        report: parsedOutcome.report || rawReport
+      });
       return;
     }
-    await ctx.managedDeliveryReportDrafts.preserve({
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      taskId: pre.id || input.taskPath,
-      sessionId,
-      assistantText: draftText
-    });
-    draftPreserved = true;
-    if (input.commits === void 0) {
-      await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
-    }
-    await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, pre);
-    const sealed = await sealManagedSessionBeforeDelivery(ctx, {
-      workspaceId: input.workspaceId,
-      sessionId,
-      taskPath: input.taskPath
-    });
-    if (!sealed) {
-      throw new Error(
-        "managed session could not be sealed before auto-deliver (process still mutable)"
-      );
+    if (!summary) {
+      await handleManagedNonDeliveredOutcome(ctx, {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        sessionId,
+        outcome: "delivered",
+        report: "",
+        emptyDeliveredBody: true
+      });
+      return;
     }
     let published = false;
     await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
-      const phase = await ctx.mutations.run(input.workspaceId, async () => {
-        const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-        if (task.state !== "running") {
-          return { kind: "skip" };
-        }
-        if (task.sessionId && task.sessionId !== sessionId) {
-          return { kind: "skip" };
-        }
-        const existing = await loadDeliveries(mount.env.fs, {
-          taskId: task.id || input.taskPath
-        });
-        if (existing.some((d) => d.status === "ready")) {
-          managedAutoDeliverDone.add(key2);
-          published = true;
-          return { kind: "skip" };
-        }
-        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
-        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task, mount.env.fs);
-        await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
-        let commits = input.commits;
-        if (commits === void 0) {
-          commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task, mount.env.fs);
-        }
-        await assertDeliverCommitsBelongToExecutorLane(mount.workspaceRoot, task, commits);
-        const pendingCommits = uniqueCommitRefs(commits);
-        const targetHead = pendingCommits.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task, mount.env.fs) : void 0;
-        if (targetHead && afterTargetHeadSnapshotForTests) {
-          await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
-        }
-        ctx.host.markSelfWrite(input.workspaceId);
-        const mode = task.acceptMode;
-        const decision = mode === "agent-decide" ? "request-review" : void 0;
-        const opts = {
+      const recovered = await ctx.mutations.run(
+        input.workspaceId,
+        () => recoverCommittedTaskDeliver(mount.env, input.taskPath, {
           summary,
-          decision,
-          lastOutcome: "delivered",
-          ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
-          ...targetHead ? { targetHead } : {}
-        };
-        const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
-        if (prepared.kind === "done") {
-          return { kind: "done", result: prepared.result };
+          lastOutcome: "delivered"
+        })
+      );
+      const current = recovered?.task ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (current.sessionId !== sessionId) return;
+      if (!recovered && current.state !== "running") return;
+      if (!recovered) {
+        if (input.commits === void 0) {
+          await ensureTaskWorkspaceLane(ctx, input.workspaceId, current);
         }
-        return {
-          kind: "auto",
-          sourceNodeId: prepared.sourceNodeId,
-          deliveryId: prepared.deliveryId,
-          commits: prepared.commits,
-          ...prepared.targetHead ? { targetHead: prepared.targetHead } : {},
-          opts
-        };
+        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, current);
+      }
+      const sealed = await sealManagedSessionBeforeDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId,
+        taskPath: input.taskPath
       });
+      if (!sealed) {
+        throw new Error(
+          "managed session could not be sealed before auto-deliver (process still mutable)"
+        );
+      }
+      let phase;
+      if (recovered) {
+        if (recovered.prepared.kind === "done") {
+          phase = { kind: "done", result: recovered.prepared.result };
+        } else {
+          phase = {
+            kind: "auto",
+            sourceNodeId: recovered.prepared.sourceNodeId,
+            deliveryId: recovered.prepared.deliveryId,
+            commits: recovered.prepared.commits,
+            ...recovered.prepared.targetHead ? { targetHead: recovered.prepared.targetHead } : {},
+            opts: recovered.options
+          };
+        }
+      } else {
+        phase = await ctx.mutations.run(input.workspaceId, async () => {
+          const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+          if (task.state !== "running") {
+            return { kind: "skip" };
+          }
+          if (task.sessionId && task.sessionId !== sessionId) {
+            return { kind: "skip" };
+          }
+          await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
+          await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task, mount.env.fs);
+          await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
+          let commits = input.commits;
+          if (commits === void 0) {
+            commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task, mount.env.fs);
+          }
+          await assertDeliverCommitsBelongToExecutorLane(mount.workspaceRoot, task, commits);
+          const pendingCommits = uniqueCommitRefs(commits);
+          const targetHead = pendingCommits.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task, mount.env.fs) : void 0;
+          if (targetHead && afterTargetHeadSnapshotForTests) {
+            await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+          }
+          ctx.host.markSelfWrite(input.workspaceId);
+          const mode = task.acceptMode;
+          const decision = mode === "agent-decide" ? "request-review" : void 0;
+          const opts = {
+            summary,
+            decision,
+            lastOutcome: "delivered",
+            ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
+            ...targetHead ? { targetHead } : {}
+          };
+          const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
+          if (prepared.kind === "done") {
+            return { kind: "done", result: prepared.result };
+          }
+          return {
+            kind: "auto",
+            sourceNodeId: prepared.sourceNodeId,
+            deliveryId: prepared.deliveryId,
+            commits: prepared.commits,
+            ...prepared.targetHead ? { targetHead: prepared.targetHead } : {},
+            opts
+          };
+        });
+      }
       if (phase.kind === "skip") return;
       let result;
       if (phase.kind === "done") {
@@ -33070,7 +33909,7 @@ async function handleManagedNonDeliveredOutcome(ctx, input) {
     managedAutoDeliverInFlight.delete(key2);
   }
 }
-async function collectManagedDeliveryCommits(workspaceRoot, task, fs21) {
+async function collectManagedDeliveryCommits(workspaceRoot, task, fs22) {
   const hasRecordedLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch
   );
@@ -33083,49 +33922,59 @@ async function collectManagedDeliveryCommits(workspaceRoot, task, fs21) {
       `Managed delivery collection requires roleBranchBase on task ${task.id || task.path}; baseline must be captured at first Git lane bind (never fall back to all role commits).`
     );
   }
-  const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs22);
   const pending = await listPendingRoleCommits(contract, base);
   return pending.map((commit) => commit.ref);
 }
 async function sealManagedSessionBeforeDelivery(ctx, input) {
   try {
-    try {
-      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
-    } catch {
-    }
-    const probe = await ctx.runtime.probe(input.sessionId);
-    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
-      await ctx.runtime.stopSession(input.sessionId, "user");
-    }
-    const after = await ctx.runtime.probe(input.sessionId);
-    return !after.alive && !after.turnBusy;
-  } catch (err) {
-    const message2 = err instanceof Error ? err.message : String(err);
-    try {
-      await ctx.runtime.registry.update(input.sessionId, {
-        lastError: `managed session seal before deliver failed: ${message2}`
-      });
-    } catch {
-    }
-    ctx.events.emit(
-      "session.state",
-      input.workspaceId,
-      {
-        sessionId: input.sessionId,
-        taskPath: input.taskPath,
-        runtimeEvent: "session.seal_before_deliver.failed",
-        error: message2,
-        taskFailed: false
-      },
-      "service"
-    );
-    try {
-      const after = await ctx.runtime.probe(input.sessionId);
-      return !after.alive && !after.turnBusy;
-    } catch {
-      return true;
-    }
+    await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+  } catch {
   }
+  const failures = [];
+  try {
+    const before = await ctx.runtime.probe(input.sessionId);
+    if (!before.alive && !before.turnBusy) return true;
+  } catch (err) {
+    const message3 = err instanceof Error ? err.message : String(err);
+    failures.push(`pre-stop probe failed: ${message3}`);
+  }
+  try {
+    await ctx.runtime.stopSession(input.sessionId, "user");
+  } catch (err) {
+    const message3 = err instanceof Error ? err.message : String(err);
+    failures.push(`stop failed: ${message3}`);
+  }
+  try {
+    const after = await ctx.runtime.probe(input.sessionId);
+    if (!after.alive && !after.turnBusy) return true;
+    failures.push(
+      `post-stop probe remained mutable: alive=${String(after.alive)} turnBusy=${String(after.turnBusy)}`
+    );
+  } catch (err) {
+    const message3 = err instanceof Error ? err.message : String(err);
+    failures.push(`post-stop probe failed: ${message3}`);
+  }
+  const message2 = failures.join("; ") || "dead and idle state was not proven";
+  try {
+    await ctx.runtime.registry.update(input.sessionId, {
+      lastError: `managed session seal before deliver failed: ${message2}`
+    });
+  } catch {
+  }
+  ctx.events.emit(
+    "session.state",
+    input.workspaceId,
+    {
+      sessionId: input.sessionId,
+      taskPath: input.taskPath,
+      runtimeEvent: "session.seal_before_deliver.failed",
+      error: message2,
+      taskFailed: false
+    },
+    "service"
+  );
+  return false;
 }
 async function stopManagedSessionAfterDelivery(ctx, input) {
   try {
@@ -33171,6 +34020,8 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
 }
 var afterTargetHeadSnapshotForTests = null;
 var beforeTaskAcceptFinalizeForTests = null;
+var afterTaskRejectContinuationPersistForTests = null;
+var afterManagedSessionProviderStartForTests = null;
 var beforeTaskClaimCoreForTests = null;
 var beforeReplaceTaskInputRollbackForTests = null;
 function clearManagedAutoDeliverDedup(sessionId, taskPath) {
@@ -33202,7 +34053,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
     );
   }
   const priorTaskRef = prior.lastTaskId?.trim() || "";
-  if (!priorTaskRef || priorTaskRef !== task.id && priorTaskRef !== input.taskPath) {
+  if (!priorTaskRef || priorTaskRef !== task.id) {
     throw new Error(
       `Managed Session ${priorSessionId} is not bound to the exact rejected Task (session.lastTaskId=${priorTaskRef || "(missing)"}, taskId=${task.id})`
     );
@@ -33273,7 +34124,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       runtimeWorkspace: { cwd },
       cwd,
       bootstrapPrompt: emptyBootstrap,
-      lastTaskId: task.id || input.taskPath
+      lastTaskId: task.id
     });
     if (handle.sessionId !== priorSessionId) {
       throw new Error(
@@ -33348,12 +34199,13 @@ async function parkTaskAfterRejectResumeFailure(ctx, input) {
       if (current.state === "running") {
         next = await taskWait(mount.env, input.taskPath, {
           reason: "external",
-          summary
+          summary,
+          code: SESSION_UNAVAILABLE_WAIT_CODE
         });
       } else {
         next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
           state: "waiting",
-          wait: { reason: "external", summary },
+          wait: { reason: "external", summary, code: SESSION_UNAVAILABLE_WAIT_CODE },
           updatedAt: mount.env.clock.now()
         });
       }
@@ -33552,12 +34404,12 @@ async function loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, fall
 function uniqueCommitRefs(commits) {
   return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
 }
-async function snapshotIntegrationTargetHead(workspaceRoot, task, fs21) {
-  const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
+async function snapshotIntegrationTargetHead(workspaceRoot, task, fs22) {
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs22);
   return readRoleBranchTip(contract.workspace, contract.targetBranch);
 }
-async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, commits, expectedTargetHead, fs21, meta) {
-  const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
+async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, commits, expectedTargetHead, fs22, meta) {
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs22);
   const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
   const expected = expectedTargetHead?.trim() || "";
   if (!expected) {
@@ -33595,14 +34447,14 @@ async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, commits
   }
   return false;
 }
-async function loadReadyDeliveryTargetHead(fs21, task) {
+async function loadReadyDeliveryTargetHead(fs22, task) {
   const taskId = task.id || task.path;
-  const deliveries = await loadDeliveries(fs21, { taskId });
+  const deliveries = await loadDeliveries(fs22, { taskId });
   const activeId = task.activeDeliveryId?.trim();
   const ready = (activeId ? deliveries.find((d) => d.id === activeId && d.status === "ready") : void 0) ?? deliveries.find((d) => d.status === "ready");
   return ready?.targetHead?.trim() || void 0;
 }
-async function resolveIntegrationContract(workspaceRoot, task, fs21) {
+async function resolveIntegrationContract(workspaceRoot, task, fs22) {
   const mountedRoot = nodePath6.resolve(workspaceRoot);
   if (task.workspace) {
     const claimed = nodePath6.resolve(task.workspace);
@@ -33613,7 +34465,7 @@ async function resolveIntegrationContract(workspaceRoot, task, fs21) {
     }
   }
   const isTaskScoped = !task.roleId;
-  const registry = await loadRolesRegistry(fs21);
+  const registry = await loadRolesRegistry(fs22);
   let dispatcherLane;
   if (taskAsSub(task)) {
     const dispatcher = taskParentRoleId(task);
@@ -34115,7 +34967,7 @@ function headerValue(headers, name) {
 }
 
 // src/service/data-dir.ts
-import * as fs16 from "node:fs/promises";
+import * as fs17 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os5 from "node:os";
 import * as path15 from "node:path";
@@ -34157,18 +35009,18 @@ async function writeServiceEndpoint(dataDir, record) {
   const validated = parseServiceEndpointRecord(record);
   if (!validated) throw new Error("Invalid Local Tent Service endpoint record");
   const file = serviceEndpointPath(dataDir, validated.instanceId, validated.startedAt);
-  await fs16.mkdir(dataDir, { recursive: true });
+  await fs17.mkdir(dataDir, { recursive: true });
   const body = JSON.stringify(validated, null, 2) + "\n";
   if (Buffer.byteLength(body, "utf8") > MAX_SERVICE_ENDPOINT_FILE_BYTES) {
     throw new Error("Local Tent Service endpoint record exceeds the byte limit");
   }
   const temp = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  await fs16.writeFile(temp, body, { encoding: "utf8", flag: "wx" });
+  await fs17.writeFile(temp, body, { encoding: "utf8", flag: "wx" });
   try {
-    await fs16.link(temp, file);
+    await fs17.link(temp, file);
   } finally {
     try {
-      await fs16.rm(temp, { force: true });
+      await fs17.rm(temp, { force: true });
     } catch {
     }
   }
@@ -34200,7 +35052,7 @@ async function readServiceEndpointCandidates(dataDir) {
 }
 async function removeServiceEndpoint(dataDir, expected) {
   try {
-    await fs16.rm(
+    await fs17.rm(
       serviceEndpointPath(dataDir, expected.instanceId, expected.startedAt),
       { force: true }
     );
@@ -34233,7 +35085,7 @@ async function newestEndpointGenerationNames(dataDir) {
   const newest = [];
   let directory;
   try {
-    directory = await fs16.opendir(dataDir);
+    directory = await fs17.opendir(dataDir);
   } catch (error) {
     if (isNotFoundError(error)) return [];
     throw error;
@@ -34261,7 +35113,7 @@ function isEndpointGenerationName(name) {
 async function readBoundedEndpointFile(file) {
   let handle;
   try {
-    handle = await fs16.open(file, "r");
+    handle = await fs17.open(file, "r");
     const buffer = Buffer.allocUnsafe(MAX_SERVICE_ENDPOINT_FILE_BYTES + 1);
     let used = 0;
     while (used < buffer.length) {
@@ -34283,13 +35135,13 @@ async function readBoundedEndpointFile(file) {
 async function cleanupOverflowServiceEndpointGenerations(dataDir) {
   try {
     const newest = [];
-    const directory = await fs16.opendir(dataDir);
+    const directory = await fs17.opendir(dataDir);
     for await (const entry of directory) {
       if (!entry.isFile() || !isEndpointGenerationName(entry.name)) continue;
       const insertAt = newest.findIndex((name) => entry.name > name);
       if (insertAt < 0) {
         if (newest.length >= MAX_SERVICE_ENDPOINT_CANDIDATES) {
-          await fs16.rm(path15.join(dataDir, entry.name), { force: true }).catch(() => void 0);
+          await fs17.rm(path15.join(dataDir, entry.name), { force: true }).catch(() => void 0);
         } else {
           newest.push(entry.name);
         }
@@ -34299,7 +35151,7 @@ async function cleanupOverflowServiceEndpointGenerations(dataDir) {
       if (newest.length > MAX_SERVICE_ENDPOINT_CANDIDATES) {
         const overflow = newest.pop();
         if (overflow) {
-          await fs16.rm(path15.join(dataDir, overflow), { force: true }).catch(() => void 0);
+          await fs17.rm(path15.join(dataDir, overflow), { force: true }).catch(() => void 0);
         }
       }
     }
@@ -34805,7 +35657,7 @@ var EventBus = class {
 // src/service/workspace-host.ts
 import { createHash as createHash5 } from "node:crypto";
 import { watch } from "node:fs";
-import * as fs17 from "node:fs/promises";
+import * as fs18 from "node:fs/promises";
 import * as path16 from "node:path";
 var WORKSPACE_ID_DIGEST_LEN = 12;
 var WorkspaceHost = class {
@@ -34843,7 +35695,7 @@ var WorkspaceHost = class {
     const resolved = path16.resolve(workspaceRoot);
     let root;
     try {
-      root = await fs17.realpath(resolved);
+      root = await fs18.realpath(resolved);
     } catch (error) {
       const err = error;
       if (err?.code === "ENOENT") {
@@ -34854,7 +35706,7 @@ var WorkspaceHost = class {
     const systemRoot = systemRootFromWorkspace(root);
     const indexPath = path16.join(systemRoot, INDEX_PATH);
     try {
-      await fs17.access(indexPath);
+      await fs18.access(indexPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/${INDEX_PATH}.`
@@ -35104,7 +35956,7 @@ function makeWorkspaceId(workspaceRoot) {
 var TENT_SERVICE_PROTOCOL_VERSION = 5;
 
 // src/service/tool-approval-store.ts
-import * as fs18 from "node:fs/promises";
+import * as fs19 from "node:fs/promises";
 import * as path17 from "node:path";
 function resolveToolApprovalWorkspaceId(sessionWorkspace) {
   if (typeof sessionWorkspace !== "string") return null;
@@ -35209,7 +36061,7 @@ var ToolApprovalStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs18.readFile(this.file, "utf8");
+        const raw = await fs19.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -35535,7 +36387,7 @@ function makeToolApprovalId(rand = Math.random) {
 }
 
 // src/service/managed-delivery-report-draft-store.ts
-import * as fs19 from "node:fs/promises";
+import * as fs20 from "node:fs/promises";
 import * as path18 from "node:path";
 function cloneDraft(item) {
   return { ...item };
@@ -35628,7 +36480,7 @@ var ManagedDeliveryReportDraftStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs19.readFile(this.file, "utf8");
+        const raw = await fs20.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -37541,7 +38393,7 @@ import { fileURLToPath } from "node:url";
 
 // src/service/service-lease.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import * as fs20 from "node:fs/promises";
+import * as fs21 from "node:fs/promises";
 import * as path20 from "node:path";
 var ServiceDataDirBusyError = class extends Error {
   constructor(dataDir, owner) {
@@ -37562,16 +38414,16 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
   const isProcessAlive = options.isProcessAlive ?? processIsAlive2;
   const record = { instanceId, pid, startedAt };
   const lockPath = serviceLeasePath(dataDir);
-  await fs20.mkdir(dataDir, { recursive: true });
+  await fs21.mkdir(dataDir, { recursive: true });
   const candidate = `${lockPath}.candidate-${instanceId}`;
-  await fs20.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
+  await fs21.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
     encoding: "utf8",
     flag: "wx"
   });
   try {
     for (; ; ) {
       try {
-        await fs20.link(candidate, lockPath);
+        await fs21.link(candidate, lockPath);
         break;
       } catch (error) {
         if (!hasCode2(error, "EEXIST")) throw error;
@@ -37581,9 +38433,9 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
         }
         const stalePath = `${lockPath}.stale-${randomUUID2()}`;
         try {
-          await fs20.rename(lockPath, stalePath);
+          await fs21.rename(lockPath, stalePath);
           try {
-            await fs20.rm(stalePath, { force: true });
+            await fs21.rm(stalePath, { force: true });
           } catch {
           }
         } catch (error2) {
@@ -37594,7 +38446,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
     }
   } finally {
     try {
-      await fs20.rm(candidate, { force: true });
+      await fs21.rm(candidate, { force: true });
     } catch {
     }
   }
@@ -37606,7 +38458,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
       if (released) return;
       const owner = await readLeaseRecord(lockPath);
       if (owner?.instanceId === instanceId) {
-        await fs20.rm(lockPath, { force: true });
+        await fs21.rm(lockPath, { force: true });
       }
       released = true;
     }
@@ -37614,7 +38466,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
 }
 async function readLeaseRecord(file) {
   try {
-    const value = JSON.parse(await fs20.readFile(file, "utf8"));
+    const value = JSON.parse(await fs21.readFile(file, "utf8"));
     if (typeof value.instanceId !== "string" || !value.instanceId || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.startedAt !== "string") {
       return null;
     }
@@ -37749,8 +38601,8 @@ function push2(out, seen, raw, kind, sourcePath) {
 var ATTACHMENT_GC_GRACE_DAYS = 30;
 var ATTACHMENT_GC_STATE_PATH = `${ATTACHMENTS_DIR}/.gc-state.json`;
 var DAY_MS = 24 * 60 * 60 * 1e3;
-async function sweepAttachmentGc(fs21, options = {}) {
-  return withTentMutation(fs21, async () => {
+async function sweepAttachmentGc(fs22, options = {}) {
+  return withTentMutation(fs22, async () => {
     const result = {
       scanned: 0,
       retainedByOwner: 0,
@@ -37759,7 +38611,7 @@ async function sweepAttachmentGc(fs21, options = {}) {
       deleted: [],
       warnings: []
     };
-    if (!await fs21.exists(ATTACHMENTS_DIR)) return result;
+    if (!await fs22.exists(ATTACHMENTS_DIR)) return result;
     const nowMs = resolveNow(options.now);
     const graceDays = options.graceDays ?? ATTACHMENT_GC_GRACE_DAYS;
     if (!Number.isFinite(graceDays) || graceDays < 0) {
@@ -37767,7 +38619,7 @@ async function sweepAttachmentGc(fs21, options = {}) {
     }
     let tent;
     try {
-      tent = await loadTent(fs21);
+      tent = await loadTent(fs22);
     } catch (error) {
       result.warnings.push(`Node scan failed: ${message(error)}`);
       return result;
@@ -37779,16 +38631,16 @@ async function sweepAttachmentGc(fs21, options = {}) {
     let files;
     let references;
     try {
-      files = (await listFiles(fs21, ATTACHMENTS_DIR)).filter(
+      files = (await listFiles(fs22, ATTACHMENTS_DIR)).filter(
         (path23) => path23 !== ATTACHMENT_GC_STATE_PATH
       );
-      references = await collectAttachmentReferences(fs21);
+      references = await collectAttachmentReferences(fs22);
     } catch (error) {
       result.warnings.push(`attachment reference scan failed: ${message(error)}`);
       return result;
     }
     result.scanned = files.length;
-    const loadedState = await readState(fs21);
+    const loadedState = await readState(fs22);
     if (loadedState.warning) result.warnings.push(loadedState.warning);
     const state = loadedState.state;
     const nextCandidates = {};
@@ -37808,7 +38660,7 @@ async function sweepAttachmentGc(fs21, options = {}) {
       const firstSeenMs = firstSeen ? Date.parse(firstSeen) : Number.NaN;
       if (loadedState.valid && Number.isFinite(firstSeenMs) && nowMs - firstSeenMs >= graceDays * DAY_MS) {
         try {
-          await fs21.remove(file);
+          await fs22.remove(file);
           result.deleted.push(file);
         } catch (error) {
           result.warnings.push(`failed to delete ${file}: ${message(error)}`);
@@ -37822,19 +38674,19 @@ async function sweepAttachmentGc(fs21, options = {}) {
       if (!liveFiles.has(path23)) delete nextCandidates[path23];
     }
     result.candidates = Object.keys(nextCandidates).length;
-    await fs21.writeFile(
+    await fs22.writeFile(
       ATTACHMENT_GC_STATE_PATH,
       JSON.stringify({ version: 1, candidates: nextCandidates }, null, 2) + "\n"
     );
-    await removeEmptyOwnerDirs(fs21, result);
+    await removeEmptyOwnerDirs(fs22, result);
     return result;
   });
 }
-async function collectAttachmentReferences(fs21) {
+async function collectAttachmentReferences(fs22) {
   const refs = /* @__PURE__ */ new Set();
-  for (const path23 of await listFiles(fs21, "")) {
+  for (const path23 of await listFiles(fs22, "")) {
     if (!path23.endsWith(".md") || path23.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
-    const raw = await fs21.readFile(path23);
+    const raw = await fs22.readFile(path23);
     const parsed = parseFrontmatter(raw);
     for (const ref of extractAttachmentReferences(parsed.body, path23)) refs.add(ref.path);
     for (const ref of extractAttachmentArtifactRefs(parsed.data, path23)) refs.add(ref.path);
@@ -37847,21 +38699,21 @@ async function collectAttachmentReferences(fs21) {
   }
   return refs;
 }
-async function listFiles(fs21, dir) {
-  if (dir && !await fs21.exists(dir)) return [];
+async function listFiles(fs22, dir) {
+  if (dir && !await fs22.exists(dir)) return [];
   const out = [];
-  for (const entry of await fs21.listDir(dir)) {
+  for (const entry of await fs22.listDir(dir)) {
     const path23 = dir ? `${dir}/${entry.name}` : entry.name;
-    if (entry.isDir) out.push(...await listFiles(fs21, path23));
+    if (entry.isDir) out.push(...await listFiles(fs22, path23));
     else out.push(path23);
   }
   return out;
 }
-async function readState(fs21) {
+async function readState(fs22) {
   const empty = { version: 1, candidates: {} };
-  if (!await fs21.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
+  if (!await fs22.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
   try {
-    const parsed = JSON.parse(await fs21.readFile(ATTACHMENT_GC_STATE_PATH));
+    const parsed = JSON.parse(await fs22.readFile(ATTACHMENT_GC_STATE_PATH));
     if (parsed.version !== 1 || !parsed.candidates || typeof parsed.candidates !== "object") {
       throw new Error("unsupported state shape");
     }
@@ -37880,12 +38732,12 @@ async function readState(fs21) {
     };
   }
 }
-async function removeEmptyOwnerDirs(fs21, result) {
-  for (const entry of await fs21.listDir(ATTACHMENTS_DIR)) {
+async function removeEmptyOwnerDirs(fs22, result) {
+  for (const entry of await fs22.listDir(ATTACHMENTS_DIR)) {
     if (!entry.isDir) continue;
     const dir = `${ATTACHMENTS_DIR}/${entry.name}`;
     try {
-      if ((await fs21.listDir(dir)).length === 0) await fs21.remove(dir);
+      if ((await fs22.listDir(dir)).length === 0) await fs22.remove(dir);
     } catch (error) {
       result.warnings.push(`failed to remove empty attachment directory ${dir}: ${message(error)}`);
     }
