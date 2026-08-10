@@ -273,16 +273,20 @@ async function collapseSubtree(page, placementId) {
   await controls.locator("button[data-role=toggle]").click();
 }
 
-async function openDirectionMenu(page, placementId) {
+async function openDirectionMenu(page, placementId, { force = false } = {}) {
   const controls = await selectedControls(page, placementId);
-  await controls.locator("button[data-role=toggle]").click();
+  const toggle = controls.locator("button[data-role=toggle]");
+  if (force) await toggle.click({ force: true });
+  else await toggle.click();
   await controls.locator('[role=menu][aria-label="选择展开方向"]').waitFor({ state: "visible" });
   return controls;
 }
 
-async function expandSubtree(page, placementId, direction) {
-  const controls = await openDirectionMenu(page, placementId);
-  await controls.locator(`button[data-role=direction][data-direction="${direction}"]`).click();
+async function expandSubtree(page, placementId, direction, { force = false } = {}) {
+  const controls = await openDirectionMenu(page, placementId, { force });
+  const choice = controls.locator(`button[data-role=direction][data-direction="${direction}"]`);
+  if (force) await choice.click({ force: true });
+  else await choice.click();
 }
 
 async function setCanvasZoom(page, percent) {
@@ -1247,14 +1251,15 @@ async function exercisePackagedElectron() {
 
     await dispatchBackgroundOutlineDrag(window, /E2E Root/, { x: 260, y: 220 });
     // Production preserves the first-node seed placement. One explicit parent
-    // projection entry therefore adds an isolated root + direct-child instance
-    // alongside that seed: three cards total, with one instance-scoped branch.
-    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged subtree cards");
-    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count(), 1);
+    // projection entry therefore adds one folded root alongside that seed. The
+    // complete subtree is durable immediately, but children remain hidden until
+    // the exact projection root is explicitly expanded.
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 2, "packaged folded subtree cards");
+    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count(), 0);
     let persisted = await waitFor(async () => {
       const snapshot = await persistedCanvas(window);
-      // The folded grandchild remains a persisted member of the projection
-      // instance even though only root + direct child are initially visible.
+      // Both the direct child and folded grandchild remain persisted members of
+      // the projection instance even though only its root is initially visible.
       return snapshot?.document?.placements?.length === 4 ? snapshot : null;
     }, "packaged subtree persistence");
     const rootPlacement = persisted.document.placements.find(
@@ -1267,6 +1272,20 @@ async function exercisePackagedElectron() {
       (placement) => placement.entityRef === childNode.nodeId && subtreeMeta(placement)?.instanceId === instanceId
     );
     assert.ok(childPlacement, "explicit projection instance must persist its exact direct child");
+    await selectPlacement(window, rootPlacement.placementId);
+    await expandSubtree(window, rootPlacement.placementId, "right", { force: true });
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged expanded subtree cards");
+    await waitFor(
+      async () => (await window.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count()) === 1,
+      "packaged expanded subtree relationship",
+    );
+    persisted = await waitFor(async () => {
+      const snapshot = await persistedCanvas(window);
+      const root = snapshot?.document?.placements?.find(
+        (placement) => placement.placementId === rootPlacement.placementId,
+      );
+      return subtreeMeta(root)?.expandedDirection === "right" ? snapshot : null;
+    }, "packaged expanded subtree persistence");
     const beforeRestartGeometry = persisted.document.placements
       .map((placement) => ({ placementId: placement.placementId, x: placement.x, y: placement.y }))
       .sort((left, right) => left.placementId.localeCompare(right.placementId));
@@ -1352,7 +1371,7 @@ async function exercisePackagedElectron() {
       beforeLossDocument,
       "Service recovery must not rewrite the persisted local Canvas document",
     );
-    await run.window.locator('button[aria-label="同步快照"]:not([disabled])').first().waitFor({
+    await run.window.locator('[data-testid="canvas-projection-sync"]:not([disabled])').waitFor({
       state: "visible",
       timeout: 20_000,
     });
