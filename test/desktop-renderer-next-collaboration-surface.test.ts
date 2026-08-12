@@ -125,3 +125,50 @@ test("same-workspace retained Inbox does not render a surrogate selected-Node wo
   assert.match(html, /协作内容正在刷新/);
   assert.doesNotMatch(html, /开始委托|委托进展|工作正在推进/);
 });
+
+test("Role-responsible return stays readable without exposing user review mutations", () => {
+  const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
+  const roleSnapshot: WorkspaceCollaborationView = {
+    ...snapshot("cx-a"),
+    selectedNode: { nodeId: "cx-a", activeTask: {
+      state: "delivered",
+      responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
+      execution: { kind: "role", roleId: "rl-worker", label: "执行" },
+      readyDelivery: { deliveryId: "dl-role", summary: "已完成方案", createdAt: "now" },
+      pendingDecision: null,
+    } },
+  };
+  const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: roleSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
+  const html = renderToStaticMarkup(createElement(CollaborationPanel, {
+    node,
+    allNodes: [node],
+    view,
+    actions: { retry: async () => {}, dispatch: async () => false, acceptDelivery: async () => false, rejectDelivery: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /已完成方案/);
+  assert.match(html, /等待规划接纳|等待负责角色/);
+  assert.doesNotMatch(html, />接纳<|>退回<|退回修改/);
+});
+
+test("selected pending Decision remains actionable because workspace projection admits only user targets", () => {
+  const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
+  const decisionSnapshot: WorkspaceCollaborationView = {
+    ...snapshot("cx-a"),
+    selectedNode: { nodeId: "cx-a", activeTask: {
+      state: "waiting",
+      responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
+      execution: { kind: "role", roleId: "rl-worker", label: "执行" },
+      readyDelivery: null,
+      pendingDecision: { requestId: "dr-user", question: "是否继续？", options: [{ id: "yes", label: "继续" }] },
+    } },
+  };
+  const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: decisionSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
+  const html = renderToStaticMarkup(createElement(CollaborationPanel, {
+    node,
+    allNodes: [node],
+    view,
+    actions: { retry: async () => {}, dispatch: async () => false, acceptDelivery: async () => false, rejectDelivery: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /是否继续？/);
+  assert.match(html, /提交回复|拒绝此次请求/);
+});

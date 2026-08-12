@@ -174,11 +174,8 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
     assert.equal(model.getSnapshot().health.status, "ok");
     await model.refreshWorkspaces();
     await model.bindForeground(mounted.workspaceId);
-    const shellController = model.getController();
-    assert.ok(shellController);
-    await shellController!.openNode(created.nodeId);
-    model.emitContextCardForActive();
-    // Also allow explicit push without active tab
+    // Float Context Cards are explicit; the main bootstrap no longer carries
+    // the retired WorkspaceController/Task collaboration state.
     model.cards.pushNode(created.nodeId, created.path, "from-desk");
     const floating = model.floatingStatus();
     assert.equal(floating.health.status, "ok");

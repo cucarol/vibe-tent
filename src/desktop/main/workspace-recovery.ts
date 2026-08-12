@@ -11,7 +11,6 @@ export type DesktopRecoveryModel = {
   refreshWorkspaces(): Promise<unknown>;
   getSnapshot(): { foregroundWorkspaceId: string | null };
   mountWorkspace(workspaceRoot: string): Promise<unknown>;
-  refreshTasks(): Promise<unknown>;
 };
 
 type DesktopRecoverySnapshot = ReturnType<DesktopRecoveryModel["getSnapshot"]>;
@@ -64,8 +63,5 @@ async function recoverDesktopStateOnce(args: {
     }
   }
 
-  if (args.model.getSnapshot().foregroundWorkspaceId) {
-    await args.model.refreshTasks();
-  }
   return args.model.getSnapshot();
 }

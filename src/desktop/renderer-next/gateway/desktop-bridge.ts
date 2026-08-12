@@ -25,6 +25,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasExactBootstrapKeys(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === 3 &&
+    keys[0] === "foregroundWorkspaceId" &&
+    keys[1] === "health" &&
+    keys[2] === "workspaces";
+}
+
 function normalizeWorkspace(value: unknown): DesktopWorkspace | null {
   if (
     !isRecord(value) ||
@@ -45,7 +53,7 @@ function normalizeWorkspace(value: unknown): DesktopWorkspace | null {
 }
 
 export function normalizeDesktopBootstrap(raw: unknown): DesktopBootstrap {
-  if (!isRecord(raw) || !isRecord(raw.health)) {
+  if (!isRecord(raw) || !hasExactBootstrapKeys(raw) || !isRecord(raw.health)) {
     throw new Error("桌面服务状态不可用");
   }
   const health = raw.health;

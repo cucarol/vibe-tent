@@ -20,7 +20,7 @@ test("parentActor is the sole persisted and public Task review-authority field",
       source("src/service/client.ts"),
       source("src/cli/task-rpc.ts"),
       source("src/desktop/main/collaboration-ipc-handler.ts"),
-      source("src/desktop/workbench/collaboration-ui.ts"),
+      source("src/desktop/renderer-next/components/CollaborationPanel.tsx"),
     ]);
 
   assert.doesNotMatch(task, /reviewer\?:\s*TaskActorRef/);

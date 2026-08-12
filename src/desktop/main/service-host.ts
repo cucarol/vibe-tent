@@ -12,10 +12,6 @@ import type { ServiceRpcClient } from "../client/rpc-client.js";
 import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { isServiceProtocolIncompatibleError } from "../../service/protocol.js";
 import type { EventEnvelope } from "../../service/types.js";
-import {
-  isPendingInteractionEventType,
-  isTaskProjectionEventType,
-} from "../workbench/pending-interactions.js";
 
 export type DesktopServiceEvent = {
   type: string;
@@ -30,14 +26,12 @@ export function isDesktopProjectionEventType(type: string): boolean {
     type === "node.changed" ||
     type === "workspace.switched" ||
     type === "service.health" ||
-    // Service exposes `session.state` as its single client-visible Session
-    // projection event. Keep this explicit: runtime stdout/config events are
-    // diagnostics, not renderer projection invalidations.
-    type === "session.state" ||
     type === "registry.roles.updated" ||
     type === "connection.changed" ||
-    isPendingInteractionEventType(type) ||
-    isTaskProjectionEventType(type)
+    type === "task.state" ||
+    type === "delivery.updated" ||
+    type === "decisionRequest.pending" ||
+    type === "decisionRequest.resolved"
   );
 }
 

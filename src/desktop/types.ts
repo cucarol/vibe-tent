@@ -36,6 +36,13 @@ export type FloatingStatusSnapshot = {
   foregroundRoot?: string | null;
 };
 
+/** Exact main-window bootstrap/state-change payload. */
+export type DesktopBootstrapSnapshot = {
+  health: ServiceHealthView;
+  workspaces: WorkspaceSummary[];
+  foregroundWorkspaceId: string | null;
+};
+
 export type DesktopPreferences = {
   recentWorkspaces: string[];
   lastWorkspaceRoot?: string;

@@ -32,9 +32,6 @@ function recoveryModel(args?: {
       calls.push(`mount:${workspaceRoot}`);
       foregroundWorkspaceId = "ws-remembered";
     },
-    async refreshTasks() {
-      calls.push("refreshTasks");
-    },
   };
   return { model, calls };
 }
@@ -73,7 +70,6 @@ test("same Service client remounts one remembered workspace after authoritative 
     "refreshHealth",
     "refreshWorkspaces",
     "mount:C:/remembered",
-    "refreshTasks",
   ]);
 });
 
@@ -100,11 +96,10 @@ test("existing authoritative foreground is preserved without a duplicate mount",
     "setRpc",
     "refreshHealth",
     "refreshWorkspaces",
-    "refreshTasks",
   ]);
 });
 
-test("concurrent recovery callers share attach, remount, task refresh, and result", async () => {
+test("concurrent recovery callers share attach, remount, and bootstrap result", async () => {
   const client = {} as ServiceRpcClient;
   const { model, calls } = recoveryModel();
   let attachCalls = 0;
@@ -140,7 +135,6 @@ test("concurrent recovery callers share attach, remount, task refresh, and resul
     "refreshHealth",
     "refreshWorkspaces",
     "mount:C:/remembered",
-    "refreshTasks",
   ]);
 });
 
@@ -175,6 +169,5 @@ test("failed recovery releases the flight so the next call can retry", async () 
     "refreshHealth",
     "refreshWorkspaces",
     "mount:C:/remembered",
-    "refreshTasks",
   ]);
 });

@@ -114,6 +114,7 @@ test("production bootstrap requires protocol 6 and exact foreground identity", (
   assert.throws(() =>
     normalizeDesktopBootstrap({ ...state(), foregroundWorkspaceId: "ws-missing" })
   );
+  assert.throws(() => normalizeDesktopBootstrap({ ...state(), tasks: [] }));
 
   const unmounted = normalizeDesktopBootstrap({
     health: { status: "ok", protocolVersion: 6 },
@@ -1176,7 +1177,7 @@ test("desktop event payload is invalidation only and named RPC stays closed", as
   assert.equal(serviceEvent, null);
 });
 
-test("session state does not invalidate the product collaboration projection", async () => {
+test("session state is not forwarded as a product projection invalidation", async () => {
   const host = new DesktopServiceHost();
   const bridge: RendererDesktopBridge = {
     getState: async () => state(),
@@ -1208,8 +1209,7 @@ test("session state does not invalidate the product collaboration projection", a
   });
 
   await new Promise((resolve) => setTimeout(resolve, 80));
-  assert.equal(hints.length, 1);
-  assert.deepEqual(hints[0], []);
+  assert.equal(hints.length, 0);
 
   gateway.stopEventBridge();
   await host.disposeShellOnly();

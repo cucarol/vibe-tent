@@ -14,6 +14,7 @@ import {
   recoverDesktopState,
   type DesktopRecoveryModel,
 } from "../src/desktop/main/workspace-recovery.js";
+import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 
 test("desktop host forwards workspace and projection invalidations only", () => {
   for (const type of [
@@ -22,7 +23,8 @@ test("desktop host forwards workspace and projection invalidations only", () => 
     "node.changed",
     "task.state",
     "delivery.updated",
-    "session.state",
+    "decisionRequest.pending",
+    "decisionRequest.resolved",
     "registry.roles.updated",
     "connection.changed",
   ]) {
@@ -34,6 +36,10 @@ test("desktop host forwards workspace and projection invalidations only", () => 
     "session.stdout_tail",
     "session.config_options",
     "provider.log",
+    "session.state",
+    "toolApproval.pending",
+    "taskInput.pending",
+    "proposal.updated",
     "unknown.event",
   ]) {
     assert.equal(isDesktopProjectionEventType(type), false, type);
@@ -205,7 +211,6 @@ test("same-URL Service replacement discards the stale token and coalesces recove
   await writeServiceEndpoint(dataDir, endpointB);
   let foregroundWorkspaceId: string | null = null;
   let rpc: ServiceRpcClient | null = null;
-  let taskRefreshes = 0;
   const model: DesktopRecoveryModel = {
     setRpc(client) {
       rpc = client;
@@ -228,9 +233,6 @@ test("same-URL Service replacement discards the stale token and coalesces recove
         workspaceRoot,
       });
       foregroundWorkspaceId = result.workspaceId;
-    },
-    async refreshTasks() {
-      taskRefreshes += 1;
     },
   };
   const recovery = {
@@ -255,7 +257,6 @@ test("same-URL Service replacement discards the stale token and coalesces recove
   assert.equal(oldSubscriptionCloses, 1);
   assert.equal(newSubscriptions, 1, "authenticated Service B events must be restored");
   assert.equal(mountCalls, 1, "remembered workspace mounts exactly once");
-  assert.equal(taskRefreshes, 1);
   oldDisconnect();
   assert.strictEqual(host.client, newClient, "late Service A close cannot clear Service B");
   await host.disposeShellOnly();
@@ -295,9 +296,6 @@ test("offline health remains publishable without a failing workspace read", asyn
         calls.push("workspaces");
         throw new Error("must not read workspaces while offline");
       },
-      refreshTasks: async () => {
-        calls.push("tasks");
-      },
     },
     "service.health"
   );
@@ -316,13 +314,49 @@ test("desktop disconnect refreshes authoritative health without reading workspac
         calls.push("workspaces");
         throw new Error("must not read workspaces while disconnected");
       },
-      refreshTasks: async () => {
-        calls.push("tasks");
-      },
     },
     "service.disconnected"
   );
   assert.deepEqual(calls, ["health"]);
+});
+
+test("renderer invalidations never trigger retired shell collaboration reads", async () => {
+  const calls: string[] = [];
+  const model = {
+    refreshHealth: async () => { calls.push("health"); return { status: "ok" }; },
+    refreshWorkspaces: async () => { calls.push("workspaces"); },
+  };
+  for (const type of ["node.changed", "task.state", "delivery.updated", "decisionRequest.pending", "session.state", "connection.changed"]) {
+    assert.equal(await refreshDesktopShellForEvent(model, type), false, type);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("desktop bootstrap snapshot contains no Task, review, collaboration, Session, or Connection facts", () => {
+  const snapshot = new DesktopShellModel().getSnapshot();
+  assert.deepEqual(Object.keys(snapshot).sort(), ["foregroundWorkspaceId", "health", "workspaces"]);
+  const serialized = JSON.stringify(snapshot);
+  for (const forbidden of ["tasks", "taskReview", "nodeCollaborations", "sessions", "connections", "taskPath", "sessionId"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});
+
+test("floating status refresh reads only task.list and keeps infrastructure out of its snapshot", async () => {
+  const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const rpc = {
+    url: "http://127.0.0.1:1",
+    async call(method: string, params?: Record<string, unknown>) {
+      calls.push({ method, params });
+      return { tasks: [{ state: "queued" }, { state: "running" }] };
+    },
+  } as unknown as ServiceRpcClient;
+  const model = new DesktopShellModel(rpc);
+  model.bindForeground("ws-a");
+  await model.refreshFloatingTasks();
+  assert.deepEqual(calls, [{ method: "task.list", params: { workspaceId: "ws-a" } }]);
+  assert.equal(model.floatingStatus().pendingTasks, 1);
+  assert.equal(model.floatingStatus().takenTasks, 1);
+  assert.deepEqual(Object.keys(model.getSnapshot()).sort(), ["foregroundWorkspaceId", "health", "workspaces"]);
 });
 
 test("concurrent ensureAttached shares one attach flight and one endpoint", async () => {

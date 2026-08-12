@@ -1,93 +1,27 @@
-// UI-framework-free desktop shell model (workbench-model layer).
+// UI-framework-free desktop bootstrap and floating-control model.
 
 import type { ServiceRpcClient } from "../client/rpc-client.js";
-import { ServiceDocsClient } from "../client/service-docs-client.js";
-import { WorkspaceController, type WorkspaceSnapshot } from "../../markdown/workspace-controller.js";
+import type { TaskProjection } from "../../service/types.js";
 import type {
-  NodeCollaboration,
-  NodeCollaborationsResult,
-  DeliveryProjection,
-  RoleRegistryEntryProjection,
-  SessionProjection,
-  AgentConnectionProjection,
-  TaskProjection,
-  TypeRegistryEntryProjection,
-} from "../../service/types.js";
-import type {
+  DesktopBootstrapSnapshot,
   FloatingStatusSnapshot,
   ServiceHealthView,
   WorkspaceSummary,
 } from "../types.js";
 import { ContextCardStore } from "./context-card-store.js";
-import {
-  applyNodeCollaborationsToTree,
-  collectUsableNodeIds,
-  normalizeNodeCollaboration,
-  type NodeCollaborationView,
-} from "./node-collaboration.js";
-import {
-  buildStartSessionPayload,
-  buildTaskReviewItems,
-  listCoordinationTypeOptions,
-  listConnectionOptions,
-  listRoleOptions,
-  pickDefaultConnectionId,
-  type CoordinationTypeOption,
-  type ConnectionOption,
-  type RoleOption,
-  type TaskReviewItem,
-} from "./collaboration-ui.js";
 
-export type ShellTaskRow = {
-  path: string;
-  roleId?: string;
-  workNodeIds: string[];
-  contextNodeIds: string[];
-  parentActor: TaskProjection["parentActor"];
-  /** Canonical lifecycle state (task-api). */
-  state: string;
-  acceptMode: TaskProjection["acceptMode"];
-  id?: string;
-  prompt?: string;
-  activeDeliveryId?: string;
-  sessionId?: string;
-  contextCard: TaskProjection["contextCard"];
-};
+type FloatingTaskState = Pick<TaskProjection, "state">;
 
-export type ShellSnapshot = {
-  health: ServiceHealthView;
-  workspaces: WorkspaceSummary[];
-  foregroundWorkspaceId: string | null;
-  workspace: WorkspaceSnapshot | null;
-  tasks: ShellTaskRow[];
-  /** Enriched review rows (delivery summary/commits when loaded). */
-  taskReview: TaskReviewItem[];
-  roles: RoleOption[];
-  coordinationTypes: CoordinationTypeOption[];
-  /** Machine-local Agent Connection picker options. */
-  connections: ConnectionOption[];
-  /** Selected machine-local Agent Connection id in the shell snapshot. */
-  selectedConnectionId: string | null;
-  statusMessage: string | null;
-  /** Canonical Node collaboration projections keyed by nodeId. */
-  nodeCollaborations: NodeCollaborationView[];
-};
-
+/**
+ * Main-window state is deliberately only the bootstrap identity needed before
+ * renderer-next starts its named authoritative projections. Task, Session,
+ * Delivery and Connection facts never cross getState/onStateChanged.
+ */
 export class DesktopShellModel {
   private health: ServiceHealthView = { status: "offline" };
   private workspaces: WorkspaceSummary[] = [];
   private foregroundWorkspaceId: string | null = null;
-  private docs: ServiceDocsClient | null = null;
-  private controller: WorkspaceController | null = null;
-  private tasks: ShellTaskRow[] = [];
-  private deliveries: DeliveryProjection[] = [];
-  private sessions: SessionProjection[] = [];
-  private roles: RoleOption[] = [];
-  private coordinationTypes: CoordinationTypeOption[] = [];
-  private connections: ConnectionOption[] = [];
-  private selectedConnectionId: string | null = null;
-  private statusMessage: string | null = null;
-  private nodeCollaborations = new Map<string, NodeCollaborationView>();
+  private floatingTasks: FloatingTaskState[] = [];
   private listeners = new Set<() => void>();
   readonly cards = new ContextCardStore();
 
@@ -102,58 +36,12 @@ export class DesktopShellModel {
     return () => this.listeners.delete(listener);
   }
 
-  getSnapshot(): ShellSnapshot {
-    const raw = this.controller?.getSnapshot() ?? null;
-    let workspace = raw;
-    if (raw) {
-      const stripped = stripTreeCollab(raw.tree as unknown as TreeNodeShape[]);
-      const overlaid = applyNodeCollaborationsToTree(stripped, this.nodeCollaborations);
-      workspace = {
-        ...raw,
-        tree: overlaid as unknown as typeof raw.tree,
-      };
-    }
+  getSnapshot(): DesktopBootstrapSnapshot {
     return {
       health: this.health,
       workspaces: this.workspaces,
       foregroundWorkspaceId: this.foregroundWorkspaceId,
-      workspace,
-      tasks: this.tasks,
-      taskReview: buildTaskReviewItems(
-        this.tasks.map((t) => ({
-          path: t.path,
-          id: t.id,
-          roleId: t.roleId,
-          workNodeIds: t.workNodeIds,
-          contextNodeIds: t.contextNodeIds,
-          parentActor: t.parentActor,
-          state: t.state,
-          prompt: t.prompt,
-          activeDeliveryId: t.activeDeliveryId,
-          sessionId: t.sessionId,
-          manifest: "",
-          acceptMode: t.acceptMode,
-          contextCard: t.contextCard,
-        })),
-        this.deliveries,
-        this.sessions
-      ),
-      roles: this.roles,
-      coordinationTypes: this.coordinationTypes,
-      connections: this.connections,
-      selectedConnectionId: this.selectedConnectionId,
-      statusMessage: this.statusMessage,
-      nodeCollaborations: [...this.nodeCollaborations.values()],
     };
-  }
-
-  getController(): WorkspaceController | null {
-    return this.controller;
-  }
-
-  setSelectedConnectionId(connectionId: string | null): void {
-    this.selectedConnectionId = connectionId;
-    this.emit();
   }
 
   async refreshHealth(): Promise<ServiceHealthView> {
@@ -184,6 +72,7 @@ export class DesktopShellModel {
   async refreshWorkspaces(): Promise<WorkspaceSummary[]> {
     if (!this.rpc) {
       this.workspaces = [];
+      this.foregroundWorkspaceId = null;
       this.emit();
       return this.workspaces;
     }
@@ -195,14 +84,14 @@ export class DesktopShellModel {
         foreground: boolean;
       }>;
     }>("workspace.list", {});
-    this.workspaces = (result.workspaces ?? []).map((w) => ({
-      workspaceId: w.workspaceId,
-      workspaceRoot: w.workspaceRoot,
-      tentName: w.tentName,
-      foreground: w.foreground,
+    this.workspaces = (result.workspaces ?? []).map((workspace) => ({
+      workspaceId: workspace.workspaceId,
+      workspaceRoot: workspace.workspaceRoot,
+      tentName: workspace.tentName,
+      foreground: workspace.foreground,
     }));
-    const fg = this.workspaces.find((w) => w.foreground);
-    this.foregroundWorkspaceId = fg?.workspaceId ?? this.health.foregroundWorkspaceId ?? null;
+    const foreground = this.workspaces.find((workspace) => workspace.foreground);
+    this.foregroundWorkspaceId = foreground?.workspaceId ?? this.health.foregroundWorkspaceId ?? null;
     this.emit();
     return this.workspaces;
   }
@@ -215,14 +104,9 @@ export class DesktopShellModel {
       tentName: string;
       foreground: boolean;
     }>("workspace.mount", { workspaceRoot });
-    // Mounting through the desktop shell is also the user's explicit request
-    // to work in that workspace. Keep the Service foreground authoritative;
-    // a local-only bind is overwritten by the next workspace.list refresh.
     await this.rpc.call("workspace.setForeground", { workspaceId: info.workspaceId });
     await this.refreshWorkspaces();
-    await this.bindForeground(info.workspaceId);
-    this.statusMessage = `Mounted ${info.workspaceRoot}`;
-    this.emit();
+    this.bindForeground(info.workspaceId);
     return {
       workspaceId: info.workspaceId,
       workspaceRoot: info.workspaceRoot,
@@ -235,231 +119,50 @@ export class DesktopShellModel {
     if (!this.rpc) throw new Error("Service not attached");
     await this.rpc.call("workspace.setForeground", { workspaceId });
     await this.refreshWorkspaces();
-    await this.bindForeground(workspaceId);
+    this.bindForeground(workspaceId);
   }
 
-  async bindForeground(workspaceId: string): Promise<void> {
-    if (!this.rpc) return;
+  /** Bind only bootstrap identity; renderer-next owns graph/document/collaboration. */
+  bindForeground(workspaceId: string): void {
     this.foregroundWorkspaceId = workspaceId;
-    this.nodeCollaborations.clear();
-    this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
-    this.controller = new WorkspaceController(this.docs);
-    this.controller.subscribe(() => this.emit());
-    await this.controller.refreshTree();
-    // Task/delivery/session changes invalidate Node collaboration projections.
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshConnections()]);
+    this.floatingTasks = [];
     this.emit();
   }
 
-  /** Refresh canonical Node collaboration in one batch. */
-  async refreshNodeCollaborations(): Promise<void> {
-    if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
-      this.nodeCollaborations.clear();
-      this.emit();
-      return;
-    }
-    const snap = this.controller.getSnapshot();
-    const ids = collectUsableNodeIds((snap.tree ?? []) as TreeNodeShape[]);
-    if (ids.length === 0) {
-      this.nodeCollaborations.clear();
-      this.emit();
-      return;
-    }
-    const ws = this.foregroundWorkspaceId;
-    const batch = await this.rpc.call<NodeCollaborationsResult>("node.collaborations", {
-      workspaceId: ws,
-      nodeIds: ids,
-    });
-    const results = batch.items.map((item) => normalizeNodeCollaboration(item));
-    this.nodeCollaborations.clear();
-    for (const p of results) {
-      if (p) this.nodeCollaborations.set(p.nodeId, p);
-    }
-    this.emit();
-  }
-
-  async refreshTasks(): Promise<void> {
+  /** Float-only task counts, loaded only when the floating window asks for them. */
+  async refreshFloatingTasks(): Promise<void> {
     if (!this.rpc || !this.foregroundWorkspaceId) {
-      this.tasks = [];
-      this.deliveries = [];
-      this.sessions = [];
+      this.floatingTasks = [];
       this.emit();
       return;
     }
     try {
-      const [taskResult, deliveryResult, sessionResult] = await Promise.all([
-        this.rpc.call<{ tasks: TaskProjection[] }>("task.list", {
-          workspaceId: this.foregroundWorkspaceId,
-        }),
-        this.rpc.call<{ deliveries: DeliveryProjection[] }>("delivery.list", {
-          workspaceId: this.foregroundWorkspaceId,
-        }),
-        this.rpc.call<{ sessions: SessionProjection[] }>("session.list", {
-          workspaceId: this.foregroundWorkspaceId,
-        }),
-      ]);
-      this.tasks = (taskResult.tasks ?? []).map((t) => ({
-        path: t.path,
-        roleId: t.roleId,
-        workNodeIds: t.workNodeIds ?? [],
-        contextNodeIds: t.contextNodeIds ?? [],
-        parentActor: t.parentActor,
-        state: t.state,
-        acceptMode: t.acceptMode,
-        id: t.id,
-        prompt: t.prompt,
-        activeDeliveryId: t.activeDeliveryId,
-        sessionId: t.sessionId,
-        contextCard: t.contextCard,
-      }));
-      this.deliveries = deliveryResult.deliveries ?? [];
-      this.sessions = sessionResult.sessions ?? [];
-      // Task/Delivery/Session changes invalidate node.collaboration.
-      await this.refreshNodeCollaborations();
+      const result = await this.rpc.call<{ tasks: TaskProjection[] }>("task.list", {
+        workspaceId: this.foregroundWorkspaceId,
+      });
+      this.floatingTasks = (result.tasks ?? []).map((task) => ({ state: task.state }));
     } catch {
-      this.tasks = [];
-      this.deliveries = [];
-      this.sessions = [];
+      this.floatingTasks = [];
     }
     this.emit();
-  }
-
-  async refreshRegistry(): Promise<void> {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      this.roles = [];
-      this.coordinationTypes = [];
-      this.emit();
-      return;
-    }
-    try {
-      const [typesResult, rolesResult] = await Promise.all([
-        this.rpc.call<{ types: TypeRegistryEntryProjection[] }>("registry.types", {
-          workspaceId: this.foregroundWorkspaceId,
-        }),
-        this.rpc.call<{ roles: RoleRegistryEntryProjection[] }>("registry.roles", {
-          workspaceId: this.foregroundWorkspaceId,
-        }),
-      ]);
-      this.coordinationTypes = listCoordinationTypeOptions(typesResult.types ?? []);
-      this.roles = listRoleOptions(rolesResult.roles ?? []);
-    } catch {
-      this.roles = [];
-      this.coordinationTypes = [];
-    }
-    this.emit();
-  }
-
-  /**
-   * Load machine-local Agent Connections.
-   * Does not start sessions; selection only.
-   */
-  async refreshConnections(): Promise<ConnectionOption[]> {
-    if (!this.rpc) {
-      this.connections = [];
-      this.selectedConnectionId = null;
-      this.emit();
-      return this.connections;
-    }
-    try {
-      const result = await this.rpc.call<{ connections: AgentConnectionProjection[] }>("connection.list", {});
-      this.connections = listConnectionOptions(result.connections ?? []);
-      if (
-        !this.selectedConnectionId ||
-        !this.connections.some((connection) => connection.connectionId === this.selectedConnectionId)
-      ) {
-        this.selectedConnectionId = pickDefaultConnectionId(this.connections);
-      }
-    } catch {
-      this.connections = [];
-      // Keep previous selection only if still meaningful; otherwise clear.
-      if (!this.connections.length) this.selectedConnectionId = null;
-    }
-    this.emit();
-    return this.connections;
-  }
-
-  /**
-   * User-clicked start agent. Builds task.startSession with callerKind=user.
-   * Does not auto-run; service may claim queued tasks for user callers.
-   */
-  async startAgentSession(taskPath: string): Promise<unknown> {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      throw new Error("服务未连接或未选择工作区。");
-    }
-    const built = buildStartSessionPayload(taskPath);
-    if (!built.ok) {
-      throw new Error(built.reason);
-    }
-    const result = await this.rpc.call("task.startSession", {
-      workspaceId: this.foregroundWorkspaceId,
-      taskPath: built.payload.taskPath,
-      callerKind: built.payload.callerKind,
-    });
-    await this.refreshTasks();
-    return result;
-  }
-
-  async interruptTask(taskPath: string): Promise<unknown> {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      throw new Error("服务未连接或未选择工作区。");
-    }
-    const result = await this.rpc.call("task.interrupt", {
-      workspaceId: this.foregroundWorkspaceId,
-      taskPath,
-    });
-    await this.refreshTasks();
-    return result;
-  }
-
-  emitContextCardForActive(): void {
-    const tab = this.controller?.getActiveTab();
-    if (!tab) return;
-    const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
-    this.cards.pushNode(tab.nodeId, tab.path, tab.name, fg?.workspaceRoot);
   }
 
   floatingStatus(): FloatingStatusSnapshot {
-    const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
+    const foreground = this.workspaces.find(
+      (workspace) => workspace.workspaceId === this.foregroundWorkspaceId
+    );
     return {
       health: this.health,
-      pendingTasks: this.tasks.filter(
-        (t) => t.state === "queued"
-      ).length,
-      takenTasks: this.tasks.filter(
-        (t) =>
-          t.state === "running" ||
-          t.state === "waiting" ||
-          t.state === "delivered"
+      pendingTasks: this.floatingTasks.filter((task) => task.state === "queued").length,
+      takenTasks: this.floatingTasks.filter((task) =>
+        task.state === "running" || task.state === "waiting" || task.state === "delivered"
       ).length,
       recentCards: this.cards.list(),
-      foregroundRoot: fg?.workspaceRoot ?? null,
+      foregroundRoot: foreground?.workspaceRoot ?? null,
     };
   }
 
   private emit(): void {
-    for (const l of this.listeners) l();
+    for (const listener of this.listeners) listener();
   }
-}
-
-type TreeNodeShape = {
-  nodeId: string;
-  coordination?: boolean;
-  invalid?: boolean;
-  archived?: boolean;
-  mode?: string;
-  status?: string;
-  assignee?: string;
-  children?: TreeNodeShape[];
-  [key: string]: unknown;
-};
-
-/** Drop list-side collaboration fields before applying live Node occupation. */
-function stripTreeCollab(nodes: TreeNodeShape[]): TreeNodeShape[] {
-  return nodes.map((n) => {
-    const { status: _s, assignee: _a, children, ...rest } = n;
-    return {
-      ...rest,
-      children: children ? stripTreeCollab(children) : children,
-    } as TreeNodeShape;
-  });
 }

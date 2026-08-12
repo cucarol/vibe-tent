@@ -70,9 +70,16 @@ function ResourceNotice({ view }: { view: CollaborationSurfaceView }) {
 function ActiveTaskSection({ task }: { task: CollaborationActiveTask }) {
   const owner = task.responsibility.kind === "role" ? task.responsibility.label : "由我负责";
   const execution = task.execution?.label;
+  const progress = task.pendingDecision
+    ? "等待你的决定"
+    : task.readyDelivery
+      ? task.responsibility.kind === "user"
+        ? "内容已返回，等待接纳"
+        : `内容已返回，等待${owner}接纳`
+      : "工作正在推进";
   return <section className="tn-collaboration-section" aria-labelledby="tn-active-task-title">
     <div className="tn-section-heading"><h2 id="tn-active-task-title">委托进展</h2><StatusBadge tone="running">{progressLabel(task.state)}</StatusBadge></div>
-    <div className="tn-active-task"><strong>{owner}</strong>{execution ? <span>执行：{execution}</span> : null}<span>{task.pendingDecision ? "等待你的决定" : task.readyDelivery ? "内容已返回，等待接纳" : "工作正在推进"}</span></div>
+    <div className="tn-active-task"><strong>{owner}</strong>{execution ? <span>执行：{execution}</span> : null}<span>{progress}</span></div>
   </section>;
 }
 
@@ -123,6 +130,14 @@ function DeliveryItem({ delivery, view, actions }: { delivery: CollaborationDeli
     {error ? <p className="tn-action-error" role="alert">{error}</p> : null}</article>;
 }
 
+function RoleDeliveryNotice({ delivery, owner }: { delivery: CollaborationDelivery; owner: string }) {
+  return <article className="tn-inbox-item" data-kind="delivery" data-actionable="false">
+    <div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="neutral">等待负责角色</StatusBadge></div>
+    <p>{delivery.summary || "对方没有提供摘要。"}</p>
+    <p>由 {owner} 继续审阅；这里仅展示结果。</p>
+  </article>;
+}
+
 function DecisionItem({ request, view, actions }: { request: CollaborationDecision; view: CollaborationSurfaceView; actions: CollaborationSurfaceActions }) {
   const [optionId, setOptionId] = useState(""); const [custom, setCustom] = useState(""); const [customMode, setCustomMode] = useState(false); const [error, setError] = useState<string | null>(null);
   const response = decisionResponseFromDraft({ customMode, optionId, custom }); const busy = view.busyKey === `decision:${request.requestId}`;
@@ -140,7 +155,7 @@ export function CollaborationPanel(props: CollaborationPanelProps) {
   const task = exactSelected?.activeTask ?? null;
   return <div className="tn-collaboration-panel" data-collaboration-status={props.view.status} data-collaboration-identity={collaborationPanelIdentity(props.view)}>
     <ResourceNotice view={props.view} />
-    {exactSelected ? <>{task ? <ActiveTaskSection task={task} /> : <DispatchSection {...props} />}{task?.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task?.readyDelivery ? <section className="tn-collaboration-section tn-inbox"><DeliveryItem delivery={task.readyDelivery} view={props.view} actions={props.actions} /></section> : null}</> : null}
+    {exactSelected ? <>{task ? <ActiveTaskSection task={task} /> : <DispatchSection {...props} />}{task?.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task?.readyDelivery ? <section className="tn-collaboration-section tn-inbox">{task.responsibility.kind === "user" ? <DeliveryItem delivery={task.readyDelivery} view={props.view} actions={props.actions} /> : <RoleDeliveryNotice delivery={task.readyDelivery} owner={task.responsibility.label} />}</section> : null}</> : null}
     {(props.view.status === "error" || props.view.status === "stale") ? <Button variant="quiet" size="compact" onClick={() => void props.actions.retry()}>重新读取</Button> : null}
   </div>;
 }

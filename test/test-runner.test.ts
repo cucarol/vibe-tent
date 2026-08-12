@@ -58,7 +58,6 @@ test("full, fast, and integration form one complete non-overlapping partition", 
 test("repository discovery includes formerly omitted tests and every integration entry", () => {
   const files = discoverTestFiles(repoRoot);
   for (const file of [
-    "test/desktop-pending-interactions.test.ts",
     "test/node-mode.test.ts",
     "test/service-interaction-pending.test.ts",
     "test/task-input-store.test.ts",

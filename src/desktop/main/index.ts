@@ -199,9 +199,17 @@ async function bootstrap(): Promise<void> {
         workspaceId: ev.workspaceId,
       });
     }
-    void refreshDesktopShellForEvent(model, ev.type).then(() => {
+    void refreshDesktopShellForEvent(model, ev.type).then((changed) => {
       const snap = model.getSnapshot();
-      for (const win of BrowserWindow.getAllWindows()) {
+      // Product projection events do not make the main-window bootstrap stale.
+      // The floating control still gets a narrow wake-up and performs its own
+      // explicit getFloatingStatus read, preserving its live task counters.
+      const windows = changed
+        ? BrowserWindow.getAllWindows()
+        : floatWindow && !floatWindow.isDestroyed()
+          ? [floatWindow]
+          : [];
+      for (const win of windows) {
         if (win.isDestroyed()) continue;
         win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
       }
