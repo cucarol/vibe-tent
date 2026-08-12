@@ -77,7 +77,11 @@ inferring a Task path or retrying with an alias.
    Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. Every Task follows its frozen `review-required | auto-accept | agent-decide` mode.
    Service refuses ready Delivery while this task has attention TaskInput (`pending`, `processing`, `failed`, or `uncertain`) with stable code `PENDING_TASK_INPUT`. `uncertain` means injection may already have happened: never retry or re-inject it. Successful authorized acknowledgement resolves the blocker and schedules exactly one durable report-draft retry, never a provider prompt.
 
-A commit-bearing ready Delivery records reported commits from the exact lane range plus a target-head snapshot. The commit list may be empty or a relevant subset; every listed SHA must belong to the lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against the current target instead of overriding or rewriting persisted facts.
+A ready Delivery is a formal success record. Its commit list may be empty; a
+zero-commit Delivery is valid. When commits are present, they come from the exact
+lane range with a target-head snapshot, and every listed SHA must belong to that
+lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against
+the current target instead of overriding or rewriting persisted facts.
 
 Managed ACP first preserves every non-empty final report as a durable draft, then publishes natural report content as Delivery after the turn and lane settle. Natural final prose needs no outcome wrapper. A valid leading `outcome: blocked|needs-input` parks without Delivery but does not discard its preserved body; only those two controls park. Missing or malformed outcome text never discards the report, and an empty report never invents success.
 

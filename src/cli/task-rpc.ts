@@ -733,6 +733,14 @@ type TaskLike = {
   workNodeIds?: string[];
   contextNodeIds?: string[];
   sessionId?: string;
+  lastReturn?: {
+    kind?: string;
+    report?: string;
+    error?: string;
+    code?: string;
+    at?: string;
+    sessionId?: string;
+  };
   prompt?: string;
 };
 
@@ -802,7 +810,8 @@ function formatTaskList(result: unknown): string {
         (t.roleId ? `\trole=${t.roleId}` : "") +
         `\twork=${(t.workNodeIds ?? []).join(",") || "-"}` +
         `\tcontext=${(t.contextNodeIds ?? []).join(",") || "-"}` +
-        (t.sessionId ? `\tsession=${t.sessionId}` : "")
+        (t.sessionId ? `\tsession=${t.sessionId}` : "") +
+        (t.lastReturn?.kind ? `\treturn=${t.lastReturn.kind}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -820,10 +829,29 @@ function formatTaskGet(result: { task: TaskLike }): string {
     `contextNodeIds: ${(t.contextNodeIds ?? []).join(", ") || "-"}`,
   ];
   if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
+  if (t.lastReturn?.kind) {
+    lines.push("", "--- last return ---", `kind: ${t.lastReturn.kind}`);
+    if (t.lastReturn.code) lines.push(`code: ${boundedCliText(t.lastReturn.code, 160)}`);
+    if (t.lastReturn.at) lines.push(`at: ${boundedCliText(t.lastReturn.at, 80)}`);
+    if (t.lastReturn.sessionId) {
+      lines.push(`sessionId: ${boundedCliText(t.lastReturn.sessionId, 80)}`);
+    }
+    if (t.lastReturn.report) {
+      lines.push("report:", boundedCliText(t.lastReturn.report, 2000));
+    }
+    if (t.lastReturn.error) {
+      lines.push("error:", boundedCliText(t.lastReturn.error, 2000));
+    }
+  }
   if (t.prompt) {
     lines.push("", "--- prompt ---", t.prompt.trimEnd());
   }
   return lines.join("\n") + "\n";
+}
+
+function boundedCliText(value: string, maxChars: number): string {
+  const text = String(value).trim();
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[truncated]`;
 }
 
 function formatTaskWorktreeReclaim(

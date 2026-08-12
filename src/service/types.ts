@@ -1,6 +1,6 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
-import type { AcceptMode, TaskState } from "../core/task-model.js";
+import type { AcceptMode, TaskLastReturn, TaskState } from "../core/task-model.js";
 export type { ArtifactRef } from "../core/artifact.js";
 
 /** Common wire wrapper for all service fan-out events. */
@@ -143,9 +143,14 @@ export type WorkspaceCollaborationActiveTask = {
   pendingDecision: WorkspaceCollaborationDecision | null;
 };
 
+export type WorkspaceCollaborationLastReturn = TaskLastReturn & {
+  taskId: string;
+};
+
 export type WorkspaceCollaborationSelectedNode = {
   nodeId: string;
   activeTask: WorkspaceCollaborationActiveTask | null;
+  lastReturn: WorkspaceCollaborationLastReturn | null;
 };
 
 export type WorkspaceUserInboxDelivery = {
@@ -371,8 +376,8 @@ export type TaskProjection = {
   sessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
-  /** Last explicit managed Task outcome when recorded. */
-  lastOutcome?: "delivered" | "blocked" | "needs-input";
+  /** Latest formal non-Delivery return, from the Task authority. */
+  lastReturn?: TaskLastReturn;
   workspaceLane?: {
     workspace?: string;
     worktree?: string;

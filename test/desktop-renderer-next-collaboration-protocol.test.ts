@@ -19,17 +19,33 @@ test("workspace collaboration strips Task identity and accepts workspace-level n
 test("workspace collaboration validates exact selected identity and minimal action DTOs", () => {
   const raw = {
     workspaceId: "ws-a",
-    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "delivered", responsibility: { kind: "role", roleId: "rl-ui", displayName: "界面" }, execution: { kind: "connection", connectionId: "cn-a", displayName: "本机" }, readyDelivery: { deliveryId: "dl-a", summary: "完成", createdAt: "2026-08-12T00:00:00Z" }, pendingDecision: null } },
+    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "delivered", responsibility: { kind: "role", roleId: "rl-ui", displayName: "界面" }, execution: { kind: "connection", connectionId: "cn-a", displayName: "本机" }, readyDelivery: { deliveryId: "dl-a", summary: "完成", createdAt: "2026-08-12T00:00:00Z" }, pendingDecision: null }, lastReturn: { taskId: "TK-A", kind: "failed", error: "失败", sessionId: "SS-A" } },
     inbox: { items: [{ kind: "decision", requestId: "dr-a", taskId: "tk-a", nodeIds: ["cx-a"], question: "继续？", options: [{ id: "yes", label: "继续" }], createdAt: "2026-08-12T00:00:00Z" }], counts: { delivery: 0, decision: 1, total: 1 } },
   };
   const normalized = normalizeWorkspaceCollaboration(raw, "ws-a", "cx-a");
   assert.equal(normalized.ok, true);
   if (!normalized.ok) return;
   const serialized = JSON.stringify(normalized.value);
-  assert.equal(serialized.includes("taskId"), false);
+  assert.equal(
+    serialized.includes("\"taskId\":\"TK-A\""),
+    true,
+    "selected terminal return retains its exact Task identity"
+  );
   assert.equal(serialized.includes("taskPath"), false);
-  assert.equal(serialized.includes("session"), false);
+  for (const forbidden of [
+    "activeSession",
+    "sessionState",
+    "alive",
+    "turnBusy",
+    "provider",
+    "transport",
+  ]) {
+    assert.equal(serialized.includes(`\"${forbidden}\"`), false, forbidden);
+  }
   assert.equal(normalized.value.selectedNode?.activeTask?.readyDelivery?.deliveryId, "dl-a");
+  assert.equal(normalized.value.selectedNode?.lastReturn?.taskId, "TK-A");
+  assert.equal(normalized.value.selectedNode?.lastReturn?.error, "失败");
+  assert.equal(normalized.value.selectedNode?.lastReturn?.sessionId, "SS-A");
 });
 
 test("workspace collaboration fails closed on mismatch, extra infrastructure and corrupt counts", () => {

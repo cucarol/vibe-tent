@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Clock, FsAdapter } from "./adapter.js";
 import { isRoleId, isSessionId } from "./id.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
@@ -19,7 +20,7 @@ import {
   parseTaskActorRef,
   type AcceptMode,
   type TaskActorRef,
-  type TaskOutcome,
+  type TaskLastReturn,
   type TaskState,
   type TaskWait,
   type WorkspaceLane,
@@ -154,11 +155,8 @@ export interface TaskEnvelope extends TaskNodeContext {
   sessionId?: string;
   wait?: TaskWait;
   activeDeliveryId?: string;
-  /**
-   * Last explicit Task execution outcome when recorded (managed final report).
-   * Optional; absence does not block public task.deliver.
-   */
-  lastOutcome?: TaskOutcome;
+  /** Latest formal non-Delivery return; one bounded last-write-wins slot. */
+  lastReturn?: TaskLastReturn;
   createdAt?: string;
   updatedAt?: string;
   /** Immutable user prompt body (after frontmatter). */
@@ -274,6 +272,83 @@ export function assertIsoTimestamp(value: string, label: string): string {
     throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
   }
   return raw;
+}
+
+export const TASK_LAST_RETURN_REPORT_MAX_BYTES = 64 * 1024;
+export const TASK_LAST_RETURN_ERROR_MAX_BYTES = 8 * 1024;
+export const TASK_LAST_RETURN_CODE_MAX_BYTES = 128;
+
+/** Strict parser shared by disk load, lifecycle writes, and public projection. */
+export function parseTaskLastReturn(value: unknown): TaskLastReturn | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Task lastReturn must be an object.");
+  }
+  const raw = value as Record<string, unknown>;
+  const allowed = new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) {
+    throw new Error("Task lastReturn contains unknown fields.");
+  }
+  const kind = raw.kind;
+  if (kind !== "blocked" && kind !== "needs-input" && kind !== "failed") {
+    throw new Error("Task lastReturn.kind must be blocked, needs-input, or failed.");
+  }
+  const report = parseBoundedTaskLastReturnString(
+    raw.report,
+    "report",
+    TASK_LAST_RETURN_REPORT_MAX_BYTES
+  );
+  const error = parseBoundedTaskLastReturnString(
+    raw.error,
+    "error",
+    TASK_LAST_RETURN_ERROR_MAX_BYTES
+  );
+  if (!report && !error) {
+    throw new Error("Task lastReturn requires report or error.");
+  }
+  const code = parseBoundedTaskLastReturnString(
+    raw.code,
+    "code",
+    TASK_LAST_RETURN_CODE_MAX_BYTES
+  );
+  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
+    throw new Error("Task lastReturn.code must be a stable machine identifier.");
+  }
+  const at = raw.at === undefined
+    ? undefined
+    : assertIsoTimestamp(String(raw.at), "Task lastReturn.at");
+  const sessionId = raw.sessionId === undefined
+    ? undefined
+    : String(raw.sessionId).trim();
+  if (sessionId && !isSessionId(sessionId)) {
+    throw new Error(`Invalid Task lastReturn.sessionId: ${sessionId}.`);
+  }
+  return {
+    kind,
+    ...(report ? { report } : {}),
+    ...(error ? { error } : {}),
+    ...(code ? { code } : {}),
+    ...(at ? { at } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+function parseBoundedTaskLastReturnString(
+  value: unknown,
+  field: "report" | "error" | "code",
+  maxBytes: number
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Task lastReturn.${field} must be a string.`);
+  }
+  const text = value.trim();
+  if (!text) return undefined;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`Task lastReturn.${field} exceeds ${maxBytes} UTF-8 bytes.`);
+  }
+  return text;
 }
 
 /**
@@ -442,9 +517,8 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   // Context Card v2 already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
-  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
-    task.lastOutcome = data.lastOutcome;
-  }
+  const lastReturn = parseTaskLastReturn(data.lastReturn);
+  if (lastReturn) task.lastReturn = lastReturn;
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
@@ -773,7 +847,7 @@ export interface TaskEnvelopePatch {
   wait?: TaskWait | null;
   activeDeliveryId?: string | null;
   parentActor?: TaskActorRef;
-  lastOutcome?: TaskOutcome | null;
+  lastReturn?: TaskLastReturn | null;
   updatedAt?: string;
   /** Role WorkspaceLane fields (real workspace Git only). */
   workspace?: string | null;
@@ -862,13 +936,9 @@ export async function patchTaskEnvelope(
       mutator: "service",
     };
   }
-  if (patch.lastOutcome === null) delete data.lastOutcome;
-  else if (
-    patch.lastOutcome === "delivered" ||
-    patch.lastOutcome === "blocked" ||
-    patch.lastOutcome === "needs-input"
-  ) {
-    data.lastOutcome = patch.lastOutcome;
+  if (patch.lastReturn === null) delete data.lastReturn;
+  else if (patch.lastReturn !== undefined) {
+    data.lastReturn = parseTaskLastReturn(patch.lastReturn);
   }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
 

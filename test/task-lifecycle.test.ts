@@ -164,6 +164,45 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
 
+test("task.wait formal return requires its exact authoritative Session binding", async () => {
+  for (const binding of [undefined, "ss-current"] as const) {
+    const dir = await makeTent();
+    const { e, result } = await dispatchOnFreeBox(dir);
+    await taskClaim(e as any, result.taskPath, binding
+      ? { claimWrite: { sessionId: binding } }
+      : undefined);
+    const before = await e.fs.readFile(result.taskPath);
+    await assert.rejects(
+      () => taskWait(e as any, result.taskPath, {
+        reason: "external",
+        summary: "must remain running",
+        lastReturn: {
+          kind: "blocked",
+          report: "retired completion",
+          sessionId: "ss-stale",
+        },
+      }),
+      /Task wait return Session mismatch/
+    );
+    assert.equal(await e.fs.readFile(result.taskPath), before);
+  }
+
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath, { claimWrite: { sessionId: "ss-current" } });
+  const waited = await taskWait(e as any, result.taskPath, {
+    reason: "external",
+    summary: "exact bound return",
+    lastReturn: {
+      kind: "blocked",
+      report: "exact completion",
+      sessionId: "ss-current",
+    },
+  });
+  assert.equal(waited.state, "waiting");
+  assert.equal(waited.lastReturn?.sessionId, "ss-current");
+});
+
 test("lifecycle: finalize rejects a ready Delivery commit-list drift without mutation", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
@@ -435,9 +474,14 @@ test("lifecycle: published Delivery wins over interrupt and remains reviewable",
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
+  await taskWait(e as any, result.taskPath, {
+    reason: "external",
+    summary: "blocked before publish",
+    lastReturn: { kind: "blocked", report: "blocked before publish" },
+  });
+  await taskResume(e as any, result.taskPath);
   const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "published before interrupt",
-    lastOutcome: "delivered",
   });
 
   await assert.rejects(
@@ -449,7 +493,7 @@ test("lifecycle: published Delivery wins over interrupt and remains reviewable",
 
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "delivered");
-  assert.equal(task.lastOutcome, "delivered");
+  assert.equal(task.lastReturn, undefined, "published Delivery clears the prior return slot");
   assert.equal(task.activeDeliveryId, delivered.delivery.id);
   const deliveries = await loadDeliveries(e.fs, { taskId: task.id });
   assert.equal(deliveries.length, 1);
@@ -465,13 +509,16 @@ test("lifecycle: repeated interrupt repairs dangling Delivery projection", async
 
   await patchTaskEnvelope(e.fs, result.taskPath, {
     activeDeliveryId: "dl-missing",
-    lastOutcome: "delivered",
+    lastReturn: { kind: "failed", error: "preserve interruption context" },
   });
   const repaired = await taskInterrupt(e as any, result.taskPath);
 
   assert.equal(repaired.state, "interrupted");
   assert.equal(repaired.activeDeliveryId, undefined);
-  assert.equal(repaired.lastOutcome, undefined);
+  assert.deepEqual(repaired.lastReturn, {
+    kind: "failed",
+    error: "preserve interruption context",
+  });
 });
 
 test("lifecycle: exact Node occupation blocks peers but not parent, child, or sibling", async () => {

@@ -12,6 +12,7 @@ import {
   writeTaskEnvelope,
   type TaskEnvelope,
 } from "../src/core/task.js";
+import { taskFail } from "../src/core/task-lifecycle.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import type { PendingDecisionRequest } from "../src/core/decision-request.js";
@@ -261,6 +262,7 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
         },
         pendingDecision: null,
       },
+      lastReturn: null,
     });
     assert.deepEqual(result.inbox.counts, { delivery: 1, decision: 1, total: 2 });
     assert.deepEqual(result.inbox.items.map((item) => item.kind), ["delivery", "decision"]);
@@ -293,6 +295,73 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
     ]) {
       assert.equal(serialized.includes(`\"${forbidden}\"`), false, forbidden);
     }
+  });
+});
+
+test("workspace.collaboration keeps the latest terminal failed return visible on its Node", async () => {
+  const { workspace, systemFs, ids } = await makeWorkspace();
+  await withService(async (svc, client) => {
+    const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
+    const nodeId = ids.get("selected")!;
+    const older = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      roleId: "rl-executor",
+      parentActor: { kind: "user", id: "user" },
+    });
+    await patchTaskEnvelope(systemFs, older.path, {
+      state: "failed",
+      lastReturn: {
+        kind: "failed",
+        error: "older failure",
+        at: "2026-01-01T01:00:00+02:00",
+      },
+      updatedAt: "2026-01-01T01:00:00+02:00",
+    });
+    const latest = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      roleId: "rl-executor",
+      parentActor: { kind: "user", id: "user" },
+    });
+    await patchTaskEnvelope(systemFs, latest.path, {
+      state: "running",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    });
+    await taskFail(svc.ctx.host.require(workspaceId).env, latest.path, {
+      error: "latest terminal failure",
+      code: "EXPLICIT_FAILURE",
+    });
+    await patchTaskEnvelope(systemFs, latest.path, {
+      updatedAt: "2025-12-31T23:30:00.000Z",
+    });
+
+    const result = await client.workspaceCollaboration(workspaceId, nodeId);
+    assert.equal(result.selectedNode?.activeTask, null);
+    assert.equal(result.selectedNode?.lastReturn?.taskId, latest.id);
+    assert.equal(result.selectedNode?.lastReturn?.kind, "failed");
+    assert.equal(result.selectedNode?.lastReturn?.error, "latest terminal failure");
+    assert.equal(result.selectedNode?.lastReturn?.code, "EXPLICIT_FAILURE");
+    assert.equal(
+      result.selectedNode?.lastReturn?.taskId,
+      latest.id,
+      "numeric instant ordering must beat raw ISO offset lexicographic order"
+    );
+
+    const newerRunning = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      roleId: "rl-executor",
+      parentActor: { kind: "user", id: "user" },
+    });
+    await patchTaskEnvelope(systemFs, newerRunning.path, {
+      state: "running",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const current = await client.workspaceCollaboration(workspaceId, nodeId);
+    assert.equal(current.selectedNode?.activeTask?.taskId, newerRunning.id);
+    assert.equal(
+      current.selectedNode?.lastReturn,
+      null,
+      "a newer Task without a return supersedes historical failure on the Node surface"
+    );
   });
 });
 

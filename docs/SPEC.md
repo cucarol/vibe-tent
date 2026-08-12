@@ -268,7 +268,12 @@ lane have settled. A non-empty natural ACP final report defaults to a Delivery;
 an optional valid `blocked` or `needs-input` control outcome parks the Task
 instead. An empty report never invents success, and malformed outcome syntax
 never discards an otherwise valid report. Every non-empty final report is first
-preserved as a durable draft, including a control report that parks the Task.
+preserved as a durable draft. `Task.lastReturn` is the one bounded formal return
+slot for `blocked | needs-input | failed` facts that have not become a Delivery.
+Control reports write it atomically with the wait; pre-publication failures write
+`failed` and retain the draft. Successful Delivery publication clears the slot.
+Session/provider availability diagnostics park without inventing a formal
+failed return. No parallel typed outcome field exists on Task or Delivery.
 
 ## 8. User And Agent Interaction
 
@@ -283,11 +288,16 @@ The Service persists interaction types separately:
 `workspace.collaboration` is the product-facing read projection for an optional
 selected Node and the local user's actionable Inbox. With no Node selection,
 `selectedNode` is `null` while the Inbox remains authoritative. A selected Node carries
-only its id plus an exact active-Task collaboration view; Node name, type, mode,
+its id, an exact active-Task collaboration view, and the latest Task's optional
+`lastReturn` with canonical Task id. Selection is deterministic by Task update
+instant then exact id, so a newer Task without a return supersedes historical
+failure. Node name, type, mode,
 and hierarchy remain graph authority. Responsibility derives from the Task's
 exact `parentActor`; execution derives separately from its Role assignee or
-machine Connection. The projection never exposes Task paths, Session identity
-or liveness, provider transport, credentials, commits, or target heads.
+machine Connection. The projection never exposes Task paths, active Session
+binding/liveness, provider transport, credentials, commits, or target heads; a
+formal `lastReturn` may retain its bounded source `sessionId` as diagnostic
+metadata.
 
 The user Inbox contains only exact ready Deliveries whose responsibility is the
 user and pending user-targeted DecisionRequests whose Task is currently

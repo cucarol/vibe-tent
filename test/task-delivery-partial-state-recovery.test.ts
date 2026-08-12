@@ -20,6 +20,7 @@ import {
   taskDeliver,
   taskFail,
   taskInterrupt,
+  taskRecordFailedReturn,
   taskReject,
   taskResume,
   taskWait,
@@ -265,29 +266,29 @@ test("post-WAL task.deliver recovery converges prior candidate then rejects a mi
   assert.equal(await base.readFile(after.deliveries[0]!.path), deliveryRaw);
 });
 
-for (const originalOutcome of ["delivered", undefined] as const) {
-  test(`ready Delivery WAL preserves ${originalOutcome ?? "absent"} lastOutcome against mismatched retry`, async () => {
-    const { base, env, taskPath, arm } = await runningTask("review-required");
-    const original: TaskDeliverOptions = {
-      summary: "outcome WAL",
-      ...(originalOutcome ? { lastOutcome: originalOutcome } : {}),
-    };
-    arm({ operation: "writeFile", path: (path) => path === taskPath, timing: "before" });
-    await assert.rejects(() => taskDeliver(env as never, taskPath, original), /fault/);
-
-    const mismatch: TaskDeliverOptions = {
-      summary: original.summary,
-      ...(originalOutcome ? {} : { lastOutcome: "delivered" }),
-    };
-    await assert.rejects(
-      () => taskDeliver(env as never, taskPath, mismatch),
-      (error: unknown) => (error as { code?: string }).code === "DELIVERY_CHANGED"
-    );
-    const task = await loadTaskEnvelope(base, taskPath);
-    assert.equal(task.state, "delivered");
-    assert.equal(task.lastOutcome, originalOutcome);
+test("committed Delivery WAL reconciles before a failed return can be recorded", async () => {
+  const { base, env, taskPath, arm } = await runningTask("review-required");
+  await taskRecordFailedReturn(env as never, taskPath, {
+    error: "older pre-publication failure",
+    code: "OLDER_FAILURE",
   });
-}
+  arm({ operation: "writeFile", path: (path) => path === taskPath, timing: "before" });
+  await assert.rejects(
+    () => taskDeliver(env as never, taskPath, { summary: "committed before Task patch" }),
+    /fault/
+  );
+  assert.equal((await loadTaskEnvelope(base, taskPath)).state, "running");
+  assert.equal((await loadDeliveries(base)).length, 1);
+
+  const reconciled = await taskRecordFailedReturn(env as never, taskPath, {
+    error: "must not overwrite committed Delivery authority",
+    code: "LATE_FAILURE",
+  });
+  assert.equal(reconciled.state, "delivered");
+  assert.equal(reconciled.lastReturn, undefined);
+  assert.ok(reconciled.activeDeliveryId);
+  assert.equal((await loadDeliveries(base))[0]!.status, "ready");
+});
 
 test("accepted auto-delivery WAL repairs Task before rejecting mismatched finalize args", async () => {
   const { base, env, taskPath, arm } = await runningTask("auto-accept");
@@ -307,33 +308,6 @@ test("accepted auto-delivery WAL repairs Task before rejecting mismatched finali
   assert.equal(exact.task.state, "accepted");
   assert.equal((await loadDeliveries(base)).length, 1);
 });
-
-for (const originalOutcome of ["delivered", undefined] as const) {
-  test(`accepted Delivery WAL preserves ${originalOutcome ?? "absent"} lastOutcome against mismatched finalize`, async () => {
-    const { base, env, taskPath, arm } = await runningTask("auto-accept");
-    const original: TaskDeliverOptions = {
-      summary: "accepted outcome WAL",
-      ...(originalOutcome ? { lastOutcome: originalOutcome } : {}),
-    };
-    const prepared = await prepareTaskDeliver(env as never, taskPath, original);
-    assert.equal(prepared.kind, "auto");
-    if (prepared.kind !== "auto") return;
-    arm({ operation: "writeFile", path: (path) => path === taskPath, timing: "before" });
-    await assert.rejects(() => finalizeTaskDeliverAuto(env as never, taskPath, original, prepared), /fault/);
-
-    const mismatch: TaskDeliverOptions = {
-      summary: original.summary,
-      ...(originalOutcome ? {} : { lastOutcome: "delivered" }),
-    };
-    await assert.rejects(
-      () => finalizeTaskDeliverAuto(env as never, taskPath, mismatch, prepared),
-      (error: unknown) => (error as { code?: string }).code === "DELIVERY_CHANGED"
-    );
-    const task = await loadTaskEnvelope(base, taskPath);
-    assert.equal(task.state, "accepted");
-    assert.equal(task.lastOutcome, originalOutcome);
-  });
-}
 
 test("checks compare field-wise and artifact refs compare after canonical normalization", async () => {
   const { base, env, taskPath, arm } = await runningTask("review-required");
@@ -587,7 +561,7 @@ for (const operation of ["claim", "wait", "resume", "interrupt", "fail", "cancel
     const { base, env, taskPath, arm } = await runningTask("review-required");
     arm({ operation: "writeFile", path: (path) => path === taskPath, timing: "before" });
     await assert.rejects(
-      () => taskDeliver(env as never, taskPath, { summary: "committed before competing op", lastOutcome: "delivered" }),
+      () => taskDeliver(env as never, taskPath, { summary: "committed before competing op" }),
       /fault/
     );
     const committed = (await loadDeliveries(base))[0]!;
@@ -606,7 +580,7 @@ for (const operation of ["claim", "wait", "resume", "interrupt", "fail", "cancel
     const task = await loadTaskEnvelope(base, taskPath);
     assert.equal(task.state, "delivered");
     assert.equal(task.activeDeliveryId, committed.id);
-    assert.equal(task.lastOutcome, "delivered");
+    assert.equal(task.lastReturn, undefined);
     assert.equal((await loadDeliveries(base))[0]!.status, "ready");
   });
 }
@@ -689,7 +663,6 @@ test("reject-resume then taskFail removes rejected Delivery and clears terminal 
   const { base, env, taskPath } = await runningTask("review-required");
   const delivered = await taskDeliver(env as never, taskPath, {
     summary: "review me",
-    lastOutcome: "delivered",
   });
   await taskReject(env as never, taskPath, {
     actor: "user",
@@ -700,7 +673,8 @@ test("reject-resume then taskFail removes rejected Delivery and clears terminal 
   const failed = await taskFail(env as never, taskPath);
   assert.equal(failed.state, "failed");
   assert.equal(failed.activeDeliveryId, undefined);
-  assert.equal(failed.lastOutcome, undefined);
+  assert.equal(failed.lastReturn?.kind, "failed");
+  assert.equal(failed.lastReturn?.error, "Task failed.");
   assert.equal(await base.exists(delivered.delivery.path), false);
 });
 
@@ -708,7 +682,6 @@ test("idempotent taskFail repairs a legacy dangling rejected Delivery projection
   const { base, env, taskPath } = await runningTask("review-required");
   const delivered = await taskDeliver(env as never, taskPath, {
     summary: "review me",
-    lastOutcome: "delivered",
   });
   await taskReject(env as never, taskPath, {
     actor: "user",
@@ -721,8 +694,39 @@ test("idempotent taskFail repairs a legacy dangling rejected Delivery projection
   const repaired = await taskFail(env as never, taskPath);
   assert.equal(repaired.state, "failed");
   assert.equal(repaired.activeDeliveryId, undefined);
-  assert.equal(repaired.lastOutcome, undefined);
+  assert.equal(repaired.lastReturn?.kind, "failed");
+  assert.equal(repaired.lastReturn?.error, "Task failed.");
   assert.equal(await base.exists(delivered.delivery.path), false);
+});
+
+test("taskFail validates its formal return before deleting a non-accepted Delivery", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const task = await loadTaskEnvelope(base, taskPath);
+  const delivery = await createDelivery(base, env.clock, {
+    taskId: task.id!,
+    sourceNodeId: "cx-p1",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "rejected work retained on invalid failure input",
+    status: "rejected",
+  });
+  await patchTaskEnvelope(base, taskPath, {
+    activeDeliveryId: delivery.id,
+    updatedAt: env.clock.now(),
+  });
+  const taskRaw = await base.readFile(taskPath);
+  const deliveryRaw = await base.readFile(delivery.path);
+
+  await assert.rejects(
+    () => taskFail(env as never, taskPath, {
+      error: "formal failure",
+      code: "invalid code with spaces",
+    }),
+    /stable machine identifier/
+  );
+  assert.equal(await base.readFile(taskPath), taskRaw);
+  assert.equal(await base.readFile(delivery.path), deliveryRaw);
+  assert.equal((await loadTaskEnvelope(base, taskPath)).state, "running");
+  assert.equal((await loadDeliveries(base, { taskId: task.id })).length, 1);
 });
 
 test("session-owned Task recovers only its exact Delivery namespace", async () => {

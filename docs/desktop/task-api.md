@@ -210,8 +210,18 @@ An empty report never invents success.
 
 Before outcome handling or any publish attempt, Service saves every non-empty
 final report to the durable managed report-draft store. A valid control outcome
-changes the Task state but does not discard its full body. Draft retry reuses
-those exact bytes and never asks the provider to answer again.
+atomically parks the Task with a bounded full `lastReturn` and a short
+`wait.summary`; only after that Task fact is durable may Service clear the
+duplicate draft. Draft retry reuses exact preserved bytes and never asks the
+provider to answer again.
+
+`Task.lastReturn` is the latest formal return that has not become a Delivery:
+`blocked | needs-input | failed`, with bounded report/error diagnostics. A
+pre-publication seal, Git, candidate, or publication failure records `failed`
+and keeps the draft. Provider crashes, output limits, Session exit/leave, and
+start/replace/bind recovery failures remain `waiting(session_unavailable)` with
+Session diagnostics only; they are not terminal Task failures. A successful
+Delivery publication clears `lastReturn`.
 
 ## 11. Delivery gate and publication
 
@@ -224,9 +234,10 @@ A ready Delivery may publish only when:
 - no conflicting ready Delivery exists;
 - the durable report draft is available for managed publication.
 
-Delivery is persisted before `activeDeliveryId` and delivered Task outcome are
+Delivery is persisted before `activeDeliveryId` and delivered Task state are
 published through the Task lifecycle mutation. Interrupt cannot preserve a
-pointer to a Delivery that does not exist.
+pointer to a Delivery that does not exist. An already committed Delivery is
+reconciled before any failed return can be recorded.
 
 Managed draft retry after TaskInput acknowledgement is Service-owned tracked
 background work. A successful durable acknowledgement returns immediately; a
@@ -273,8 +284,10 @@ Service never pushes a remote as part of accept.
   Session through Service ownership.
 - once a ready Delivery exists, reviewer accept/reject preserves that published
   fact; interrupt does not erase it.
-- failure or interrupt cannot retain `lastOutcome=delivered` or a dangling
-  Delivery pointer.
+- explicit terminal failure persists bounded `lastReturn.failed`; interrupt
+  preserves the latest formal return while clearing any dangling non-authority
+  Delivery pointer. Terminal cleanup promotes any current managed draft first,
+  then clears that duplicate draft best-effort.
 
 Do not kill provider PIDs, edit envelopes, or delete lanes as lifecycle
 substitutes.

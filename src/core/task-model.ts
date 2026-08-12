@@ -29,6 +29,16 @@ export type WaitReason = "user-input" | "review" | "external";
  */
 export type TaskOutcome = "delivered" | "blocked" | "needs-input";
 
+/** Latest formal Task return that has not been superseded by a Delivery. */
+export type TaskLastReturn = {
+  kind: "blocked" | "needs-input" | "failed";
+  report?: string;
+  error?: string;
+  code?: string;
+  at?: string;
+  sessionId?: string;
+};
+
 /** Parent actor on a Task; this is also the sole review authority. */
 export type TaskActorKind = "user" | "role";
 export type TaskActorRef = {

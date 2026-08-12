@@ -1,6 +1,7 @@
 import type { DeliveryRecord } from "../core/delivery.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import type { TaskEnvelope } from "../core/task.js";
+import { isTaskId } from "../core/task-model.js";
 import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
 import type { DecisionRequestRecord } from "./decision-request-store.js";
 import { RpcError } from "./rpc-error.js";
@@ -91,7 +92,11 @@ export async function buildWorkspaceCollaborationProjection(
           decisionByTaskId: decisionsByTaskId,
         })
       : null;
-    selectedNode = { nodeId: input.nodeId, activeTask };
+    selectedNode = {
+      nodeId: input.nodeId,
+      activeTask,
+      lastReturn: selectNodeLastReturn(input.nodeId, input.tasks),
+    };
   }
 
   const counts = { delivery: 0, decision: 0, total: inboxItems.length };
@@ -101,6 +106,40 @@ export async function buildWorkspaceCollaborationProjection(
     selectedNode,
     inbox: { items: inboxItems, counts },
   };
+}
+
+function selectNodeLastReturn(
+  nodeId: string,
+  tasks: readonly TaskEnvelope[]
+): NonNullable<WorkspaceCollaborationProjection["selectedNode"]>["lastReturn"] {
+  const candidates = tasks.filter((task) => task.workNodeIds.includes(nodeId));
+  const ids = new Set<string>();
+  for (const task of candidates) {
+    if (!task.id || !isTaskId(task.id)) {
+      throw consistencyError("Node return Task is missing canonical identity", { nodeId });
+    }
+    if (ids.has(task.id)) {
+      throw consistencyError("Node return Task identity is ambiguous", {
+        nodeId,
+        taskId: task.id,
+      });
+    }
+    ids.add(task.id);
+    if (typeof task.updatedAt !== "string" || !Number.isFinite(Date.parse(task.updatedAt))) {
+      throw consistencyError("Node return Task timestamp is invalid", {
+        nodeId,
+        taskId: task.id,
+      });
+    }
+  }
+  candidates.sort((left, right) =>
+    Date.parse(right.updatedAt!) - Date.parse(left.updatedAt!) ||
+    left.id!.localeCompare(right.id!)
+  );
+  const selected = candidates[0];
+  return selected?.lastReturn
+    ? { taskId: selected.id!, ...selected.lastReturn }
+    : null;
 }
 
 function indexCanonicalTasks(

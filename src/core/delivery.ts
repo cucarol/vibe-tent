@@ -43,8 +43,6 @@ export interface DeliveryRecord {
   targetHead?: string;
   checks: DeliveryCheck[];
   artifactRefs: ArtifactRef[];
-  /** Internal Task outcome committed with this candidate for crash recovery. */
-  taskLastOutcome?: "delivered";
   integrationMode: IntegrationMode;
   review?: DeliveryReview;
   createdAt?: string;
@@ -63,8 +61,6 @@ export interface CreateDeliveryInput {
   targetHead?: string;
   checks?: DeliveryCheck[];
   artifactRefs?: ArtifactRef[];
-  /** Internal Task outcome committed with this candidate for crash recovery. */
-  taskLastOutcome?: "delivered";
   status?: DeliveryStatus;
   integrationMode?: IntegrationMode;
   id?: string;
@@ -85,7 +81,6 @@ const KEY_ORDER = [
   "targetHead",
   "checksJson",
   "artifactRefsJson",
-  "taskLastOutcome",
   "integrationMode",
   "reviewBy",
   "reviewDecision",
@@ -130,7 +125,6 @@ export async function createDeliveryUnlocked(
     ...(targetHead ? { targetHead } : {}),
     checks: input.checks ?? [],
     artifactRefs: normalizeArtifactRefs(input.artifactRefs ?? []),
-    ...(input.taskLastOutcome ? { taskLastOutcome: input.taskLastOutcome } : {}),
     integrationMode: input.integrationMode ?? null,
     createdAt: now,
     updatedAt: now,
@@ -182,7 +176,6 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
     ...(targetHead ? { targetHead } : {}),
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseArtifactRefsField(data.artifactRefsJson, path),
-    ...parseTaskLastOutcome(data.taskLastOutcome, path),
     integrationMode: parseIntegrationMode(data.integrationMode),
     review:
       reviewBy && reviewDecision
@@ -277,7 +270,6 @@ export function deliveryReviewSemanticsDigest(record: DeliveryRecord): string {
     targetHead: record.targetHead ?? null,
     checks: record.checks.map((check) => ({ ...check })),
     artifactRefs: normalizeArtifactRefs(record.artifactRefs),
-    taskLastOutcome: record.taskLastOutcome ?? null,
     integrationMode: record.integrationMode,
     review: record.review ? { ...record.review } : null,
     createdAt: record.createdAt ?? null,
@@ -301,7 +293,6 @@ export function deliveryAcceptCandidateDigest(record: DeliveryRecord): string {
     targetHead: record.targetHead ?? null,
     checks: record.checks.map((check) => ({ ...check })),
     artifactRefs: normalizeArtifactRefs(record.artifactRefs),
-    taskLastOutcome: record.taskLastOutcome ?? null,
     createdAt: record.createdAt ?? null,
   });
 }
@@ -430,7 +421,6 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
     targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : undefined,
     artifactRefsJson: artifactRefs.length ? JSON.stringify(artifactRefs) : undefined,
-    taskLastOutcome: record.taskLastOutcome,
     integrationMode: record.integrationMode,
     reviewBy: record.review?.by,
     reviewDecision: record.review?.decision,
@@ -470,15 +460,6 @@ function parseIntegrationMode(value: unknown): IntegrationMode {
     return value;
   }
   throw new Error(`Invalid delivery integrationMode: ${String(value)}.`);
-}
-
-function parseTaskLastOutcome(
-  value: unknown,
-  deliveryPath: string
-): { taskLastOutcome?: "delivered" } {
-  if (value === undefined) return {};
-  if (value === "delivered") return { taskLastOutcome: "delivered" };
-  throw new Error(`Invalid delivery taskLastOutcome: ${deliveryPath}.`);
 }
 
 function parseJsonArrayField<T>(value: unknown, parse: (arr: unknown) => T[]): T[] {

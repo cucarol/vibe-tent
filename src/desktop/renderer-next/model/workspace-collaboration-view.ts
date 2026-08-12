@@ -1,4 +1,5 @@
-import type { TaskState } from "../../../core/task-model.js";
+import { isSessionId } from "../../../core/id.js";
+import { isTaskId, type TaskLastReturn, type TaskState } from "../../../core/task-model.js";
 
 export type CollaborationResponsibility =
   | { kind: "user" }
@@ -28,6 +29,8 @@ export type CollaborationActiveTask = {
   pendingDecision: CollaborationDecision | null;
 };
 
+export type CollaborationLastReturn = TaskLastReturn & { taskId: string };
+
 export type CollaborationInboxItem =
   | ({ kind: "delivery"; sourceNodeId: string } & CollaborationDelivery)
   | ({ kind: "decision"; nodeIds: readonly string[]; createdAt: string } & CollaborationDecision);
@@ -41,6 +44,7 @@ export type WorkspaceCollaborationView = {
   selectedNode: {
     nodeId: string;
     activeTask: CollaborationActiveTask | null;
+    lastReturn: CollaborationLastReturn | null;
   } | null;
   inbox: {
     items: readonly CollaborationInboxItem[];
@@ -71,6 +75,75 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function parseLastReturn(raw: unknown): TaskLastReturn | null {
+  if (raw === null) return null;
+  if (!isRecord(raw)) throw new Error("workspace.collaboration lastReturn is corrupt");
+  const allowed = new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) {
+    throw new Error("workspace.collaboration lastReturn is corrupt");
+  }
+  if (raw.kind !== "blocked" && raw.kind !== "needs-input" && raw.kind !== "failed") {
+    throw new Error("workspace.collaboration lastReturn kind is corrupt");
+  }
+  const report = parseBoundedLastReturnString(raw.report, 64 * 1024);
+  const error = parseBoundedLastReturnString(raw.error, 8 * 1024);
+  if (!report && !error) throw new Error("workspace.collaboration lastReturn is empty");
+  const code = parseBoundedLastReturnString(raw.code, 128);
+  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
+    throw new Error("workspace.collaboration lastReturn code is corrupt");
+  }
+  const at = raw.at === undefined ? undefined : parseLastReturnTimestamp(raw.at);
+  const sessionId = raw.sessionId === undefined
+    ? undefined
+    : parseLastReturnSessionId(raw.sessionId);
+  return {
+    kind: raw.kind,
+    ...(report ? { report } : {}),
+    ...(error ? { error } : {}),
+    ...(code ? { code } : {}),
+    ...(at ? { at } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+function parseSelectedNodeLastReturn(raw: unknown): CollaborationLastReturn | null {
+  if (raw === null) return null;
+  if (!isRecord(raw) || typeof raw.taskId !== "string" || !isTaskId(raw.taskId)) {
+    throw new Error("workspace.collaboration selected lastReturn identity is corrupt");
+  }
+  const { taskId, ...lastReturn } = raw;
+  const parsed = parseLastReturn(lastReturn);
+  if (!parsed) throw new Error("workspace.collaboration selected lastReturn is corrupt");
+  return { taskId, ...parsed };
+}
+
+function parseBoundedLastReturnString(value: unknown, maxBytes: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("workspace.collaboration lastReturn text is corrupt");
+  const text = value.trim();
+  if (!text) return undefined;
+  if (new TextEncoder().encode(text).byteLength > maxBytes) {
+    throw new Error("workspace.collaboration lastReturn text exceeds its bound");
+  }
+  return text;
+}
+
+function parseLastReturnTimestamp(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) throw new Error("workspace.collaboration lastReturn timestamp is corrupt");
+  return value;
+}
+
+function parseLastReturnSessionId(value: unknown): string {
+  if (typeof value !== "string" || !isSessionId(value)) {
+    throw new Error("workspace.collaboration lastReturn Session is corrupt");
+  }
+  return value;
 }
 
 function parseOptions(raw: unknown, label: string): Array<{ id: string; label: string }> {
@@ -204,12 +277,13 @@ export function normalizeWorkspaceCollaboration(
     } else {
       if (
         !isRecord(raw.selectedNode) ||
-        !exactKeys(raw.selectedNode, ["nodeId", "activeTask"]) ||
+        !exactKeys(raw.selectedNode, ["nodeId", "activeTask", "lastReturn"]) ||
         raw.selectedNode.nodeId !== expectedNodeId
       ) throw new Error("workspace.collaboration selected Node mismatch");
       selectedNode = {
         nodeId: expectedNodeId,
         activeTask: parseActiveTask(raw.selectedNode.activeTask),
+        lastReturn: parseSelectedNodeLastReturn(raw.selectedNode.lastReturn),
       };
     }
 

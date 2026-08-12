@@ -46,7 +46,7 @@ function fixtureCollaboration(state: NonNullable<MainWindowPreviewProps["collabo
   };
   const snapshot = {
     workspaceId: FIXTURE_WORKSPACE_ID,
-    selectedNode: { nodeId: "cx-workbench", activeTask: task },
+    selectedNode: { nodeId: "cx-workbench", activeTask: task, lastReturn: null },
     inbox: { items: [], counts: { delivery: 0, decision: 0, total: 0 } },
   };
   return {

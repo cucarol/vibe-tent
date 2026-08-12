@@ -6,7 +6,8 @@
 //
 // Survives service restart so seal / dirty-worktree / collect / integrate /
 // task.deliver failures can retry without re-prompting the Agent.
-// Cleared only after a successful Delivery publish.
+// Cleared only after a successful Delivery publish or after the full return is
+// durably projected into Task.lastReturn (including terminal promotion).
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -329,7 +330,7 @@ export class ManagedDeliveryReportDraftStore {
   }
 
   /**
-   * Remove draft after successful Delivery (or when no longer needed).
+   * Remove draft after successful Delivery or durable Task return projection.
    * Idempotent when already absent.
    */
   async clear(workspaceId: string, taskPath: string): Promise<boolean> {

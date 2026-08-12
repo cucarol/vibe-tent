@@ -1254,7 +1254,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
               state: string;
               wait?: { reason?: string; summary?: string; code?: string } | null;
               activeDeliveryId?: string;
-              lastOutcome?: string;
+              lastReturn?: { kind?: string };
             };
           }
         ).task;
@@ -1263,7 +1263,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       assert.equal(parked.wait?.reason, "external");
       assert.equal(parked.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
       assert.equal(parked.activeDeliveryId, undefined);
-      assert.notEqual(parked.lastOutcome, "delivered");
+      assert.equal(parked.lastReturn, undefined, "provider limit remains a Session diagnostic");
 
       const session = await pollUntil(async () => {
         const record = await svc.runtime.registry.read(sessionId);
@@ -1624,22 +1624,22 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
     assert.equal((await svc.runtime.probe(sessionId)).alive, true);
 
     // Reproduce a stale-bundle late bind: terminal Task still carries the
-    // just-bound Session plus a delivered outcome/pointer that never existed.
+    // just-bound Session plus a stale formal return and pointer that never existed.
     const envFs = svc.ctx.host.require(workspaceId).env.fs;
     await patchTaskEnvelope(envFs, taskPath, {
       state: "interrupted",
       activeDeliveryId: "dl-missing",
-      lastOutcome: "delivered",
+      lastReturn: { kind: "failed", error: "preserve terminal context" },
     });
 
     const repaired = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
     assert.ok(!repaired.error, JSON.stringify(repaired.error));
     const task = (repaired.result as {
-      task: { state: string; activeDeliveryId?: string; lastOutcome?: string };
+      task: { state: string; activeDeliveryId?: string; lastReturn?: { error?: string } };
     }).task;
     assert.equal(task.state, "interrupted");
     assert.equal(task.activeDeliveryId, undefined);
-    assert.equal(task.lastOutcome, undefined);
+    assert.equal(task.lastReturn?.error, "preserve terminal context");
 
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline && (await svc.runtime.probe(sessionId)).alive) {
@@ -2944,8 +2944,8 @@ test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrat
 });
 
 /**
- * Same-Task reject waits on per-Task flight spanning accept Git, then refuses accepted
- * (no integrated-code / state-not-accepted split). Docs still complete early.
+ * Same-Task reject waits on per-Task flight spanning accept Git, then its exact
+ * ready-Delivery snapshot fails closed after acceptance changes authority.
  */
 test("P0-2: same-Task reject waits for accept Git then refuses accepted", async () => {
   const ws = await makeWorkspace("p0-life-reject");
@@ -2994,9 +2994,9 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
     assert.equal((accepted.result as { state: string }).state, "accepted");
     assert.ok(rejected.error, "reject must refuse after accept completed");
     assert.equal(rejected.error?.code, RPC_LIFECYCLE, JSON.stringify(rejected.error));
-    assert.match(
-      String(rejected.error?.message ?? ""),
-      /Invalid task transition|No ready delivery/i,
+    assert.equal(
+      (rejected.error?.data as { code?: string } | undefined)?.code,
+      "DELIVERY_CHANGED",
       JSON.stringify(rejected.error)
     );
     const get = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3281,9 +3281,9 @@ test("P0 fix: managed auto-accept failure preserves ready Delivery and emits dia
       "integrate failure must leave the candidate reviewable"
     );
     assert.equal(
-      (got.result as { task: { lastOutcome?: string } }).task.lastOutcome,
-      "delivered",
-      "Delivery creation publishes the durable execution outcome before integration"
+      (got.result as { task: { lastReturn?: unknown } }).task.lastReturn,
+      undefined,
+      "a ready Delivery is the stronger authority and clears pre-publication returns"
     );
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
@@ -3395,7 +3395,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
       taskPath
     );
     assert.equal(task.state, "delivered");
-    assert.equal(task.lastOutcome, "delivered");
+    assert.equal(task.lastReturn, undefined);
     assert.ok(task.activeDeliveryId);
     const listed = await rpc(svc, "delivery.list", { workspaceId });
     const deliveries = (listed.result as {
@@ -3442,7 +3442,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
     );
     assert.equal(task.state, "interrupted");
     assert.equal(task.activeDeliveryId, undefined);
-    assert.equal(task.lastOutcome, undefined);
+    assert.equal(task.lastReturn, undefined);
     const listed = await rpc(svc, "delivery.list", { workspaceId });
     const deliveries = (listed.result as {
       deliveries: Array<{ taskId: string }>;

@@ -88,6 +88,50 @@ test("CLI help documents only the canonical target and work/context Node grammar
   assert.doesNotMatch(help, /ask-user|user-ask/i);
 });
 
+test("CLI task get/list show bounded formal return while JSON keeps the typed projection", async () => {
+  const cwd = await makeFakeTentCwd();
+  const report = `${"中".repeat(2_100)}END_MARKER`;
+  const task = {
+    path: "temp/roles/rl-test/tasks/task-return.md",
+    id: "tk-return",
+    state: "failed",
+    workNodeIds: ["cx-work"],
+    contextNodeIds: [],
+    lastReturn: {
+      kind: "failed",
+      report,
+      error: "formal failure",
+      code: "TASK_FAILED",
+    },
+  };
+  const client = {
+    listWorkspaces: async () => ({ workspaces: [] }),
+    mount: async (workspaceRoot: string) => ({
+      workspaceId: "ws-return",
+      workspaceRoot,
+      systemRoot: path.join(workspaceRoot, ".tent"),
+    }),
+    taskGet: async () => ({ workspaceId: "ws-return", task }),
+    taskList: async () => ({ workspaceId: "ws-return", tasks: [task] }),
+  };
+
+  const human = await runTaskCommand("get", [task.path], { cwd, client: client as never });
+  assert.equal(human.exitCode, 0);
+  assert.match(human.stdout, /--- last return ---[\s\S]*kind: failed/);
+  assert.match(human.stdout, /\[truncated\]/);
+  assert.doesNotMatch(human.stdout, /END_MARKER/);
+
+  const listed = await runTaskCommand("list", [], { cwd, client: client as never });
+  assert.match(listed.stdout, /return=failed/);
+
+  const json = await runTaskCommand("get", [task.path], {
+    cwd,
+    client: client as never,
+    json: true,
+  });
+  assert.match(json.stdout, /END_MARKER/);
+});
+
 test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias knobs", async () => {
   const cwd = await makeFakeTentCwd();
   const calls: Array<{ method: string; args: unknown[] }> = [];

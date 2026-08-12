@@ -47,6 +47,8 @@ import {
   loadTaskEnvelopes,
   patchTaskEnvelope,
   primaryNodeId,
+  TASK_LAST_RETURN_ERROR_MAX_BYTES,
+  TASK_LAST_RETURN_REPORT_MAX_BYTES,
   taskAsSub,
   taskParentRoleId,
   type RoleWorkspaceContract,
@@ -140,6 +142,7 @@ import {
   taskClaim,
   taskFail,
   taskInterrupt,
+  taskRecordFailedReturn,
   taskReject,
   taskResume,
   taskWait,
@@ -6561,14 +6564,16 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
+    await promoteManagedDraftBeforeTerminal(ctx, workspaceId, taskPath, before);
     const task = await taskInterrupt(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    await clearManagedDraftBestEffort(ctx, workspaceId, taskPath);
     await removePendingDecisionRequestForTerminal(
       ctx,
       workspaceId,
       taskPath,
       "task.interrupt"
     );
-    emitTaskState(ctx, workspaceId, task, "task.interrupt");
     await cancelTaskInputsForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
       try {
@@ -6628,17 +6633,18 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
-    await removePendingDecisionRequestForTerminal(
-      ctx,
-      workspaceId,
-      taskPath,
-      "task.cancel"
-    );
     ctx.events.emit(
       "task.state",
       workspaceId,
       { path: taskPath, state: "interrupted", reason: "task.cancel" },
       "self"
+    );
+    await clearManagedDraftBestEffort(ctx, workspaceId, taskPath);
+    await removePendingDecisionRequestForTerminal(
+      ctx,
+      workspaceId,
+      taskPath,
+      "task.cancel"
     );
     return {
       workspaceId,
@@ -6662,6 +6668,62 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     state: result.state,
     cancelled: result.cancelled,
   };
+}
+
+async function promoteManagedDraftBeforeTerminal(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  task: TaskEnvelope | null
+): Promise<TaskEnvelope | null> {
+  if (!task || (task.state !== "running" && task.state !== "waiting")) return task;
+  const draft = await ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+  if (!draft) return task;
+  if (
+    !task.id ||
+    draft.taskId !== task.id ||
+    !task.sessionId ||
+    draft.sessionId !== task.sessionId
+  ) {
+    // A draft from a retired/noncanonical binding is stale operational state.
+    // It cannot block the exact current Task terminal transition; cleanup below
+    // removes it only after the terminal Task fact is durable.
+    return task;
+  }
+  const draftOutcome = parseTaskOutcomeReport(draft.assistantText);
+  const visibleReport =
+    draftOutcome?.outcome === "blocked" || draftOutcome?.outcome === "needs-input"
+      ? draftOutcome.report || draft.assistantText
+      : draft.assistantText;
+  const exactVisible =
+    task.lastReturn?.report === visibleReport &&
+    (!task.lastReturn.sessionId || task.lastReturn.sessionId === draft.sessionId) &&
+    (!draftOutcome || task.lastReturn.kind === draftOutcome.outcome);
+  if (exactVisible) return task;
+
+  const mount = ctx.host.require(workspaceId);
+  const reportFits = Buffer.byteLength(draft.assistantText, "utf8") <=
+    TASK_LAST_RETURN_REPORT_MAX_BYTES;
+  return taskRecordFailedReturn(mount.env, taskPath, {
+    ...(reportFits ? { report: draft.assistantText } : {}),
+    error: reportFits
+      ? "Task ended before its managed return could be published."
+      : "Managed return draft exceeded the Task return bound before termination.",
+    code: reportFits ? "TASK_TERMINATED_WITH_DRAFT" : "TASK_TERMINATED_DRAFT_OVERSIZE",
+    sessionId: draft.sessionId,
+  });
+}
+
+async function clearManagedDraftBestEffort(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string
+): Promise<void> {
+  try {
+    await ctx.managedDeliveryReportDrafts.clear(workspaceId, taskPath);
+  } catch {
+    // Terminal Task authority is durable; cleanup cannot suppress its projection/event.
+  }
 }
 
 /**
@@ -11848,7 +11910,8 @@ async function failTaskFromRuntime(
 
   let appliedFailure = false;
   let failedTask: TaskEnvelope | undefined;
-  await ctx.mutations.run(input.workspaceId, async () => {
+  await runTaskLifecycle(input.workspaceId, input.taskPath, () =>
+  ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
     const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
     if (current.state !== "running" && current.state !== "waiting" && current.state !== "failed") {
@@ -11861,9 +11924,26 @@ async function failTaskFromRuntime(
     if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
       return;
     }
-    // The authority check and all durable cleanup share the same mutation
-    // boundary. Delivery/reject-resume cannot interleave between this read and
-    // cancellation of TaskInputs.
+    // Validate/promote the durable return and commit the terminal Task before
+    // irreversible interaction cleanup. The exact Task flight + MutationBus
+    // prevents Delivery/reject-resume interleave across this boundary.
+    const promoted = await promoteManagedDraftBeforeTerminal(
+      ctx,
+      input.workspaceId,
+      input.taskPath,
+      current
+    );
+    const failed = await taskFail(mount.env, input.taskPath, {
+      ...(promoted?.lastReturn?.report ? { report: promoted.lastReturn.report } : {}),
+      error: boundedTaskReturnError(
+        input.summary?.trim() || input.reason,
+        "Task failed before completion."
+      ),
+      code: stableTaskReturnCode(input.reason, "TASK_FAILED"),
+      sessionId: input.sessionId,
+    });
+    emitTaskState(ctx, input.workspaceId, failed, input.reason);
+    await clearManagedDraftBestEffort(ctx, input.workspaceId, input.taskPath);
     await cancelTaskInputsForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
     if (input.sessionId) {
       await cancelTaskInputsForSession(
@@ -11873,19 +11953,15 @@ async function failTaskFromRuntime(
         "task.fail"
       );
     }
-    const failed = await taskFail(mount.env, input.taskPath, {
-      summary: input.summary,
-    });
     await removePendingDecisionRequestForTerminal(
       ctx,
       input.workspaceId,
       input.taskPath,
       "task.fail"
     );
-    emitTaskState(ctx, input.workspaceId, failed, input.reason);
     appliedFailure = true;
     failedTask = failed;
-  });
+  }));
 
   // Git worktree remove must stay outside MutationBus (same rule as integrate).
   if (appliedFailure && failedTask) {
@@ -12026,8 +12102,7 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
 }
 
 /**
- * Managed ACP path: capture final assistant response → same task.deliver lifecycle
- * **only when explicit outcome=delivered**.
+ * Managed ACP path: capture final assistant response → same task.deliver lifecycle.
  * - summary/report = assistant final reply body after outcome wire
  * - outcome blocked|needs-input → park via existing wait paths; no ready Delivery
  * - review-required → pending independent accept; auto-accept/agent-decide only at
@@ -12092,7 +12167,7 @@ async function tryManagedAutoDeliver(
       report: rawReport,
     };
   }
-  const summary = (parsedOutcome.report || rawReport).trim();
+  const summary = parsedOutcome.report.trim();
   // Keep the complete bounded outcome wire in drafts so idempotent retry
   // re-parses control reports without relying on the truncated wait summary.
   const draftText = rawReport;
@@ -12210,7 +12285,6 @@ async function tryManagedAutoDeliver(
       const recovered = await ctx.mutations.run(input.workspaceId, () =>
         recoverCommittedTaskDeliver(mount.env, input.taskPath, {
           summary,
-          lastOutcome: "delivered",
         })
       );
       const current = recovered?.task ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -12312,7 +12386,6 @@ async function tryManagedAutoDeliver(
         const opts = {
           summary,
           decision,
-          lastOutcome: "delivered" as const,
           ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
           ...(targetHead ? { targetHead } : {}),
         };
@@ -12382,13 +12455,16 @@ async function tryManagedAutoDeliver(
       }
     }
 
-    // Idempotent safety: seal already stopped; re-run cleanup if a race left
-    // the process alive (must not roll back a successful Delivery).
-    await stopManagedSessionAfterDelivery(ctx, {
-      workspaceId: input.workspaceId,
-      sessionId,
-      taskPath: input.taskPath,
-    });
+    if (published) {
+      // Idempotent safety after durable publish only: seal already stopped;
+      // re-run cleanup if a race left the process alive. A stale/no-op completion
+      // must never cancel open TaskInputs under the current Task binding.
+      await stopManagedSessionAfterDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId,
+        taskPath: input.taskPath,
+      });
+    }
 
     // Reclaim only AFTER managed session stop — cwd must not still own the worktree.
     if (published) {
@@ -12410,12 +12486,10 @@ async function tryManagedAutoDeliver(
       }
     }
   } catch (err) {
-    // Deliver / integrate / collection / seal / dirty-worktree failure must NOT
-    // terminal-fail the task. Pre-delivery failures keep the Task running; an
-    // auto-accept integration failure keeps its already-published ready Delivery
-    // and delivered Task reviewable. Both remain occupied and emit diagnostics.
-    // Only session.failed (launch/process) maps Task → failed. Report draft stays
-    // on disk for idempotent retry.
+    // Pre-publication failures keep the Task active, preserve the report draft
+    // WAL, and expose one formal failed return. If Core observes a committed
+    // ready/accepted Delivery, that stronger authority wins and no failure is
+    // recorded (integration/review errors are not Task returns).
     const message = err instanceof Error ? err.message : String(err);
     const errorCode =
       err instanceof RpcError &&
@@ -12437,10 +12511,47 @@ async function tryManagedAutoDeliver(
         // Draft body already durable; annotation is best-effort.
       }
     }
+    let taskWithReturn: TaskEnvelope | undefined;
+    if (draftPreserved) {
+      try {
+        const returnMount = ctx.host.get(input.workspaceId);
+        if (!returnMount) throw new Error("workspace unmounted before managed return record");
+        taskWithReturn = await runTaskLifecycle(
+          input.workspaceId,
+          input.taskPath,
+          () => ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const report = summary || rawReport;
+            const reportFits = Buffer.byteLength(report, "utf8") <=
+              TASK_LAST_RETURN_REPORT_MAX_BYTES;
+            return taskRecordFailedReturn(returnMount.env, input.taskPath, {
+              ...(reportFits ? { report } : {}),
+              error: boundedTaskReturnError(
+                message,
+                "Managed Delivery publication failed."
+              ),
+              code: stableTaskReturnCode(errorCode, "MANAGED_DELIVERY_FAILED"),
+              sessionId,
+            });
+          })
+        );
+      } catch {
+        // Draft WAL and Session diagnostic remain authoritative if the exact
+        // Task lifecycle cannot record the formal return.
+      }
+    }
+    if (taskWithReturn?.lastReturn?.kind === "failed") {
+      emitTaskState(
+        ctx,
+        input.workspaceId,
+        taskWithReturn,
+        "session.prompt_complete.failed"
+      );
+    }
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
-      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      const task = taskWithReturn ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (
         task.state === "running" ||
         task.state === "waiting" ||
@@ -12493,7 +12604,7 @@ async function tryManagedAutoDeliver(
 
 /**
  * Managed final report with outcome ≠ delivered (or missing/invalid/empty).
- * Never publishes a ready Delivery. Records lastOutcome when known; parks
+ * Never publishes a ready Delivery. Records one bounded formal return; parks
  * needs-input / blocked via existing task.wait paths; leaves session diagnostic.
  */
 async function handleManagedNonDeliveredOutcome(
@@ -12528,25 +12639,84 @@ async function handleManagedNonDeliveredOutcome(
           : "managed final report missing explicit outcome: delivered|blocked|needs-input");
 
     if (outcome === "needs-input" || outcome === "blocked") {
-      await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
-        await ctx.mutations.run(input.workspaceId, async () => {
-          ctx.host.markSelfWrite(input.workspaceId);
-          const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-          if (current.state !== "running") return;
-          await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-            lastOutcome: outcome,
-            state: "waiting",
-            wait: {
+      let parked = false;
+      let taskWithReturn: TaskEnvelope | undefined;
+      try {
+        await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+          await ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+            if (
+              current.state !== "running" ||
+              !task.id ||
+              current.id !== task.id ||
+              current.sessionId !== sessionId
+            ) {
+              return;
+            }
+            taskWithReturn = await taskWait(mount.env, input.taskPath, {
               reason: outcome === "needs-input" ? "user-input" : "external",
               summary: report.slice(0, 2000),
               code: outcome === "needs-input" ? "needs_input" : "blocked",
-            },
-            updatedAt: mount.env.clock.now(),
+              lastReturn: {
+                kind: outcome,
+                report,
+                at: mount.env.clock.now(),
+                sessionId,
+              },
+            });
+            parked = true;
           });
         });
-      });
-      const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-      if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        try {
+          await runTaskLifecycle(input.workspaceId, input.taskPath, () =>
+            ctx.mutations.run(input.workspaceId, async () => {
+              ctx.host.markSelfWrite(input.workspaceId);
+              const recorded = await taskRecordFailedReturn(mount.env, input.taskPath, {
+                error: boundedTaskReturnError(
+                  `Managed ${outcome} return could not be recorded: ${detail}`,
+                  "Managed control return could not be recorded."
+                ),
+                code: "MANAGED_RETURN_INVALID",
+                sessionId,
+              });
+              if (recorded.lastReturn?.kind === "failed") taskWithReturn = recorded;
+            })
+          );
+        } catch {
+          // Draft WAL plus Session diagnostic/event below still expose failure.
+        }
+      }
+      if (parked) {
+        // Task.lastReturn is now the durable visible fact; cleanup failure must
+        // not suppress the Session diagnostic/event below.
+        try {
+          await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
+        } catch {
+          // Best-effort duplicate cleanup; Task authority already contains the return.
+        }
+      }
+      if (taskWithReturn) {
+        emitTaskState(ctx, input.workspaceId, taskWithReturn, "session.prompt_complete");
+      }
+    } else if (input.emptyDeliveredBody) {
+      try {
+        await runTaskLifecycle(input.workspaceId, input.taskPath, () =>
+          ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const recorded = await taskRecordFailedReturn(mount.env, input.taskPath, {
+              error: "Managed delivered return body is empty.",
+              code: "MANAGED_EMPTY_DELIVERY_REPORT",
+              sessionId,
+            });
+            emitTaskState(ctx, input.workspaceId, recorded, "session.prompt_complete");
+          })
+        );
+      } catch {
+        // Draft WAL plus Session diagnostic/event below still expose failure.
+      }
     }
 
     try {
@@ -12586,6 +12756,30 @@ async function handleManagedNonDeliveredOutcome(
     // Allow a later successful delivered turn for the same session+task.
     managedAutoDeliverInFlight.delete(key);
   }
+}
+
+function boundedTaskReturnError(value: string, fallback: string): string {
+  const text = value.trim() || fallback;
+  if (Buffer.byteLength(text, "utf8") <= TASK_LAST_RETURN_ERROR_MAX_BYTES) return text;
+  const suffix = "…";
+  const budget = TASK_LAST_RETURN_ERROR_MAX_BYTES - Buffer.byteLength(suffix, "utf8");
+  const bytes = Buffer.from(text, "utf8");
+  let end = Math.min(budget, bytes.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString("utf8").trimEnd()}${suffix}`;
+}
+
+export function boundedTaskReturnErrorForTests(value: string): string {
+  return boundedTaskReturnError(value, "Managed Task return failed.");
+}
+
+function stableTaskReturnCode(value: string | undefined, fallback: string): string {
+  const code = value?.trim() || "";
+  return code &&
+    Buffer.byteLength(code, "utf8") <= 128 &&
+    /^[A-Za-z0-9_.:-]+$/.test(code)
+    ? code
+    : fallback;
 }
 
 /**
@@ -14035,7 +14229,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
-    lastOutcome: task.lastOutcome,
+    lastReturn: task.lastReturn ? { ...task.lastReturn } : undefined,
     workspaceLane: lane,
     // Compact first-claim baseCommit capture audit.
     ...(task.baseCommitCapture

@@ -34,6 +34,7 @@ import {
   loadTaskEnvelope,
   loadTaskEnvelopes,
   patchTaskEnvelope,
+  parseTaskLastReturn,
   primaryNodeId,
   type TaskEnvelope,
   type TaskEnvelopePatch,
@@ -50,6 +51,7 @@ import {
   type DeliverDecision,
   type DeliveryCheck,
   type TaskState,
+  type TaskLastReturn,
   type WaitReason,
 } from "./task-model.js";
 
@@ -73,16 +75,13 @@ export interface TaskWaitOptions {
   summary: string;
   /** Optional stable machine code (e.g. session_unavailable). */
   code?: string;
+  /** Internal formal return written atomically with a managed park. */
+  lastReturn?: TaskLastReturn;
 }
 
 export interface TaskDeliverOptions {
   summary: string;
   commits?: string[];
-  /**
-   * Internal explicit execution outcome to publish with the legal Delivery
-   * transition. Service callers must never persist it before Delivery creation.
-   */
-  lastOutcome?: "delivered";
   /**
    * Review-time full SHA of the resolved integration target branch HEAD.
    * Service snapshots this for commit-bearing Deliveries; Core persists it.
@@ -181,6 +180,13 @@ export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitO
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
     const code = options.code?.trim();
+    const lastReturn = options.lastReturn ? parseTaskLastReturn(options.lastReturn)! : undefined;
+    if (lastReturn?.sessionId && task.sessionId !== lastReturn.sessionId) {
+      throw new TaskLifecycleError(
+        "TASK_NOT_ACTIVE",
+        `Task wait return Session mismatch: task=${task.sessionId ?? "unbound"} requested=${lastReturn.sessionId}.`
+      );
+    }
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "waiting",
       wait: {
@@ -188,6 +194,7 @@ export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitO
         summary,
         ...(code ? { code } : {}),
       },
+      ...(lastReturn ? { lastReturn } : {}),
       updatedAt: env.clock.now(),
     });
   });
@@ -316,7 +323,6 @@ export async function prepareTaskDeliver(
       targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
-      taskLastOutcome: options.lastOutcome,
       status: "ready",
       integrationMode: routing.integrationMode,
       deliveriesDir: deliveryDirForTask(task),
@@ -326,7 +332,7 @@ export async function prepareTaskDeliver(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
-      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+      lastReturn: null,
       updatedAt: env.clock.now(),
     });
     if (routing.autoIntegrate) {
@@ -350,7 +356,7 @@ export async function prepareTaskDeliver(
 export async function recoverCommittedTaskDeliver(
   env: OpsEnv,
   taskPath: string,
-  expected: { summary: string; lastOutcome?: "delivered" }
+  expected: { summary: string }
 ): Promise<CommittedTaskDeliverRecovery | undefined> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
@@ -360,8 +366,7 @@ export async function recoverCommittedTaskDeliver(
     }
     assertCommittedDeliveryMatchesTask(task, delivery);
     if (
-      delivery.summary !== expected.summary.trim() ||
-      delivery.taskLastOutcome !== expected.lastOutcome
+      delivery.summary !== expected.summary.trim()
     ) {
       throw new TaskLifecycleError(
         "DELIVERY_CHANGED",
@@ -391,7 +396,6 @@ export async function recoverCommittedTaskDeliver(
       checks: delivery.checks.map((check) => ({ ...check })),
       artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
       ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
-      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
       ...(delivery.integrationMode === "agent-decided-integrate"
         ? { decision: "integrate" as const }
         : {}),
@@ -431,7 +435,7 @@ export async function finalizeTaskDeliverAuto(
         task = await patchTaskEnvelope(env.fs, taskPath, {
           state: "accepted",
           activeDeliveryId: persisted.id,
-          ...(persisted.taskLastOutcome ? { lastOutcome: persisted.taskLastOutcome } : {}),
+          lastReturn: null,
           wait: null,
           updatedAt: env.clock.now(),
         });
@@ -488,7 +492,7 @@ export async function finalizeTaskDeliverAuto(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
-      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+      lastReturn: null,
       wait: null,
       updatedAt: env.clock.now(),
     });
@@ -939,15 +943,12 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "interrupted") {
-      // Repair legacy/racy terminal projections idempotently. An interrupted
-      // Task never has an active Delivery; a delivered outcome is impossible.
+      // Repair a dangling active Delivery projection idempotently. Preserve any
+      // existing formal lastReturn as interruption context.
       await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
-        return task;
-      }
+      if (!task.activeDeliveryId) return task;
       return patchTaskEnvelope(env.fs, taskPath, {
         activeDeliveryId: null,
-        ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
         updatedAt: env.clock.now(),
       });
     }
@@ -965,15 +966,52 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
       state: "interrupted",
       wait: null,
       activeDeliveryId: null,
-      ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
       updatedAt: env.clock.now(),
     });
   });
 }
 
 export interface TaskFailOptions {
-  /** Optional diagnostic summary (not written as collaboration chat). */
+  /** Formal terminal failure text. Persisted in Task.lastReturn.error. */
   summary?: string;
+  report?: string;
+  error?: string;
+  code?: string;
+  sessionId?: string;
+}
+
+export interface TaskFailedReturnOptions {
+  report?: string;
+  error: string;
+  code?: string;
+  sessionId?: string;
+}
+
+/** Record a pre-publication managed failure without terminalizing the Task. */
+export async function taskRecordFailedReturn(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskFailedReturnOptions
+): Promise<TaskEnvelope> {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    // A committed ready/accepted Delivery wins. Its reconciliation clears stale
+    // non-Delivery return state; integration/review failures are not Task returns.
+    if (task.state !== "running" && task.state !== "waiting") return task;
+    const sessionId = assertTaskFailureSession(task, options.sessionId);
+    const lastReturn = parseTaskLastReturn({
+      kind: "failed",
+      ...(options.report ? { report: options.report } : {}),
+      error: options.error,
+      ...(options.code ? { code: options.code } : {}),
+      at: env.clock.now(),
+      ...(sessionId ? { sessionId } : {}),
+    })!;
+    return patchTaskEnvelope(env.fs, taskPath, {
+      lastReturn,
+      updatedAt: env.clock.now(),
+    });
+  });
 }
 
 /**
@@ -990,26 +1028,60 @@ export async function taskFail(
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "failed") {
+      const requestedLastReturn = buildTaskFailedReturn(task, options, env.clock.now());
       // Already terminal non-active — ensure non-accepted deliveries are cleared (repair path).
       await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") return task;
+      if (!task.activeDeliveryId && task.lastReturn?.kind === "failed") return task;
+      const lastReturn = task.lastReturn?.kind === "failed"
+        ? task.lastReturn
+        : requestedLastReturn;
       return patchTaskEnvelope(env.fs, taskPath, {
         activeDeliveryId: null,
-        ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
+        lastReturn,
         updatedAt: env.clock.now(),
       });
     }
     assertTransition(task.state, "fail", "failed");
+    const lastReturn = buildTaskFailedReturn(task, options, env.clock.now());
     await releaseOccupationForTask(env, task);
-    void options.summary;
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "failed",
       wait: null,
       activeDeliveryId: null,
-      ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
+      lastReturn,
       updatedAt: env.clock.now(),
     });
   });
+}
+
+function buildTaskFailedReturn(
+  task: TaskEnvelope,
+  options: TaskFailOptions,
+  at: string
+): TaskLastReturn {
+  const sessionId = assertTaskFailureSession(task, options.sessionId);
+  return parseTaskLastReturn({
+    kind: "failed",
+    ...(options.report ? { report: options.report } : {}),
+    error: options.error?.trim() || options.summary?.trim() || "Task failed.",
+    ...(options.code ? { code: options.code } : {}),
+    at,
+    ...(sessionId ? { sessionId } : {}),
+  })!;
+}
+
+function assertTaskFailureSession(
+  task: TaskEnvelope,
+  requestedSessionId: string | undefined
+): string | undefined {
+  const requested = requestedSessionId?.trim() || undefined;
+  if (requested && requested !== task.sessionId) {
+    throw new TaskLifecycleError(
+      "TASK_NOT_ACTIVE",
+      `Task failure Session mismatch: task=${task.sessionId ?? "unbound"} requested=${requested}.`
+    );
+  }
+  return requested ?? task.sessionId;
 }
 
 /** Clear this Task's non-accepted deliveries; occupation ends with task state. */
@@ -1588,7 +1660,7 @@ async function recoverExistingTaskDeliver(
       next = await patchTaskEnvelope(env.fs, taskPath, {
         state: "delivered",
         activeDeliveryId: delivery.id,
-        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        lastReturn: null,
         updatedAt: env.clock.now(),
       });
     } else if (task.state !== "delivered" || task.activeDeliveryId !== delivery.id) {
@@ -1600,7 +1672,7 @@ async function recoverExistingTaskDeliver(
       next = await patchTaskEnvelope(env.fs, taskPath, {
         state: "accepted",
         activeDeliveryId: delivery.id,
-        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        lastReturn: null,
         wait: null,
         updatedAt: env.clock.now(),
       });
@@ -1652,7 +1724,7 @@ async function reconcileCommittedTaskDelivery(
       return patchTaskEnvelope(env.fs, taskPath, {
         state: "delivered",
         activeDeliveryId: delivery.id,
-        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        lastReturn: null,
         updatedAt: env.clock.now(),
       });
     }
@@ -1664,7 +1736,7 @@ async function reconcileCommittedTaskDelivery(
       return patchTaskEnvelope(env.fs, taskPath, {
         state: "accepted",
         activeDeliveryId: delivery.id,
-        ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+        lastReturn: null,
         wait: null,
         updatedAt: env.clock.now(),
       });
@@ -1735,7 +1807,6 @@ function assertTaskDeliverCandidateMatches(
     delivery.integrationMode !== routing.integrationMode ||
     !exactStringListEqual(delivery.commits, expectedCommits) ||
     (delivery.targetHead?.trim() || undefined) !== expectedTargetHead ||
-    delivery.taskLastOutcome !== options.lastOutcome ||
     !exactDeliveryChecksEqual(delivery.checks, expectedChecks) ||
     !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)
   ) {

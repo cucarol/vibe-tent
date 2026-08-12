@@ -139,8 +139,8 @@ joined from their existing authorities; no collaboration field is copied into
 Node files. Session identity/liveness and filesystem Task paths are not product
 projection fields.
 
-Legacy `node.collaboration(s)` remains only until Desktop batch J consumes the
-new projection; protocol 7 removes that read surface rather than aliasing it.
+Protocol 7 removed legacy `node.collaboration(s)` after Desktop batch J consumed
+the projection; protocol 8 retains no alias or fallback read surface.
 
 ## 10. Events
 

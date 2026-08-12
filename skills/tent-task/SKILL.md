@@ -1,36 +1,32 @@
 ---
 name: tent-task
-description: "Execute one concrete Tent (帷幄) Task from its persisted Context Card through scoped work, interaction handling, the recorded Git lane, verification, an honest final report, and Delivery to the exact parent reviewer. Use for durable Role work, temporary managed ACP Sessions, and user-started work; also apply tent-role when the executor is a durable Role."
+description: "Execute one Tent Task through persisted context, scoped work, verification, final report, and Delivery."
 ---
 
 # tent-task
 
 Use this contract for every concrete Tent Task. Load stable Skill text once per
-compatible `contextGeneration`; later Tasks append only their Context Card v2 and
-incremental input/review delta.
+compatible `contextGeneration`. The host injects each persisted Context Card v2
+plus incremental TaskInput/review deltas; treat them as authoritative persisted
+facts, never remembered chat context.
 
 ## Resolve the authoritative Task
 
-1. Work from the workspace root containing `.tent/`. CLI `taskPath` is relative
-   to `.tent` (`temp/...`); direct reads use `.tent/temp/...`.
-2. Resolve the exact Task path/ID from managed binding, Context Card, or
-   `tent task list`. A durable Role may create and immediately claim its own
-   Task with `tent task claim --work-node <nodeId> … --prompt <text>|-`; this has no
-   target and is not downstream dispatch. A managed Connection Task is already
-   claimed by Service; a durable Role claims its own work through the Role
-   boundary.
-3. Read the immutable prompt, sole review authority `parentActor`, optional `roleId`,
-   exact executing `sessionId`, and WorkspaceLane from the Task envelope. Read
-   work/context Node ids, frozen Node snapshots, and optional
-   `contextGeneration` from Context Card v2.
+1. Work from the workspace root containing `.tent/`; CLI `taskPath` is relative
+   to `.tent`, while direct reads use `.tent/temp/...`.
+2. Resolve exact Task path/ID from managed binding, Context Card, or `task list`.
+   A Role claims its own work with `task claim`; managed Connection Tasks arrive
+   claimed. Neither is downstream dispatch.
+3. Read prompt, sole `parentActor`, optional Role/Session, WorkspaceLane, Node
+   snapshots, and optional `contextGeneration` from the persisted envelope/card.
 4. Resolve Context Card v2 work/context Node refs by stable id; paths are
    refreshable hints. Work refs are occupied; context refs remain shared
    read-only. Related Nodes are read-only unless included.
 5. Fail loud when required context or a declared ref is missing. Never infer it
    from prompt memory, a stale Session, an internal field, or a manifest.
 
-The envelope and Context Card define the Task. Node bodies provide durable
-context; Delivery is a separate review record. Read only the needed reference:
+The envelope/card define the Task; Node bodies are context and Delivery is a
+separate review record. Read only the needed reference:
 [paths.md](references/paths.md), [session-boundaries.md](references/session-boundaries.md),
 or [task-cli.md](references/task-cli.md).
 
@@ -38,12 +34,10 @@ or [task-cli.md](references/task-cli.md).
 
 - Use the persisted worktree and branch; never invent a lane. Preserve unrelated
   or pre-existing dirty work and never reset or clean it away.
-- Role lane/base is captured once at first claim; a managed Task lane is
-  established by Service. Re-read after claim/start. Missing required code-lane
-  facts fail loud; never guess or silently backfill them.
-- Produce only linear Task commits. Do not merge/rebase parent, target, or
-  dependency history; parent/Service owns integration and rejects foreign
-  ancestry.
+- Role lane/base is captured at first claim; Service establishes managed lanes.
+  Re-read after claim/start; never guess or backfill missing facts.
+- Produce only linear Task commits. Parent/Service owns integration; do not
+  merge/rebase parent, target, or dependency history.
 - Pure Tent or non-code work may have no lane or commits. Do not invent either.
 - Verify in proportion to risk. Record process exit code and authoritative
   runner pass/fail counts; tailed, truncated, or grepped output is not proof.
@@ -67,9 +61,9 @@ or [task-cli.md](references/task-cli.md).
 
 ## Finish with an honest final report
 
-A natural, non-empty managed ACP final report is deliverable after required
-settle gates. Service preserves it first; write useful prose with no
-outcome wrapper.
+A natural, non-empty managed ACP final report is deliverable by default after
+required settle gates. Service preserves every non-empty final
+report as a durable draft first; write useful prose with no outcome wrapper.
 
 Optional leading controls park instead of deliver:
 
@@ -77,8 +71,10 @@ Optional leading controls park instead of deliver:
 - `outcome: needs-input` — a specific decision or answer is required.
 
 Only `blocked` and `needs-input` park. Invalid control text never discards a
-valid report; empty output never invents success. Use DecisionRequest for a real
-authority question.
+valid report; empty output never invents success. A parked control return is
+visible through bounded Task `lastReturn`; pre-publication failure is `failed`,
+while provider/Session unavailability remains a Session diagnostic and
+recoverable park. Use DecisionRequest for a real authority question.
 
 ## Deliver to the exact parent
 
@@ -104,7 +100,14 @@ Replace a failed Session only through Service eligibility and exact Task CAS;
 never hand-bind a process or reuse remembered provider state. Stop obsolete work
 through `task cancel` or `task interrupt`, not PID kill or envelope edits.
 
-After terminal settle, Core may reclaim only a clean, integrated, unambiguous
-managed Task worktree. Never manually prune worktrees, follow junction targets,
-delete audit records, or continue writing after Delivery. Dirty, busy,
-unintegrated, external, and durable Role lanes remain fail-closed.
+Core may reclaim only a clean, integrated, unambiguous managed worktree. Never
+manually prune, follow junction targets, delete audit records, or write after
+Delivery; every other lane remains fail-closed.
+
+Host lifecycle commands are formal boundaries:
+
+- `tent session status [sessionId|externalKey] --json` inspects the persisted
+  binding and incomplete Tasks; it does not infer completion.
+- `tent session leave [sessionId|externalKey] --json` ends that exact Tent host
+  binding and reports incomplete Tasks. Leave never delivers or accepts a Task,
+  and does not claim to stop an external/native Agent process.
