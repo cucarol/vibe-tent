@@ -400,6 +400,39 @@ test("workspace.collaboration rejects current ready Delivery without durable cre
   });
 });
 
+test("workspace.collaboration rejects duplicate identity for a current Delivery only", async () => {
+  const { workspace, systemFs, ids } = await makeWorkspace();
+  await withService(async (_svc, client) => {
+    const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
+    const nodeId = ids.get("user-delivery")!;
+    const task = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      roleId: "rl-executor",
+      parentActor: { kind: "user", id: "user" },
+    });
+    const delivery = await readyDelivery(
+      systemFs,
+      task,
+      nodeId,
+      "Current unique candidate",
+      "2026-01-01T00:00:00.000Z"
+    );
+    await createDelivery(systemFs, { now: () => "2020-01-01T00:00:00.000Z" }, {
+      id: delivery.id,
+      taskId: "tk-history",
+      sourceNodeId: ids.get("history")!,
+      deliveriesDir: "temp/roles/rl-parent/deliveries",
+      summary: "Unrelated duplicate history",
+      status: "accepted",
+    });
+
+    await assert.rejects(
+      () => client.workspaceCollaboration(workspaceId, ids.get("selected")!),
+      /Delivery identity is not unique|WORKSPACE_COLLABORATION_STALE/i
+    );
+  });
+});
+
 test("workspace.collaboration rejects selected ready Delivery from a foreign Node", async () => {
   const { workspace, systemFs, ids } = await makeWorkspace();
   await withService(async (_svc, client) => {

@@ -43,9 +43,9 @@ export async function buildWorkspaceCollaborationProjection(
   const tasksById = indexCanonicalTasks(input.tasks);
   const { byTaskId: decisionsByTaskId, actionable: actionableDecisions } =
     selectActionableUserDecisions(input.pendingDecisions, tasksById);
-  const deliveryById = new Map(input.deliveries.map((delivery) => [delivery.id, delivery]));
+  const deliveriesById = indexDeliveriesById(input.deliveries);
   const readyDeliveriesByTaskId = indexReadyDeliveries(input.deliveries);
-  const inboxItems = selectUserInboxDeliveries(input.tasks, deliveryById, tasksById);
+  const inboxItems = selectUserInboxDeliveries(input.tasks, deliveriesById, tasksById);
 
   for (const { request, task } of actionableDecisions) {
     inboxItems.push({
@@ -82,7 +82,7 @@ export async function buildWorkspaceCollaborationProjection(
     ? await projectActiveTask({
         ...input,
         task: selectedTask,
-        deliveryById,
+        deliveriesById,
         readyDeliveries: selectedTask.id
           ? readyDeliveriesByTaskId.get(selectedTask.id) ?? []
           : [],
@@ -170,9 +170,21 @@ function indexReadyDeliveries(
   return result;
 }
 
+function indexDeliveriesById(
+  deliveries: readonly DeliveryRecord[]
+): Map<string, DeliveryRecord[]> {
+  const result = new Map<string, DeliveryRecord[]>();
+  for (const delivery of deliveries) {
+    const sameId = result.get(delivery.id) ?? [];
+    sameId.push(delivery);
+    result.set(delivery.id, sameId);
+  }
+  return result;
+}
+
 function selectUserInboxDeliveries(
   tasks: readonly TaskEnvelope[],
-  deliveryById: ReadonlyMap<string, DeliveryRecord>,
+  deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>,
   tasksById: ReadonlyMap<string, readonly TaskEnvelope[]>
 ): WorkspaceUserInboxItem[] {
   const items: WorkspaceUserInboxItem[] = [];
@@ -198,9 +210,17 @@ function selectUserInboxDeliveries(
         taskId: task.id,
       });
     }
-    const delivery = task.activeDeliveryId
-      ? deliveryById.get(task.activeDeliveryId)
-      : undefined;
+    const sameDeliveryId = task.activeDeliveryId
+      ? deliveriesById.get(task.activeDeliveryId) ?? []
+      : [];
+    if (sameDeliveryId.length !== 1) {
+      throw consistencyError("User-reviewable Delivery identity is not unique", {
+        taskId: task.id,
+        deliveryId: task.activeDeliveryId ?? null,
+        matches: sameDeliveryId.length,
+      });
+    }
+    const delivery = sameDeliveryId[0]!;
     if (
       !delivery ||
       delivery.status !== "ready" ||
@@ -229,7 +249,7 @@ function selectUserInboxDeliveries(
 async function projectActiveTask(
   input: WorkspaceCollaborationInput & {
     task: TaskEnvelope;
-    deliveryById: ReadonlyMap<string, DeliveryRecord>;
+    deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>;
     readyDeliveries: readonly DeliveryRecord[];
     decisionByTaskId: ReadonlyMap<string, DecisionRequestRecord>;
   }
@@ -333,7 +353,7 @@ async function projectExecution(
 function projectSelectedReadyDelivery(
   input: {
     task: TaskEnvelope;
-    deliveryById: ReadonlyMap<string, DeliveryRecord>;
+    deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>;
     readyDeliveries: readonly DeliveryRecord[];
   },
   taskId: string
@@ -346,8 +366,16 @@ function projectSelectedReadyDelivery(
   }
   let readyDelivery: WorkspaceCollaborationActiveTask["readyDelivery"] = null;
   if (input.task.activeDeliveryId) {
-    const delivery = input.deliveryById.get(input.task.activeDeliveryId);
-    if (!delivery || delivery.taskId !== taskId) {
+    const sameDeliveryId = input.deliveriesById.get(input.task.activeDeliveryId) ?? [];
+    if (sameDeliveryId.length !== 1) {
+      throw consistencyError("Selected Task Delivery identity is not unique", {
+        taskId,
+        deliveryId: input.task.activeDeliveryId,
+        matches: sameDeliveryId.length,
+      });
+    }
+    const delivery = sameDeliveryId[0]!;
+    if (delivery.taskId !== taskId) {
       throw consistencyError("Selected Task Delivery binding is stale", {
         taskId,
         deliveryId: input.task.activeDeliveryId,
