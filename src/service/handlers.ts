@@ -174,17 +174,8 @@ import {
 } from "../core/task-worktree-reclaim-queue.js";
 import {
   loadWorkspaceSettings,
-  updateWorkspaceSettings,
   WorkspaceSettingsError,
-  type WorkspaceSettings,
 } from "../core/workspace-settings.js";
-import {
-  loadWorkspaceAgents,
-  writeWorkspaceAgents,
-  WorkspaceAgentsError,
-  WORKSPACE_AGENTS_FILENAME,
-  type WorkspaceAgentsFile,
-} from "../core/workspace-agents.js";
 import {
   AnnotationError,
   createAnnotation,
@@ -321,6 +312,13 @@ import { projectProviderCatalog } from "./provider-catalog.js";
 import type { AgentConnectionCatalog } from "./connection-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
 import {
+  handleWorkspaceAgents,
+  handleWorkspaceAgentsWrite,
+  handleWorkspaceSettings,
+  handleWorkspaceSettingsUpdate,
+  type WorkspaceAdminDeps,
+} from "./workspace-admin-handlers.js";
+import {
   installSkills,
   listSkills,
   parseSkillTargetId,
@@ -389,6 +387,17 @@ export interface HandlerContext {
   ) => Promise<void>;
 }
 
+function makeWorkspaceAdminDeps(ctx: HandlerContext): WorkspaceAdminDeps {
+  return {
+    host: ctx.host,
+    mutations: ctx.mutations,
+    events: ctx.events,
+    requireWorkspaceId: (params) => requireWorkspaceId(ctx, params),
+    requireUserActor,
+    optionalString,
+  };
+}
+
 /**
  * TaskLifecycleError may cross tsx dual-module boundaries where `instanceof` fails.
  * Match by class, name, or stable INVALID_TRANSITION message shape.
@@ -449,13 +458,13 @@ export async function dispatchMethod(
       case "workspace.collaboration":
         return workspaceCollaborationRpc(ctx, p);
       case "workspace.settings":
-        return workspaceSettingsRpc(ctx, p);
+        return handleWorkspaceSettings(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.settings.update":
-        return workspaceSettingsUpdateRpc(ctx, p);
+        return handleWorkspaceSettingsUpdate(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.agents":
-        return workspaceAgentsRpc(ctx, p);
+        return handleWorkspaceAgents(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.agents.write":
-        return workspaceAgentsWriteRpc(ctx, p);
+        return handleWorkspaceAgentsWrite(makeWorkspaceAdminDeps(ctx), p);
       case "docs.list":
         return docsList(ctx, p);
       case "docs.get":
@@ -934,207 +943,6 @@ async function workspaceUnmount(ctx: HandlerContext, p: Record<string, unknown>)
 function workspaceSetForeground(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireString(p, "workspaceId");
   return ctx.host.setForeground(workspaceId);
-}
-
-// ---- workspace.settings (collaboration defaults; system-root settings.json) ----
-
-/**
- * Read projection of workspace collaboration settings.
- * Missing file/field → defaultAcceptMode=review-required.
- */
-async function workspaceSettingsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const settings = await loadWorkspaceSettings(mount.env.fs);
-  return {
-    workspaceId,
-    settings: projectWorkspaceSettings(settings),
-  };
-}
-
-/**
- * User-only settings mutation through MutationBus.
- * Emits exactly one workspace.settings.updated when the normalized projection
- * actually changes. No-op updates and failures emit no event.
- *
- * Authority note: only self-declared `actor` is checked (default "user"). The
- * loopback service token does not distinguish human vs role callers — see task-api.
- */
-async function workspaceSettingsUpdateRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  requireUserActor(p, "workspace.settings.update");
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const patch = parseWorkspaceSettingsPatch(p);
-
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    let result: { settings: WorkspaceSettings; changed: boolean };
-    try {
-      result = await updateWorkspaceSettings(mount.env.fs, patch);
-    } catch (err) {
-      if (
-        err instanceof WorkspaceSettingsError ||
-        (err instanceof Error && err.name === "WorkspaceSettingsError")
-      ) {
-        const code =
-          err instanceof WorkspaceSettingsError
-            ? err.code
-            : ((err as { code?: string }).code ?? "INVALID_PATCH");
-        throw new RpcError(-32602, err.message, { code });
-      }
-      throw err;
-    }
-    if (result.changed) {
-      emitWorkspaceSettingsUpdated(ctx, workspaceId, result.settings);
-    }
-    return {
-      workspaceId,
-      settings: projectWorkspaceSettings(result.settings),
-      changed: result.changed,
-    };
-  });
-}
-
-/**
- * Top-level RPC fields become the patch (excluding workspaceId / actor).
- * Nested `patch` object is rejected so clients pass fields at top level.
- */
-function parseWorkspaceSettingsPatch(p: Record<string, unknown>): Record<string, unknown> {
-  if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
-    throw new RpcError(
-      -32602,
-      "workspace.settings.update does not accept nested patch; pass fields at the top level"
-    );
-  }
-  const reserved = new Set(["workspaceId", "actor", "patch"]);
-  const supported = new Set(["defaultAcceptMode"]);
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(p)) {
-    if (reserved.has(key)) continue;
-    if (!supported.has(key)) {
-      throw new RpcError(-32602, `Unknown workspace setting: ${key}`);
-    }
-    if (value === undefined) continue;
-    out[key] = value;
-  }
-  // Explicit defaultAcceptMode validation at the RPC boundary (clear error).
-  if ("defaultAcceptMode" in out) {
-    const v = out.defaultAcceptMode;
-    if (v !== "review-required" && v !== "auto-accept" && v !== "agent-decide") {
-      throw new RpcError(-32602, `Invalid defaultAcceptMode: ${String(v)}`, {
-        code: "INVALID_ACCEPT_MODE",
-      });
-    }
-  }
-  return out;
-}
-
-function projectWorkspaceSettings(settings: WorkspaceSettings): WorkspaceSettings {
-  // Return a plain object projection; keep extensibility keys.
-  return { ...settings };
-}
-
-function emitWorkspaceSettingsUpdated(
-  ctx: HandlerContext,
-  workspaceId: string,
-  settings: WorkspaceSettings
-): void {
-  ctx.events.emit(
-    "workspace.settings.updated",
-    workspaceId,
-    {
-      settings: projectWorkspaceSettings(settings),
-    },
-    "self"
-  );
-}
-
-// ---- workspace.agents (canonical workspace-root AGENTS.md) ----
-
-/**
- * Read projection of workspace-root AGENTS.md.
- * Missing file → content "" + exists=false (not an error). Includes etag for edit.
- */
-async function workspaceAgentsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const file = await loadWorkspaceAgents(mount.workspaceRoot);
-  return projectWorkspaceAgents(workspaceId, file);
-}
-
-/**
- * User-only AGENTS.md write through MutationBus.
- * Optional baseEtag matches docs.write conflict semantics (-32009).
- * Emits exactly one workspace.agents.updated when content actually changes.
- */
-async function workspaceAgentsWriteRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  requireUserActor(p, "workspace.agents.write");
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  if (typeof p.content !== "string") {
-    throw new RpcError(-32602, "workspace.agents.write requires string content");
-  }
-  const content = p.content;
-  const baseEtag = optionalString(p, "baseEtag");
-
-  return ctx.mutations.run(workspaceId, async () => {
-    const before = await loadWorkspaceAgents(mount.workspaceRoot);
-    const currentEtag = contentEtag(before.content);
-    if (baseEtag && baseEtag !== currentEtag) {
-      throw new RpcError(-32009, "etag conflict", {
-        currentEtag,
-        baseEtag,
-        path: WORKSPACE_AGENTS_FILENAME,
-      });
-    }
-
-    ctx.host.markSelfWrite(workspaceId);
-    let result: { file: WorkspaceAgentsFile; changed: boolean };
-    try {
-      result = await writeWorkspaceAgents(mount.workspaceRoot, content);
-    } catch (err) {
-      if (
-        err instanceof WorkspaceAgentsError ||
-        (err instanceof Error && err.name === "WorkspaceAgentsError")
-      ) {
-        const code =
-          err instanceof WorkspaceAgentsError
-            ? err.code
-            : ((err as { code?: string }).code ?? "INVALID_CONTENT");
-        throw new RpcError(-32602, err.message, { code });
-      }
-      throw err;
-    }
-
-    const projection = projectWorkspaceAgents(workspaceId, result.file);
-    if (result.changed) {
-      ctx.events.emit(
-        "workspace.agents.updated",
-        workspaceId,
-        {
-          path: projection.path,
-          content: projection.content,
-          exists: projection.exists,
-          etag: projection.etag,
-        },
-        "self"
-      );
-    }
-    return {
-      ...projection,
-      changed: result.changed,
-    };
-  });
-}
-
-function projectWorkspaceAgents(workspaceId: string, file: WorkspaceAgentsFile) {
-  return {
-    workspaceId,
-    path: file.path,
-    content: file.content,
-    exists: file.exists,
-    etag: contentEtag(file.content),
-  };
 }
 
 async function docsList(ctx: HandlerContext, p: Record<string, unknown>) {
