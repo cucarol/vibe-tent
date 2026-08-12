@@ -1,7 +1,6 @@
 // Minimal Markdown → HTML for source/preview toggle (not a full CommonMark engine).
 // Preview is for workspace shell; Electron renderer may swap in markdown-it later.
 
-import type { ArtifactRef } from "./types.js";
 import { extractOutLinks } from "./links.js";
 
 export function escapeHtml(text: string): string {
@@ -20,7 +19,6 @@ export function renderMarkdownToHtml(
   body: string,
   options?: {
     resolveWikiHref?: (raw: string) => string | undefined;
-    artifactRefs?: ArtifactRef[];
   }
 ): string {
   const lines = body.replace(/\r\n/g, "\n").split("\n");
@@ -110,17 +108,6 @@ export function renderMarkdownToHtml(
   closeList();
   if (inCode) {
     html.push(`<pre class="md-code"><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
-  }
-
-  if (options?.artifactRefs?.length) {
-    html.push(`<aside class="artifact-chips" aria-label="Artifact references">`);
-    for (const ref of options.artifactRefs) {
-      const label = escapeHtml(ref.label || ref.target);
-      html.push(
-        `<span class="artifact-chip" data-kind="${escapeHtml(ref.kind)}" data-target="${escapeHtml(ref.target)}" title="Open externally">${label}</span>`
-      );
-    }
-    html.push(`</aside>`);
   }
 
   return html.join("\n");

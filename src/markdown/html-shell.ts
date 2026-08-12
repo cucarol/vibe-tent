@@ -175,16 +175,6 @@ function renderBacklinks(snap: WorkspaceSnapshot): string {
 }
 
 function renderMeta(tab: NonNullable<ReturnType<WorkspaceController["getActiveTab"]>>): string {
-  const artifacts =
-    tab.artifactRefs?.length ?
-      `<div class="panel-head">ArtifactRef</div>
-       <ul>${tab.artifactRefs
-         .map(
-           (a) =>
-             `<li class="artifact-chip" title="Open externally">${escapeHtml(a.kind)}: ${escapeHtml(a.label || a.target)}</li>`
-         )
-         .join("")}</ul>`
-    : "";
   return `<div class="meta">
     <div class="panel-head">Meta</div>
     <dl>
@@ -192,7 +182,6 @@ function renderMeta(tab: NonNullable<ReturnType<WorkspaceController["getActiveTa
       <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
       <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
     </dl>
-    ${artifacts}
   </div>`;
 }
 
@@ -261,10 +250,6 @@ textarea {
 .backlinks li, .search-hits li { margin-bottom: .5rem; font-size: .9rem; }
 .meta dl { display: grid; grid-template-columns: auto 1fr; gap: .25rem .5rem; font-size: .85rem; }
 .meta dt { color: var(--muted); }
-.artifact-chip {
-  display: inline-block; margin: .2rem 0; padding: .2rem .45rem;
-  border: 1px dashed var(--border); border-radius: 4px; font-size: .8rem;
-}
 code { font-size: .8rem; }
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; }

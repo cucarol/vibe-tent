@@ -3,11 +3,7 @@ import { withTentMutation } from "../core/adapter.js";
 import { parseFrontmatter } from "../core/frontmatter.js";
 import { ATTACHMENTS_DIR } from "../core/paths.js";
 import { loadTent } from "../core/tree.js";
-import {
-  extractAttachmentArtifactRefs,
-  extractAttachmentReferences,
-  resolveAttachmentPath,
-} from "./attachment-refs.js";
+import { extractAttachmentReferences } from "./attachment-refs.js";
 
 export const ATTACHMENT_GC_GRACE_DAYS = 30;
 export const ATTACHMENT_GC_STATE_PATH = `${ATTACHMENTS_DIR}/.gc-state.json`;
@@ -145,16 +141,6 @@ async function collectAttachmentReferences(fs: FsAdapter): Promise<Set<string>> 
     const raw = await fs.readFile(path);
     const parsed = parseFrontmatter(raw);
     for (const ref of extractAttachmentReferences(parsed.body, path)) refs.add(ref.path);
-    for (const ref of extractAttachmentArtifactRefs(parsed.data, path)) refs.add(ref.path);
-
-    // Operational frontmatter may encode ArtifactRef arrays as JSON strings.
-    // Keeping a false positive is safe; missing one is not.
-    for (const match of raw.matchAll(
-      /(?:\.tent\/)?(?:\.\.\/|\.\/)*attachments\/[A-Za-z0-9._~!$&+,;=@%()\[\]\-\/]+/g
-    )) {
-      const resolved = resolveAttachmentPath(match[0], path);
-      if (resolved) refs.add(resolved);
-    }
   }
   return refs;
 }

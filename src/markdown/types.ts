@@ -1,13 +1,6 @@
 // Markdown workspace wire types — aligned with docs/desktop/node-model.md §8
 // and architecture EventEnvelope shapes (docs client surface only).
 
-/** Structured association to a real deliverable outside node identity. */
-export type ArtifactRef = {
-  kind: "path" | "dir" | "commit" | "url" | "other";
-  target: string;
-  label?: string;
-};
-
 export type NodeMode = "editable" | "archived";
 
 export type NodeProjection = {
@@ -22,7 +15,6 @@ export type NodeProjection = {
   invalid: boolean;
   bodyPreview?: string;
   children: NodeProjection[];
-  artifactRefs?: ArtifactRef[];
 };
 
 export type NodeEditSnapshot = {
@@ -34,7 +26,6 @@ export type NodeEditSnapshot = {
   frontmatter: Record<string, unknown>;
   raw: string;
   etag: string;
-  artifactRefs: ArtifactRef[];
 };
 
 export type DocsWriteInput = {

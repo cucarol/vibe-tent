@@ -2,7 +2,6 @@
 // Transport (in-process core vs B2 JSON-RPC) is an implementation detail.
 
 import type {
-  ArtifactRef,
   BacklinkHit,
   NodeEditSnapshot,
   NodeProjection,
@@ -27,5 +26,5 @@ export interface DocsClient {
     nodeId: string,
     fileName: string,
     bytes: Uint8Array | string
-  ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }>;
+  ): Promise<{ relativePath: string; markdown: string }>;
 }

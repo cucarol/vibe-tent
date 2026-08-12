@@ -494,6 +494,29 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     assert.equal(conflictData.body, undefined);
     assert.equal(conflictData.raw, undefined);
 
+    // A same-named custom field remains raw document data, never a typed artifact authority.
+    const customArtifactField = await rpc(svc, "docs.write", {
+      workspaceId,
+      nodeId,
+      frontmatter: { artifactRefs: [{ kind: "path", target: "legacy.bin" }] },
+      baseEtag: writeResult.etag,
+    });
+    assert.ok(!customArtifactField.error, JSON.stringify(customArtifactField.error));
+    const customRead = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
+    assert.ok(!customRead.error, JSON.stringify(customRead.error));
+    const customResult = customRead.result as Record<string, unknown>;
+    assert.equal("artifactRefs" in customResult, false);
+    assert.equal(
+      Array.isArray((customResult.frontmatter as Record<string, unknown>).artifactRefs),
+      true
+    );
+    assert.match(customResult.raw as string, /artifactRefs:[\s\S]*legacy\.bin/);
+    const customProjection = await rpc(svc, "docs.get", { workspaceId, nodeId });
+    assert.equal(
+      "artifactRefs" in (customProjection.result as { node: Record<string, unknown> }).node,
+      false
+    );
+
     // docs.promote removed from CLIENT_METHODS in V0.2
     const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
@@ -572,11 +595,10 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     const result = imported.result as {
       relativePath: string;
       markdown: string;
-      artifactRef: { kind: string; target: string };
     };
     assert.match(result.relativePath, new RegExp(`^attachments/${nodeId}/blob-[0-9a-f]{12}\\.bin$`));
     assert.equal(result.markdown, `![](../${result.relativePath})`);
-    assert.equal(result.artifactRef.target, result.relativePath);
+    assert.equal("artifactRef" in result, false);
 
     const onDisk = await fs.readFile(path.join(ws, ".tent", ...result.relativePath.split("/")));
     assert.deepEqual([...onDisk], [...raw]);

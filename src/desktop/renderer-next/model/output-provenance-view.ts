@@ -2,6 +2,7 @@ import type {
   OutputProvenance,
   OutputProvenanceIncompleteReason,
 } from "../../../service/types.js";
+import type { ArtifactKind, ArtifactRef } from "../../../core/artifact.js";
 
 const INCOMPLETE_REASONS = new Set<OutputProvenanceIncompleteReason>([
   "delivery_missing",
@@ -9,6 +10,8 @@ const INCOMPLETE_REASONS = new Set<OutputProvenanceIncompleteReason>([
   "source_missing",
   "mismatch",
 ]);
+
+const ARTIFACT_KINDS = new Set<ArtifactKind>(["path", "directory", "commit", "url"]);
 
 export type OutputProvenanceView =
   | { state: "not-output" }
@@ -23,6 +26,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNullableRecord(value: unknown): boolean {
   return value === null || isRecord(value);
+}
+
+function canonicalArtifactRefs(value: unknown): ArtifactRef[] | null {
+  if (!Array.isArray(value)) return null;
+  const refs: ArtifactRef[] = [];
+  let previous: ArtifactRef | null = null;
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      Object.keys(item).some((key) => key !== "kind" && key !== "target" && key !== "label") ||
+      typeof item.kind !== "string" ||
+      !ARTIFACT_KINDS.has(item.kind as ArtifactKind) ||
+      typeof item.target !== "string" ||
+      !(item.label === undefined || typeof item.label === "string")
+    ) {
+      return null;
+    }
+    const kind = item.kind as ArtifactKind;
+    const target = item.target;
+    const label = item.label;
+    if (label !== undefined && (!label || label !== label.trim())) return null;
+    if (kind === "path" || kind === "directory") {
+      if (
+        !target ||
+        target !== target.trim() ||
+        target.includes("\\") ||
+        target.includes("\0") ||
+        target.startsWith("/") ||
+        /^[a-zA-Z]:/.test(target) ||
+        target.split("/").some((segment) => !segment || segment === "." || segment === "..")
+      ) {
+        return null;
+      }
+    } else if (kind === "commit") {
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(target)) return null;
+    } else {
+      try {
+        const parsed = new URL(target);
+        if (
+          (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+          parsed.username ||
+          parsed.password ||
+          parsed.href !== target
+        ) {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    }
+    const ref: ArtifactRef = { kind, target, ...(label === undefined ? {} : { label }) };
+    if (
+      previous &&
+      (previous.kind > ref.kind ||
+        (previous.kind === ref.kind && previous.target >= ref.target))
+    ) {
+      return null;
+    }
+    refs.push(ref);
+    previous = ref;
+  }
+  return refs;
 }
 
 export function normalizeOutputProvenance(
@@ -56,6 +121,7 @@ export function normalizeOutputProvenance(
   }
 
   const delivery = raw.delivery;
+  const artifactRefs = isRecord(delivery) ? canonicalArtifactRefs(delivery.artifactRefs) : null;
   if (
     isRecord(delivery) &&
     (typeof delivery.id !== "string" ||
@@ -66,7 +132,8 @@ export function normalizeOutputProvenance(
       typeof delivery.taskId !== "string" ||
       !delivery.taskId ||
       typeof delivery.sourceNodeId !== "string" ||
-      !delivery.sourceNodeId)
+      !delivery.sourceNodeId ||
+      artifactRefs === null)
   ) {
     return { state: "error", message: "output.provenance delivery join is corrupt" };
   }
@@ -97,5 +164,11 @@ export function normalizeOutputProvenance(
     return { state: "error", message: "output.provenance source Node join is corrupt" };
   }
 
-  return { state: "ready", value: raw as OutputProvenance };
+  const value = raw as unknown as OutputProvenance;
+  return {
+    state: "ready",
+    value: isRecord(delivery)
+      ? { ...value, delivery: { ...value.delivery!, artifactRefs: artifactRefs! } }
+      : value,
+  };
 }

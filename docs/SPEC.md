@@ -252,6 +252,8 @@ fail-loud, never pushes, and does not write generic status back to Nodes.
 Delivery `artifactRefs[]` is the sole artifact-reference authority. An Output
 Node persists only its exact `deliveryId`; `output.provenance` projects the
 Delivery's normalized artifact refs without copying them into Output frontmatter.
+Node document reads retain same-named custom frontmatter only as raw document
+data and never expose it as a typed artifact source.
 
 If a caller loses or abandons an in-flight request after Service persisted its
 accept intent, an exact retry first converges that same committed operation.

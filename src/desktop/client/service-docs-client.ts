@@ -2,7 +2,6 @@
 
 import type { DocsClient } from "../../markdown/docs-client.js";
 import type {
-  ArtifactRef,
   BacklinkHit,
   NodeEditSnapshot,
   NodeProjection,
@@ -71,7 +70,6 @@ export class ServiceDocsClient implements DocsClient {
       raw?: string;
       etag: string;
       frontmatter: Record<string, unknown>;
-      artifactRefs?: ArtifactRef[];
     }>("docs.readForEdit", {
       workspaceId: this.workspaceId,
       nodeId,
@@ -98,7 +96,6 @@ export class ServiceDocsClient implements DocsClient {
       frontmatter: result.frontmatter ?? {},
       raw,
       etag: result.etag,
-      artifactRefs: result.artifactRefs ?? parseArtifactRefs(result.frontmatter ?? {}),
     };
   }
 
@@ -247,7 +244,7 @@ export class ServiceDocsClient implements DocsClient {
     nodeId: string,
     fileName: string,
     bytes: Uint8Array | string
-  ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }> {
+  ): Promise<{ relativePath: string; markdown: string }> {
     const payload =
       typeof bytes === "string"
         ? new TextEncoder().encode(bytes)
@@ -260,7 +257,6 @@ export class ServiceDocsClient implements DocsClient {
     const result = await this.rpc.call<{
       relativePath: string;
       markdown: string;
-      artifactRef?: ArtifactRef;
     }>("docs.importAttachment", {
       workspaceId: this.workspaceId,
       nodeId,
@@ -271,7 +267,6 @@ export class ServiceDocsClient implements DocsClient {
     return {
       relativePath: result.relativePath,
       markdown: result.markdown,
-      artifactRef: result.artifactRef,
     };
   }
 }
@@ -300,7 +295,6 @@ function normalizeProjection(c: NodeProjection): NodeProjection {
     invalid: !!c.invalid,
     bodyPreview: c.bodyPreview,
     children: (c.children ?? []).map(normalizeProjection),
-    artifactRefs: c.artifactRefs,
   };
 }
 
@@ -326,27 +320,4 @@ function reconstructRaw(frontmatter: Record<string, unknown>, body: string): str
   lines.push("---");
   lines.push(body.endsWith("\n") || body === "" ? body : body + "\n");
   return lines.join("\n");
-}
-
-function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
-  const raw = data.artifactRefs;
-  if (!Array.isArray(raw)) return [];
-  const out: ArtifactRef[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const kind = rec.kind;
-    const target = rec.target;
-    if (
-      (kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") &&
-      typeof target === "string"
-    ) {
-      out.push({
-        kind,
-        target,
-        label: typeof rec.label === "string" ? rec.label : undefined,
-      });
-    }
-  }
-  return out;
 }

@@ -1,4 +1,3 @@
-import type { ArtifactRef } from "../../../core/artifact.js";
 import type { ServiceGateway } from "../gateway/service-gateway.js";
 import type {
   DocumentIssue,
@@ -34,7 +33,6 @@ export type FocusDocumentView = {
   message?: string;
   backlinks: readonly FocusBacklink[];
   backlinksState: "idle" | "loading" | "ready" | "stale" | "error";
-  artifactRefs: readonly ArtifactRef[];
 };
 
 export type FocusDocumentActions = {
@@ -115,7 +113,6 @@ export class FocusDocumentController {
     archived: false,
     backlinks: [],
     backlinksState: "idle",
-    artifactRefs: [],
   };
 
   constructor(private readonly gateway: FocusDocumentGateway) {}
@@ -141,7 +138,6 @@ export class FocusDocumentController {
         archived: false,
         backlinks: [],
         backlinksState: "idle",
-        artifactRefs: [],
       };
     }
     const dirty = Boolean(entry.snapshot && entry.draft !== entry.snapshot.body);
@@ -184,7 +180,6 @@ export class FocusDocumentController {
       ...(entry.issue ? { message: entry.issue.message } : {}),
       backlinks: entry.backlinks,
       backlinksState: entry.backlinksState,
-      artifactRefs: entry.snapshot?.artifactRefs ?? [],
     };
   }
 

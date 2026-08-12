@@ -90,6 +90,12 @@ function provenance() {
       status: "accepted",
       taskId: "tk-1",
       sourceNodeId: "cx-source",
+      artifactRefs: [
+        { kind: "commit", target: "a".repeat(40) },
+        { kind: "directory", target: "dist" },
+        { kind: "path", target: "dist/app.js", label: "app" },
+        { kind: "url", target: "https://example.test/artifact" },
+      ],
     },
     task: { id: "tk-1", state: "accepted" },
     sourceNode: { nodeId: "cx-source", type: "goal", archived: false },
@@ -217,6 +223,9 @@ test("workspace collaboration parser accepts exact workspace Inbox with no selec
 test("output provenance validates explicit joins and never infers a chain", () => {
   const ready = normalizeOutputProvenance(provenance(), workspaceId, "cx-output");
   assert.equal(ready.state, "ready");
+  if (ready.state === "ready") {
+    assert.deepEqual(ready.value.delivery?.artifactRefs, provenance().delivery.artifactRefs);
+  }
 
   const mismatch = provenance();
   mismatch.sourceNode.nodeId = "cx-guessed-from-time";
@@ -224,6 +233,38 @@ test("output provenance validates explicit joins and never infers a chain", () =
     normalizeOutputProvenance(mismatch, workspaceId, "cx-output").state,
     "error"
   );
+});
+
+test("output provenance fails closed on non-canonical artifact refs", () => {
+  const badRefs: unknown[] = [
+    undefined,
+    {},
+    [{ kind: "other", target: "opaque" }],
+    [{ kind: "path", target: "./dist/app.js" }],
+    [{ kind: "commit", target: "A".repeat(40) }],
+    [{ kind: "url", target: "HTTPS://EXAMPLE.TEST/artifact" }],
+    [{ kind: "path", target: "dist/app.js", label: " app " }],
+    [{ kind: "path", target: "dist/app.js", extra: true }],
+    [
+      { kind: "path", target: "dist/app.js" },
+      { kind: "path", target: "dist/app.js" },
+    ],
+    [
+      { kind: "url", target: "https://example.test/artifact" },
+      { kind: "path", target: "dist/app.js" },
+    ],
+  ];
+  for (const artifactRefs of badRefs) {
+    const payload = structuredClone(provenance()) as unknown as {
+      delivery: Record<string, unknown>;
+    };
+    payload.delivery.artifactRefs = artifactRefs;
+    assert.equal(
+      normalizeOutputProvenance(payload, workspaceId, "cx-output").state,
+      "error",
+      JSON.stringify(artifactRefs)
+    );
+  }
 });
 
 test("Service events only invalidate graph/collaboration/provenance reads", () => {

@@ -21,7 +21,6 @@ import {
   resolveOutLink,
 } from "./links.js";
 import type {
-  ArtifactRef,
   BacklinkHit,
   NodeEditSnapshot,
   NodeProjection,
@@ -68,7 +67,6 @@ export class CoreDocsClient implements DocsClient {
       frontmatter: data,
       raw,
       etag: contentEtag(raw),
-      artifactRefs: parseArtifactRefs(data),
     };
   }
 
@@ -104,7 +102,6 @@ export class CoreDocsClient implements DocsClient {
             frontmatter: data,
             raw: diskRaw,
             etag: diskEtag,
-            artifactRefs: parseArtifactRefs(data),
           },
         };
       }
@@ -272,7 +269,7 @@ export class CoreDocsClient implements DocsClient {
     nodeId: string,
     fileName: string,
     bytes: Uint8Array | string
-  ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }> {
+  ): Promise<{ relativePath: string; markdown: string }> {
     const tent = await loadTent(this.env.fs);
     const node = resolveNodeId(tent, nodeId);
     if (!node) throw new Error(`Node not found: ${nodeId}`);
@@ -295,35 +292,11 @@ function toProjection(node: Node, withChildren: boolean): NodeProjection {
     invalid: node.invalid,
     bodyPreview: (node.body || "").slice(0, 160).replace(/\s+/g, " ").trim(),
     children: withChildren ? node.children.map((c) => toProjection(c, true)) : [],
-    artifactRefs: parseArtifactRefs(node.fm as Record<string, unknown>),
   };
 }
 
 function resolveNodeId(tent: LoadedTent, nodeId: string): Node | undefined {
   return tent.byId.get(nodeId.trim());
-}
-
-function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
-  const raw = data.artifactRefs;
-  if (!Array.isArray(raw)) return [];
-  const out: ArtifactRef[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const kind = rec.kind;
-    const target = rec.target;
-    if (
-      (kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") &&
-      typeof target === "string"
-    ) {
-      out.push({
-        kind,
-        target,
-        label: typeof rec.label === "string" ? rec.label : undefined,
-      });
-    }
-  }
-  return out;
 }
 
 async function hasActiveTask(env: OpsEnv, tent: LoadedTent, node: Node): Promise<boolean> {

@@ -10,7 +10,6 @@ export {
 } from "./attachments.js";
 export {
   extractAttachmentReferences,
-  extractAttachmentArtifactRefs,
   resolveAttachmentPath,
   type AttachmentReference,
 } from "./attachment-refs.js";
@@ -48,7 +47,6 @@ export {
   type PreviewServerHandle,
 } from "./preview-server.js";
 export type {
-  ArtifactRef,
   NodeProjection,
   NodeEditSnapshot,
   DocsWriteInput,

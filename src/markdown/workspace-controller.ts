@@ -28,7 +28,6 @@ export type TabState = {
   dirty: boolean;
   mode: EditorMode;
   conflict: ConflictState | null;
-  artifactRefs: NodeEditSnapshot["artifactRefs"];
   frontmatter: Record<string, unknown>;
 };
 
@@ -101,7 +100,6 @@ export class WorkspaceController {
       dirty: false,
       mode: existing?.mode ?? "source",
       conflict: null,
-      artifactRefs: snap.artifactRefs,
       frontmatter: snap.frontmatter,
     };
     if (!this.tabs.has(snap.nodeId)) this.tabOrder.push(snap.nodeId);
@@ -163,7 +161,6 @@ export class WorkspaceController {
     const body = splitBody(tab.buffer);
     return renderMarkdownToHtml(body, {
       resolveWikiHref: (raw) => `#open=${encodeURIComponent(raw)}`,
-      artifactRefs: tab.artifactRefs,
     });
   }
 
@@ -208,7 +205,6 @@ export class WorkspaceController {
     tab.etag = disk.etag;
     tab.savedRaw = disk.raw;
     tab.dirty = false;
-    tab.artifactRefs = disk.artifactRefs;
     tab.frontmatter = disk.frontmatter;
     tab.conflict = null;
     this.statusMessage = "Loaded disk version.";

@@ -290,7 +290,6 @@ export class ServiceClient {
       raw: string;
       etag: string;
       frontmatter: Record<string, unknown>;
-      artifactRefs: import("../core/artifact.js").ArtifactRef[];
     }>("docs.readForEdit", { workspaceId, nodeId });
   }
   /**

@@ -117,12 +117,6 @@ export function FocusDocumentPanel(props: {
         </details>
       ) : null}
 
-      {document.artifactRefs.length ? (
-        <details className="tn-focus-document-links">
-          <summary>关联产物 · {document.artifactRefs.length}</summary>
-          <ul>{document.artifactRefs.map((ref) => <li key={`${ref.kind}:${ref.target}`}><strong>{ref.label ?? ref.kind}</strong><span>{ref.target}</span></li>)}</ul>
-        </details>
-      ) : null}
     </section>
   );
 }

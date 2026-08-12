@@ -30,7 +30,6 @@ function snapshot(nodeId: string, body: string, etag: string): FocusDocumentSnap
     raw: `---\nid: ${nodeId}\n---\n${body}`,
     frontmatter: { id: nodeId, type: "prompt" },
     etag,
-    artifactRefs: [],
   };
 }
 

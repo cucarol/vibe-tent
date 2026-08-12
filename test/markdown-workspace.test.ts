@@ -52,15 +52,38 @@ test("extractOutLinks: wiki and md", () => {
   assert.equal(links.some((l) => l.kind === "artifact"), true);
 });
 
-test("renderMarkdownToHtml: headings wiki and artifacts", () => {
+test("renderMarkdownToHtml: headings and wiki links only", () => {
   const html = renderMarkdownToHtml("# Hi\n\n[[Note]]", {
     resolveWikiHref: () => "#open=Note",
-    artifactRefs: [{ kind: "path", target: "src/a.ts", label: "a.ts" }],
   });
   assert.match(html, /<h1>Hi<\/h1>/);
   assert.match(html, /wiki-link/);
-  assert.match(html, /artifact-chip/);
-  assert.match(html, /a\.ts/);
+  assert.doesNotMatch(html, /artifact-chip|Artifact references/);
+});
+
+test("Docs typed reads retain custom artifactRefs only as raw frontmatter", async () => {
+  const { env } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const created = await docs.createNote({ name: "custom-artifacts", type: "output", body: "# result\n" });
+  const initial = await docs.readForEdit(created.nodeId);
+  const raw = initial.raw.replace(
+    /^---\n/,
+    '---\nartifactRefs: [{"kind":"path","target":"legacy.bin"}]\n'
+  );
+  const written = await docs.write({ nodeId: created.nodeId, baseEtag: initial.etag, raw });
+  assert.equal(written.ok, true);
+
+  const edit = await docs.readForEdit(created.nodeId);
+  assert.equal("artifactRefs" in edit, false);
+  assert.equal(Array.isArray(edit.frontmatter.artifactRefs), true);
+  assert.match(edit.raw, /artifactRefs:[\s\S]*legacy\.bin/);
+  const projection = await docs.get(created.nodeId);
+  assert.equal("artifactRefs" in (projection ?? {}), false);
+
+  const controller = new WorkspaceController(docs);
+  await controller.openNode(created.nodeId);
+  controller.setMode(created.nodeId, "preview");
+  assert.doesNotMatch(controller.previewHtml(created.nodeId), /artifact-chip|legacy\.bin/);
 });
 
 test("CoreDocsClient: list excludes temp; create/read/write/search", async () => {
@@ -263,8 +286,7 @@ test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempot
   const first = await docs.importAttachment(note.nodeId, "shot.png", payload);
   assert.match(first.relativePath, new RegExp(`^attachments/${note.nodeId}/shot-[0-9a-f]{12}\\.png$`));
   assert.equal(first.markdown, `![](../${first.relativePath})`);
-  assert.equal(first.artifactRef?.kind, "path");
-  assert.equal(first.artifactRef?.target, first.relativePath);
+  assert.equal("artifactRef" in first, false);
 
   // Disk is exact bytes — not a .b64 companion or text marker.
   const onDisk = await fsa.readBinary(first.relativePath);

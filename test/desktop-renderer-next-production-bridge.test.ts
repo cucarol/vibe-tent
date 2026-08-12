@@ -932,7 +932,6 @@ test("Focus conflict overwrite renders saving feedback instead of live conflict 
     archived: false,
     backlinks: [],
     backlinksState: "ready",
-    artifactRefs: [],
   } satisfies FocusDocumentView;
   const html = renderToStaticMarkup(createElement(FocusDocumentPanel, {
     document: saving,
@@ -973,7 +972,6 @@ test("stale graph keeps an independent dirty document visible while hiding graph
     archived: false,
     backlinks: [],
     backlinksState: "stale",
-    artifactRefs: [],
   } satisfies FocusDocumentView;
 
   const html = renderToStaticMarkup(createElement(InspectorPanel, {

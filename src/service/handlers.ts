@@ -242,7 +242,6 @@ import {
   resolveOutLink,
 } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
-import { normalizeArtifactRefs } from "../core/artifact.js";
 import type { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
@@ -280,7 +279,6 @@ import {
   RESERVED_DOCS_WRITE_FIELDS,
   SEMANTIC_DOCS_WRITE_FIELDS,
   RPC_LIFECYCLE,
-  type ArtifactRef,
   type NodeProjection,
   type DeliveryProjection,
   type GraphLinkEdge,
@@ -1176,7 +1174,6 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
     raw,
     etag: contentEtag(raw),
     frontmatter: data,
-    artifactRefs: parseArtifactRefs(data),
   };
 }
 
@@ -2907,7 +2904,6 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
         nodeId: node.id,
         relativePath: result.relativePath,
         markdown: result.markdown,
-        artifactRef: result.artifactRef,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : "importAttachment failed";
@@ -13371,12 +13367,6 @@ function projectNode(
     proj.children = node.children.map((child) => projectNode(child, includeBody, true));
   }
   return proj;
-}
-
-function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
-  const raw = data.artifactRefs;
-  if (!Array.isArray(raw)) return [];
-  return normalizeArtifactRefs(raw);
 }
 
 /**

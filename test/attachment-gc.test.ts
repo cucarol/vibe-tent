@@ -114,6 +114,31 @@ test("cross-concept and operational references retain orphan-owner attachments",
   assert.equal(result.deleted.length, 0);
 });
 
+test("custom frontmatter artifactRefs do not retain orphan attachments", async () => {
+  const { fsa, env } = await makeEnv();
+  const attachment = "attachments/cx-old/frontmatter-only.png";
+  await fsa.writeBinary(attachment, new Uint8Array([7]));
+
+  const keeperId = await createNode(env as never, { parentPath: "", name: "keeper", type: "prompt" });
+  const keeper = (await loadTent(fsa)).byId.get(keeperId)!;
+  const notePath = nodeNotePath(keeper.path);
+  const raw = await fsa.readFile(notePath);
+  await fsa.writeFile(
+    notePath,
+    raw.replace(
+      /^---\n/,
+      `---\nartifactRefs: [{kind: path, target: ../${attachment}}]\n`
+    )
+  );
+
+  const first = await sweepAttachmentGc(fsa, { now: T0 });
+  assert.equal(first.retainedByReference, 0);
+  assert.equal(first.candidates, 1);
+  const second = await sweepAttachmentGc(fsa, { now: T31 });
+  assert.deepEqual(second.deleted, [attachment]);
+  assert.equal(await fsa.exists(attachment), false);
+});
+
 test("a restored reference clears candidacy and starts a new grace window if removed", async () => {
   const { fsa, env } = await makeEnv();
   const attachment = "attachments/cx-old/restored.png";

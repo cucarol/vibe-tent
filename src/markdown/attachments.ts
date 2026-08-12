@@ -5,7 +5,6 @@ import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import type { FsAdapter } from "../core/adapter.js";
 import { ATTACHMENTS_DIR } from "../core/paths.js";
-import type { ArtifactRef } from "./types.js";
 
 /**
  * Hard cap for a single attachment import (decoded bytes).
@@ -18,7 +17,6 @@ export type ImportAttachmentResult = {
   relativePath: string;
   /** Markdown image/file link using the system-root-relative path. */
   markdown: string;
-  artifactRef: ArtifactRef;
 };
 
 /**
@@ -145,11 +143,11 @@ export async function storeAttachmentBytes(
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
-    return attachmentResult(rel, safe, sourceNotePath);
+    return attachmentResult(rel, sourceNotePath);
   }
 
   await fs.writeBinary(rel, bytes);
-  return attachmentResult(rel, safe, sourceNotePath);
+  return attachmentResult(rel, sourceNotePath);
 }
 
 /**
@@ -163,7 +161,6 @@ function markdownAttachmentDestination(destination: string): string {
 
 function attachmentResult(
   relativePath: string,
-  label: string,
   sourceNotePath?: string
 ): ImportAttachmentResult {
   const target = sourceNotePath
@@ -172,6 +169,5 @@ function attachmentResult(
   return {
     relativePath,
     markdown: `![](${markdownAttachmentDestination(target)})`,
-    artifactRef: { kind: "path", target: relativePath, label },
   };
 }

@@ -3,7 +3,6 @@ import type {
   DesktopDocumentRequest,
   DesktopDocumentResponse,
 } from "../../document-ipc.js";
-import type { ArtifactRef, ArtifactKind } from "../../../core/artifact.js";
 
 export const DOCUMENT_TIMEOUT_MS = 12_000;
 
@@ -17,7 +16,6 @@ export type FocusDocumentSnapshot = {
   raw: string;
   frontmatter: Record<string, unknown>;
   etag: string;
-  artifactRefs: ArtifactRef[];
 };
 
 export type FocusBacklink = {
@@ -60,79 +58,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-const ARTIFACT_KINDS = new Set<ArtifactKind>([
-  "path",
-  "directory",
-  "commit",
-  "url",
-]);
-
-function normalizeFocusArtifactRefs(raw: unknown[]): ArtifactRef[] {
-  const refs = raw.map((value, index): ArtifactRef => {
-    if (!isRecord(value)) {
-      throw new Error(`docs.readForEdit artifactRefs[${index}] is not an object`);
-    }
-    if (Object.keys(value).some((key) => key !== "kind" && key !== "target" && key !== "label")) {
-      throw new Error(`docs.readForEdit artifactRefs[${index}] has unknown fields`);
-    }
-    if (
-      typeof value.kind !== "string" ||
-      !ARTIFACT_KINDS.has(value.kind as ArtifactKind) ||
-      typeof value.target !== "string" ||
-      !value.target.trim() ||
-      !(value.label === undefined || typeof value.label === "string")
-    ) {
-      throw new Error(`docs.readForEdit artifactRefs[${index}] is corrupt`);
-    }
-    const kind = value.kind as ArtifactKind;
-    let target = value.target.trim();
-    if (kind === "path" || kind === "directory") {
-      const portable = target.replaceAll("\\", "/");
-      if (
-        portable.startsWith("/") ||
-        /^[a-zA-Z]:/.test(portable) ||
-        portable.includes("\0") ||
-        portable.split("/").some((segment) => segment === "..")
-      ) {
-        throw new Error(`docs.readForEdit artifactRefs[${index}] path escapes the workspace`);
-      }
-      target = portable.split("/").filter((segment) => segment && segment !== ".").join("/");
-      if (!target) throw new Error(`docs.readForEdit artifactRefs[${index}] path is empty`);
-    } else if (kind === "commit") {
-      target = target.toLowerCase();
-      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(target)) {
-        throw new Error(`docs.readForEdit artifactRefs[${index}] commit is corrupt`);
-      }
-    } else {
-      let parsed: URL;
-      try {
-        parsed = new URL(target);
-      } catch {
-        throw new Error(`docs.readForEdit artifactRefs[${index}] URL is corrupt`);
-      }
-      if (
-        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-        parsed.username ||
-        parsed.password
-      ) {
-        throw new Error(`docs.readForEdit artifactRefs[${index}] URL is not allowed`);
-      }
-      target = parsed.href;
-    }
-    const label = value.label?.trim();
-    return { kind, target, ...(label ? { label } : {}) };
-  });
-  const identities = new Set<string>();
-  for (const ref of refs) {
-    const identity = JSON.stringify([ref.kind, ref.target]);
-    if (identities.has(identity)) {
-      throw new Error("docs.readForEdit artifactRefs contains duplicate targets");
-    }
-    identities.add(identity);
-  }
-  return refs;
-}
-
 function requireIdentity(
   value: Record<string, unknown>,
   workspaceId: string,
@@ -159,8 +84,7 @@ export function normalizeFocusDocumentSnapshot(
     typeof raw.raw !== "string" ||
     typeof raw.etag !== "string" ||
     !raw.etag ||
-    !isRecord(raw.frontmatter) ||
-    !Array.isArray(raw.artifactRefs)
+    !isRecord(raw.frontmatter)
   ) {
     throw new Error("docs.readForEdit payload is corrupt");
   }
@@ -174,7 +98,6 @@ export function normalizeFocusDocumentSnapshot(
     raw: raw.raw,
     etag: raw.etag,
     frontmatter: { ...raw.frontmatter },
-    artifactRefs: normalizeFocusArtifactRefs(raw.artifactRefs),
   };
 }
 

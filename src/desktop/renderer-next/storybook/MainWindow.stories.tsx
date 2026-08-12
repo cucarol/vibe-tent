@@ -88,7 +88,6 @@ function fixtureDocument(status: FocusDocumentStatus): FocusDocumentView {
     ...(status === "error" ? { message: "正文查询失败，请重试。" } : {}),
     backlinks: [{ fromNodeId: "cx-product", fromPath: "目标/Desktop UI", fromName: "Desktop UI", raw: "[[Storybook workbench]]", kind: "wiki" }],
     backlinksState: withoutSnapshot ? (status === "loading" ? "loading" : "error") : "ready",
-    artifactRefs: [],
   };
 }
 

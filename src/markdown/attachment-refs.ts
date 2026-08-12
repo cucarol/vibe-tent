@@ -5,7 +5,7 @@ import { ATTACHMENTS_DIR, TENT_SYSTEM_DIR } from "../core/paths.js";
 
 export type AttachmentReference = {
   path: string;
-  kind: "image" | "link" | "wiki-embed" | "artifact-ref";
+  kind: "image" | "link" | "wiki-embed";
   raw: string;
 };
 
@@ -82,29 +82,6 @@ export function extractAttachmentReferences(
       }
     }
   });
-  return out;
-}
-
-/** Resolve structured ArtifactRef targets without treating external workspace paths as managed assets. */
-export function extractAttachmentArtifactRefs(
-  value: unknown,
-  sourcePath?: string
-): AttachmentReference[] {
-  const out: AttachmentReference[] = [];
-  const seen = new Set<string>();
-  const visit = (item: unknown): void => {
-    if (Array.isArray(item)) {
-      for (const child of item) visit(child);
-      return;
-    }
-    if (!item || typeof item !== "object") return;
-    const record = item as Record<string, unknown>;
-    if (record.kind === "path" && typeof record.target === "string") {
-      push(out, seen, record.target, "artifact-ref", sourcePath);
-    }
-    for (const child of Object.values(record)) visit(child);
-  };
-  visit(value);
   return out;
 }
 
