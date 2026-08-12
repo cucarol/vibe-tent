@@ -176,7 +176,7 @@ test("delivery:force-release 删除非 accepted，保留 accepted 历史", async
 
   // Re-create ready and ensure forceRelease uses the same cleanup.
   const ready2 = await createDelivery(fsa, clock, {
-    taskId: "tk-ready-2",
+    taskId: "tk-ready2",
     sourceNodeId: "cx-g2",
     deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "ready again",
@@ -271,7 +271,7 @@ test("delivery:纯数字 commit ref 保持字符串", async () => {
   ];
 
   const delivery = await createDelivery(fsa, clock, {
-    taskId: "tk-test-numeric",
+    taskId: "tk-testnumeric",
     sourceNodeId: "cx-g2",
     deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "数字 ref",

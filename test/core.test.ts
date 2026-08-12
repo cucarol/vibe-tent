@@ -654,7 +654,7 @@ test("中断认领:force-release 清理非 accepted delivery（不写 Node owner
     tentName: "wqb",
   };
   const delivery = await createDelivery(fsa, env.clock, {
-    taskId: "tk-force-release",
+    taskId: "tk-forcerelease",
     sourceNodeId: "cx-g2",
     deliveriesDir: "temp/roles/rl-executor/deliveries",
     summary: "未完成的交付",
@@ -681,7 +681,7 @@ test("force-release: canonical Node selection Task ends occupation", async () =>
     workNodeIds: ["cx-g2"],
     contextNodeIds: [],
     nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
-    manifestPath: "temp/roles/rl-executor/manifests/tk-fr-card.yml",
+    manifestPath: "temp/roles/rl-executor/manifests/tk-frcard.yml",
     userPrompt: "hold g2 for force-release",
     id: "tk-frcard01",
     parentActor: { kind: "user", id: "user" },
@@ -695,7 +695,7 @@ test("force-release: canonical Node selection Task ends occupation", async () =>
     raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
   );
   const delivery = await createDelivery(fsa, clock, {
-    taskId: "tk-fr-card",
+    taskId: "tk-frcard",
     sourceNodeId: "cx-g2",
     deliveriesDir: "temp/roles/rl-executor/deliveries",
     summary: "stray ready",
