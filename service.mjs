@@ -4036,7 +4036,8 @@ function projectOutputProvenance(node2, indexes) {
     id: delivery.id,
     status: delivery.status,
     taskId: delivery.taskId,
-    sourceNodeId: delivery.sourceNodeId
+    sourceNodeId: delivery.sourceNodeId,
+    artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref }))
   };
   const task = indexes.tasksById.get(delivery.taskId);
   if (!task) {
@@ -7745,21 +7746,20 @@ async function storeAttachmentBytes(fs22, nodeId, fileName, bytes, sourceNotePat
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
-    return attachmentResult(rel, safe, sourceNotePath);
+    return attachmentResult(rel, sourceNotePath);
   }
   await fs22.writeBinary(rel, bytes);
-  return attachmentResult(rel, safe, sourceNotePath);
+  return attachmentResult(rel, sourceNotePath);
 }
 function markdownAttachmentDestination(destination) {
   if (!/[\s<>()]/.test(destination)) return destination;
   return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
-function attachmentResult(relativePath4, label, sourceNotePath) {
+function attachmentResult(relativePath4, sourceNotePath) {
   const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath4) : relativePath4;
   return {
     relativePath: relativePath4,
-    markdown: `![](${markdownAttachmentDestination(target)})`,
-    artifactRef: { kind: "path", target: relativePath4, label }
+    markdown: `![](${markdownAttachmentDestination(target)})`
   };
 }
 
@@ -25903,8 +25903,7 @@ async function docsReadForEdit(ctx, p) {
     body,
     raw,
     etag: contentEtag(raw),
-    frontmatter: data,
-    artifactRefs: parseArtifactRefs(data)
+    frontmatter: data
   };
 }
 async function docsWrite(ctx, p) {
@@ -27297,8 +27296,7 @@ async function docsImportAttachment(ctx, p) {
         workspaceId,
         nodeId: node2.id,
         relativePath: result.relativePath,
-        markdown: result.markdown,
-        artifactRef: result.artifactRef
+        markdown: result.markdown
       };
     } catch (err) {
       const message2 = err instanceof Error ? err.message : "importAttachment failed";
@@ -29778,7 +29776,7 @@ function projectOutputProvenanceWire(workspaceId, core) {
     path: core.path,
     bound: core.bound,
     deliveryId: core.deliveryId,
-    delivery: core.delivery,
+    delivery: core.delivery ? { ...core.delivery, artifactRefs: core.delivery.artifactRefs.map((ref) => ({ ...ref })) } : null,
     task: core.task,
     sourceNode: core.sourceNode,
     incomplete: core.incomplete
@@ -34869,11 +34867,6 @@ function projectNode(node2, includeBody, withChildren) {
   }
   return proj;
 }
-function parseArtifactRefs(data) {
-  const raw = data.artifactRefs;
-  if (!Array.isArray(raw)) return [];
-  return normalizeArtifactRefs(raw);
-}
 function makeCommitIntegrator(ctx, workspaceRoot, task, options) {
   return async (commits) => {
     const refs = uniqueCommitRefs(commits);
@@ -39071,24 +39064,6 @@ function extractAttachmentReferences(markdown, sourcePath) {
   });
   return out;
 }
-function extractAttachmentArtifactRefs(value, sourcePath) {
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  const visit = (item) => {
-    if (Array.isArray(item)) {
-      for (const child of item) visit(child);
-      return;
-    }
-    if (!item || typeof item !== "object") return;
-    const record = item;
-    if (record.kind === "path" && typeof record.target === "string") {
-      push2(out, seen, record.target, "artifact-ref", sourcePath);
-    }
-    for (const child of Object.values(record)) visit(child);
-  };
-  visit(value);
-  return out;
-}
 function collectDefinitions2(tree) {
   const definitions = /* @__PURE__ */ new Map();
   walk2(tree, (node2) => {
@@ -39208,13 +39183,6 @@ async function collectAttachmentReferences(fs22) {
     const raw = await fs22.readFile(path23);
     const parsed = parseFrontmatter(raw);
     for (const ref of extractAttachmentReferences(parsed.body, path23)) refs.add(ref.path);
-    for (const ref of extractAttachmentArtifactRefs(parsed.data, path23)) refs.add(ref.path);
-    for (const match of raw.matchAll(
-      /(?:\.tent\/)?(?:\.\.\/|\.\/)*attachments\/[A-Za-z0-9._~!$&+,;=@%()\[\]\-\/]+/g
-    )) {
-      const resolved = resolveAttachmentPath(match[0], path23);
-      if (resolved) refs.add(resolved);
-    }
   }
   return refs;
 }
