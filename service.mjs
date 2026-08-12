@@ -1434,6 +1434,9 @@ function dedupe(entries) {
   return out;
 }
 
+// src/core/task.ts
+import { Buffer as Buffer2 } from "node:buffer";
+
 // src/core/task-model.ts
 var DEFAULT_ACCEPT_MODE = "review-required";
 var TaskLifecycleError = class extends Error {
@@ -2531,6 +2534,71 @@ function assertIsoTimestamp(value, label) {
   }
   return raw;
 }
+var TASK_LAST_RETURN_REPORT_MAX_BYTES = 64 * 1024;
+var TASK_LAST_RETURN_ERROR_MAX_BYTES = 8 * 1024;
+var TASK_LAST_RETURN_CODE_MAX_BYTES = 128;
+function parseTaskLastReturn(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Task lastReturn must be an object.");
+  }
+  const raw = value;
+  const allowed = /* @__PURE__ */ new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  if (Object.keys(raw).some((key2) => !allowed.has(key2))) {
+    throw new Error("Task lastReturn contains unknown fields.");
+  }
+  const kind = raw.kind;
+  if (kind !== "blocked" && kind !== "needs-input" && kind !== "failed") {
+    throw new Error("Task lastReturn.kind must be blocked, needs-input, or failed.");
+  }
+  const report = parseBoundedTaskLastReturnString(
+    raw.report,
+    "report",
+    TASK_LAST_RETURN_REPORT_MAX_BYTES
+  );
+  const error = parseBoundedTaskLastReturnString(
+    raw.error,
+    "error",
+    TASK_LAST_RETURN_ERROR_MAX_BYTES
+  );
+  if (!report && !error) {
+    throw new Error("Task lastReturn requires report or error.");
+  }
+  const code = parseBoundedTaskLastReturnString(
+    raw.code,
+    "code",
+    TASK_LAST_RETURN_CODE_MAX_BYTES
+  );
+  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
+    throw new Error("Task lastReturn.code must be a stable machine identifier.");
+  }
+  const at = raw.at === void 0 ? void 0 : assertIsoTimestamp(String(raw.at), "Task lastReturn.at");
+  const sessionId = raw.sessionId === void 0 ? void 0 : String(raw.sessionId).trim();
+  if (sessionId && !isSessionId(sessionId)) {
+    throw new Error(`Invalid Task lastReturn.sessionId: ${sessionId}.`);
+  }
+  return {
+    kind,
+    ...report ? { report } : {},
+    ...error ? { error } : {},
+    ...code ? { code } : {},
+    ...at ? { at } : {},
+    ...sessionId ? { sessionId } : {}
+  };
+}
+function parseBoundedTaskLastReturnString(value, field, maxBytes) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "string") {
+    throw new Error(`Task lastReturn.${field} must be a string.`);
+  }
+  const text3 = value.trim();
+  if (!text3) return void 0;
+  const bytes = Buffer2.byteLength(text3, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`Task lastReturn.${field} exceeds ${maxBytes} UTF-8 bytes.`);
+  }
+  return text3;
+}
 function parseBaseCommitCapture(value) {
   if (value === void 0 || value === null) return void 0;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -2658,9 +2726,8 @@ async function loadTaskEnvelope(fs22, path23) {
   }
   task.contextGeneration = contextCard.contextGeneration;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
-  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
-    task.lastOutcome = data.lastOutcome;
-  }
+  const lastReturn = parseTaskLastReturn(data.lastReturn);
+  if (lastReturn) task.lastReturn = lastReturn;
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
@@ -2913,9 +2980,9 @@ async function patchTaskEnvelope(fs22, path23, patch) {
       mutator: "service"
     };
   }
-  if (patch.lastOutcome === null) delete data.lastOutcome;
-  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
-    data.lastOutcome = patch.lastOutcome;
+  if (patch.lastReturn === null) delete data.lastReturn;
+  else if (patch.lastReturn !== void 0) {
+    data.lastReturn = parseTaskLastReturn(patch.lastReturn);
   }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
   for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
@@ -3502,7 +3569,6 @@ var KEY_ORDER = [
   "targetHead",
   "checksJson",
   "artifactRefsJson",
-  "taskLastOutcome",
   "integrationMode",
   "reviewBy",
   "reviewDecision",
@@ -3533,7 +3599,6 @@ async function createDeliveryUnlocked(fs22, clock, input) {
     ...targetHead ? { targetHead } : {},
     checks: input.checks ?? [],
     artifactRefs: normalizeArtifactRefs(input.artifactRefs ?? []),
-    ...input.taskLastOutcome ? { taskLastOutcome: input.taskLastOutcome } : {},
     integrationMode: input.integrationMode ?? null,
     createdAt: now,
     updatedAt: now
@@ -3570,7 +3635,6 @@ async function loadDelivery(fs22, inputPath) {
     ...targetHead ? { targetHead } : {},
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseArtifactRefsField(data.artifactRefsJson, path23),
-    ...parseTaskLastOutcome(data.taskLastOutcome, path23),
     integrationMode: parseIntegrationMode(data.integrationMode),
     review: reviewBy && reviewDecision ? {
       by: reviewBy,
@@ -3631,7 +3695,6 @@ function deliveryReviewSemanticsDigest(record) {
     targetHead: record.targetHead ?? null,
     checks: record.checks.map((check) => ({ ...check })),
     artifactRefs: normalizeArtifactRefs(record.artifactRefs),
-    taskLastOutcome: record.taskLastOutcome ?? null,
     integrationMode: record.integrationMode,
     review: record.review ? { ...record.review } : null,
     createdAt: record.createdAt ?? null,
@@ -3649,7 +3712,6 @@ function deliveryAcceptCandidateDigest(record) {
     targetHead: record.targetHead ?? null,
     checks: record.checks.map((check) => ({ ...check })),
     artifactRefs: normalizeArtifactRefs(record.artifactRefs),
-    taskLastOutcome: record.taskLastOutcome ?? null,
     createdAt: record.createdAt ?? null
   });
 }
@@ -3706,7 +3768,6 @@ async function writeDelivery(fs22, record) {
     targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
     artifactRefsJson: artifactRefs.length ? JSON.stringify(artifactRefs) : void 0,
-    taskLastOutcome: record.taskLastOutcome,
     integrationMode: record.integrationMode,
     reviewBy: record.review?.by,
     reviewDecision: record.review?.decision,
@@ -3735,11 +3796,6 @@ function parseIntegrationMode(value) {
     return value;
   }
   throw new Error(`Invalid delivery integrationMode: ${String(value)}.`);
-}
-function parseTaskLastOutcome(value, deliveryPath) {
-  if (value === void 0) return {};
-  if (value === "delivered") return { taskLastOutcome: "delivered" };
-  throw new Error(`Invalid delivery taskLastOutcome: ${deliveryPath}.`);
 }
 function parseJsonArrayField(value, parse2) {
   if (typeof value !== "string" || !value.trim()) return [];
@@ -4173,6 +4229,13 @@ async function taskWait(env, taskPath, options) {
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
     const code = options.code?.trim();
+    const lastReturn = options.lastReturn ? parseTaskLastReturn(options.lastReturn) : void 0;
+    if (lastReturn?.sessionId && task.sessionId !== lastReturn.sessionId) {
+      throw new TaskLifecycleError(
+        "TASK_NOT_ACTIVE",
+        `Task wait return Session mismatch: task=${task.sessionId ?? "unbound"} requested=${lastReturn.sessionId}.`
+      );
+    }
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "waiting",
       wait: {
@@ -4180,6 +4243,7 @@ async function taskWait(env, taskPath, options) {
         summary,
         ...code ? { code } : {}
       },
+      ...lastReturn ? { lastReturn } : {},
       updatedAt: env.clock.now()
     });
   });
@@ -4224,7 +4288,6 @@ async function prepareTaskDeliver(env, taskPath, options) {
       targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
-      taskLastOutcome: options.lastOutcome,
       status: "ready",
       integrationMode: routing.integrationMode,
       deliveriesDir: deliveryDirForTask(task)
@@ -4233,7 +4296,7 @@ async function prepareTaskDeliver(env, taskPath, options) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
-      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+      lastReturn: null,
       updatedAt: env.clock.now()
     });
     if (routing.autoIntegrate) {
@@ -4256,7 +4319,7 @@ async function recoverCommittedTaskDeliver(env, taskPath, expected) {
       return void 0;
     }
     assertCommittedDeliveryMatchesTask(task, delivery);
-    if (delivery.summary !== expected.summary.trim() || delivery.taskLastOutcome !== expected.lastOutcome) {
+    if (delivery.summary !== expected.summary.trim()) {
       throw new TaskLifecycleError(
         "DELIVERY_CHANGED",
         "Persisted Delivery report or outcome does not match the managed report draft."
@@ -4281,7 +4344,6 @@ async function recoverCommittedTaskDeliver(env, taskPath, expected) {
       checks: delivery.checks.map((check) => ({ ...check })),
       artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
       ...delivery.targetHead ? { targetHead: delivery.targetHead } : {},
-      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
       ...delivery.integrationMode === "agent-decided-integrate" ? { decision: "integrate" } : {}
     };
     return { task, delivery, prepared, options };
@@ -4308,7 +4370,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
         task = await patchTaskEnvelope(env.fs, taskPath, {
           state: "accepted",
           activeDeliveryId: persisted.id,
-          ...persisted.taskLastOutcome ? { lastOutcome: persisted.taskLastOutcome } : {},
+          lastReturn: null,
           wait: null,
           updatedAt: env.clock.now()
         });
@@ -4359,7 +4421,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
-      ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+      lastReturn: null,
       wait: null,
       updatedAt: env.clock.now()
     });
@@ -4663,12 +4725,9 @@ async function taskInterrupt(env, taskPath) {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "interrupted") {
       await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
-        return task;
-      }
+      if (!task.activeDeliveryId) return task;
       return patchTaskEnvelope(env.fs, taskPath, {
         activeDeliveryId: null,
-        ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
         updatedAt: env.clock.now()
       });
     }
@@ -4683,7 +4742,25 @@ async function taskInterrupt(env, taskPath) {
       state: "interrupted",
       wait: null,
       activeDeliveryId: null,
-      ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function taskRecordFailedReturn(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    if (task.state !== "running" && task.state !== "waiting") return task;
+    const sessionId = assertTaskFailureSession(task, options.sessionId);
+    const lastReturn = parseTaskLastReturn({
+      kind: "failed",
+      ...options.report ? { report: options.report } : {},
+      error: options.error,
+      ...options.code ? { code: options.code } : {},
+      at: env.clock.now(),
+      ...sessionId ? { sessionId } : {}
+    });
+    return patchTaskEnvelope(env.fs, taskPath, {
+      lastReturn,
       updatedAt: env.clock.now()
     });
   });
@@ -4692,25 +4769,48 @@ async function taskFail(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "failed") {
+      const requestedLastReturn = buildTaskFailedReturn(task, options, env.clock.now());
       await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") return task;
+      if (!task.activeDeliveryId && task.lastReturn?.kind === "failed") return task;
+      const lastReturn2 = task.lastReturn?.kind === "failed" ? task.lastReturn : requestedLastReturn;
       return patchTaskEnvelope(env.fs, taskPath, {
         activeDeliveryId: null,
-        ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+        lastReturn: lastReturn2,
         updatedAt: env.clock.now()
       });
     }
     assertTransition(task.state, "fail", "failed");
+    const lastReturn = buildTaskFailedReturn(task, options, env.clock.now());
     await releaseOccupationForTask(env, task);
-    void options.summary;
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "failed",
       wait: null,
       activeDeliveryId: null,
-      ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+      lastReturn,
       updatedAt: env.clock.now()
     });
   });
+}
+function buildTaskFailedReturn(task, options, at) {
+  const sessionId = assertTaskFailureSession(task, options.sessionId);
+  return parseTaskLastReturn({
+    kind: "failed",
+    ...options.report ? { report: options.report } : {},
+    error: options.error?.trim() || options.summary?.trim() || "Task failed.",
+    ...options.code ? { code: options.code } : {},
+    at,
+    ...sessionId ? { sessionId } : {}
+  });
+}
+function assertTaskFailureSession(task, requestedSessionId) {
+  const requested = requestedSessionId?.trim() || void 0;
+  if (requested && requested !== task.sessionId) {
+    throw new TaskLifecycleError(
+      "TASK_NOT_ACTIVE",
+      `Task failure Session mismatch: task=${task.sessionId ?? "unbound"} requested=${requested}.`
+    );
+  }
+  return requested ?? task.sessionId;
 }
 async function releaseOccupationForTask(env, task) {
   await removeNonAcceptedDeliveriesForTask(env.fs, requireCanonicalTaskId(task));
@@ -5059,7 +5159,7 @@ async function recoverExistingTaskDeliver(env, taskPath, task, options) {
       next = await patchTaskEnvelope(env.fs, taskPath, {
         state: "delivered",
         activeDeliveryId: delivery.id,
-        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        lastReturn: null,
         updatedAt: env.clock.now()
       });
     } else if (task.state !== "delivered" || task.activeDeliveryId !== delivery.id) {
@@ -5071,7 +5171,7 @@ async function recoverExistingTaskDeliver(env, taskPath, task, options) {
       next = await patchTaskEnvelope(env.fs, taskPath, {
         state: "accepted",
         activeDeliveryId: delivery.id,
-        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        lastReturn: null,
         wait: null,
         updatedAt: env.clock.now()
       });
@@ -5111,7 +5211,7 @@ async function reconcileCommittedTaskDelivery(env, taskPath, task) {
       return patchTaskEnvelope(env.fs, taskPath, {
         state: "delivered",
         activeDeliveryId: delivery.id,
-        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        lastReturn: null,
         updatedAt: env.clock.now()
       });
     }
@@ -5123,7 +5223,7 @@ async function reconcileCommittedTaskDelivery(env, taskPath, task) {
       return patchTaskEnvelope(env.fs, taskPath, {
         state: "accepted",
         activeDeliveryId: delivery.id,
-        ...delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {},
+        lastReturn: null,
         wait: null,
         updatedAt: env.clock.now()
       });
@@ -5159,7 +5259,7 @@ function assertTaskDeliverCandidateMatches(task, delivery, options) {
   const expectedTargetHead = options.targetHead?.trim() || void 0;
   const expectedChecks = options.checks ?? [];
   const expectedArtifacts = normalizeArtifactRefs(options.artifactRefs ?? []);
-  if (!nodeId || delivery.sourceNodeId !== nodeId || delivery.summary !== options.summary.trim() || delivery.integrationMode !== routing.integrationMode || !exactStringListEqual(delivery.commits, expectedCommits) || (delivery.targetHead?.trim() || void 0) !== expectedTargetHead || delivery.taskLastOutcome !== options.lastOutcome || !exactDeliveryChecksEqual(delivery.checks, expectedChecks) || !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)) {
+  if (!nodeId || delivery.sourceNodeId !== nodeId || delivery.summary !== options.summary.trim() || delivery.integrationMode !== routing.integrationMode || !exactStringListEqual(delivery.commits, expectedCommits) || (delivery.targetHead?.trim() || void 0) !== expectedTargetHead || !exactDeliveryChecksEqual(delivery.checks, expectedChecks) || !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)) {
     throw new TaskLifecycleError(
       "DELIVERY_CHANGED",
       "Persisted Delivery candidate differs from this task.deliver retry; refusing duplicate publication."
@@ -20783,7 +20883,11 @@ async function buildWorkspaceCollaborationProjection(input) {
       readyDeliveries: selectedTask.id ? readyDeliveriesByTaskId.get(selectedTask.id) ?? [] : [],
       decisionByTaskId: decisionsByTaskId
     }) : null;
-    selectedNode = { nodeId: input.nodeId, activeTask };
+    selectedNode = {
+      nodeId: input.nodeId,
+      activeTask,
+      lastReturn: selectNodeLastReturn(input.nodeId, input.tasks)
+    };
   }
   const counts = { delivery: 0, decision: 0, total: inboxItems.length };
   for (const item of inboxItems) counts[item.kind] += 1;
@@ -20792,6 +20896,33 @@ async function buildWorkspaceCollaborationProjection(input) {
     selectedNode,
     inbox: { items: inboxItems, counts }
   };
+}
+function selectNodeLastReturn(nodeId, tasks) {
+  const candidates = tasks.filter((task) => task.workNodeIds.includes(nodeId));
+  const ids = /* @__PURE__ */ new Set();
+  for (const task of candidates) {
+    if (!task.id || !isTaskId(task.id)) {
+      throw consistencyError("Node return Task is missing canonical identity", { nodeId });
+    }
+    if (ids.has(task.id)) {
+      throw consistencyError("Node return Task identity is ambiguous", {
+        nodeId,
+        taskId: task.id
+      });
+    }
+    ids.add(task.id);
+    if (typeof task.updatedAt !== "string" || !Number.isFinite(Date.parse(task.updatedAt))) {
+      throw consistencyError("Node return Task timestamp is invalid", {
+        nodeId,
+        taskId: task.id
+      });
+    }
+  }
+  candidates.sort(
+    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
+  );
+  const selected = candidates[0];
+  return selected?.lastReturn ? { taskId: selected.id, ...selected.lastReturn } : null;
 }
 function indexCanonicalTasks(tasks) {
   const tasksById = /* @__PURE__ */ new Map();
@@ -25118,6 +25249,148 @@ function projectProviderCatalog() {
   return { providers };
 }
 
+// src/service/workspace-admin-handlers.ts
+async function handleWorkspaceSettings(deps, params) {
+  const workspaceId = deps.requireWorkspaceId(params);
+  const mount = deps.host.require(workspaceId);
+  const settings = await loadWorkspaceSettings(mount.env.fs);
+  return {
+    workspaceId,
+    settings: projectWorkspaceSettings(settings)
+  };
+}
+async function handleWorkspaceSettingsUpdate(deps, params) {
+  deps.requireUserActor(params, "workspace.settings.update");
+  const workspaceId = deps.requireWorkspaceId(params);
+  const mount = deps.host.require(workspaceId);
+  const patch = parseWorkspaceSettingsPatch(params);
+  return deps.mutations.run(workspaceId, async () => {
+    deps.host.markSelfWrite(workspaceId);
+    let result;
+    try {
+      result = await updateWorkspaceSettings(mount.env.fs, patch);
+    } catch (err) {
+      if (err instanceof WorkspaceSettingsError || err instanceof Error && err.name === "WorkspaceSettingsError") {
+        const code = err instanceof WorkspaceSettingsError ? err.code : err.code ?? "INVALID_PATCH";
+        throw new RpcError(-32602, err.message, { code });
+      }
+      throw err;
+    }
+    if (result.changed) {
+      emitWorkspaceSettingsUpdated(deps, workspaceId, result.settings);
+    }
+    return {
+      workspaceId,
+      settings: projectWorkspaceSettings(result.settings),
+      changed: result.changed
+    };
+  });
+}
+async function handleWorkspaceAgents(deps, params) {
+  const workspaceId = deps.requireWorkspaceId(params);
+  const mount = deps.host.require(workspaceId);
+  const file = await loadWorkspaceAgents(mount.workspaceRoot);
+  return projectWorkspaceAgents(workspaceId, file);
+}
+async function handleWorkspaceAgentsWrite(deps, params) {
+  deps.requireUserActor(params, "workspace.agents.write");
+  const workspaceId = deps.requireWorkspaceId(params);
+  const mount = deps.host.require(workspaceId);
+  if (typeof params.content !== "string") {
+    throw new RpcError(-32602, "workspace.agents.write requires string content");
+  }
+  const content3 = params.content;
+  const baseEtag = deps.optionalString(params, "baseEtag");
+  return deps.mutations.run(workspaceId, async () => {
+    const before = await loadWorkspaceAgents(mount.workspaceRoot);
+    const currentEtag = contentEtag(before.content);
+    if (baseEtag && baseEtag !== currentEtag) {
+      throw new RpcError(-32009, "etag conflict", {
+        currentEtag,
+        baseEtag,
+        path: WORKSPACE_AGENTS_FILENAME
+      });
+    }
+    deps.host.markSelfWrite(workspaceId);
+    let result;
+    try {
+      result = await writeWorkspaceAgents(mount.workspaceRoot, content3);
+    } catch (err) {
+      if (err instanceof WorkspaceAgentsError || err instanceof Error && err.name === "WorkspaceAgentsError") {
+        const code = err instanceof WorkspaceAgentsError ? err.code : err.code ?? "INVALID_CONTENT";
+        throw new RpcError(-32602, err.message, { code });
+      }
+      throw err;
+    }
+    const projection = projectWorkspaceAgents(workspaceId, result.file);
+    if (result.changed) {
+      deps.events.emit(
+        "workspace.agents.updated",
+        workspaceId,
+        {
+          path: projection.path,
+          content: projection.content,
+          exists: projection.exists,
+          etag: projection.etag
+        },
+        "self"
+      );
+    }
+    return {
+      ...projection,
+      changed: result.changed
+    };
+  });
+}
+function parseWorkspaceSettingsPatch(params) {
+  if (typeof params.patch === "object" && params.patch !== null && !Array.isArray(params.patch)) {
+    throw new RpcError(
+      -32602,
+      "workspace.settings.update does not accept nested patch; pass fields at the top level"
+    );
+  }
+  const reserved = /* @__PURE__ */ new Set(["workspaceId", "actor", "patch"]);
+  const supported = /* @__PURE__ */ new Set(["defaultAcceptMode"]);
+  const out = {};
+  for (const [key2, value] of Object.entries(params)) {
+    if (reserved.has(key2)) continue;
+    if (!supported.has(key2)) {
+      throw new RpcError(-32602, `Unknown workspace setting: ${key2}`);
+    }
+    if (value === void 0) continue;
+    out[key2] = value;
+  }
+  if ("defaultAcceptMode" in out) {
+    const value = out.defaultAcceptMode;
+    if (value !== "review-required" && value !== "auto-accept" && value !== "agent-decide") {
+      throw new RpcError(-32602, `Invalid defaultAcceptMode: ${String(value)}`, {
+        code: "INVALID_ACCEPT_MODE"
+      });
+    }
+  }
+  return out;
+}
+function projectWorkspaceSettings(settings) {
+  return { ...settings };
+}
+function emitWorkspaceSettingsUpdated(deps, workspaceId, settings) {
+  deps.events.emit(
+    "workspace.settings.updated",
+    workspaceId,
+    { settings: projectWorkspaceSettings(settings) },
+    "self"
+  );
+}
+function projectWorkspaceAgents(workspaceId, file) {
+  return {
+    workspaceId,
+    path: file.path,
+    content: file.content,
+    exists: file.exists,
+    etag: contentEtag(file.content)
+  };
+}
+
 // src/machine/skills.ts
 import * as fs16 from "node:fs/promises";
 import * as os4 from "node:os";
@@ -25298,6 +25571,16 @@ async function existsPath(target) {
 }
 
 // src/service/handlers.ts
+function makeWorkspaceAdminDeps(ctx) {
+  return {
+    host: ctx.host,
+    mutations: ctx.mutations,
+    events: ctx.events,
+    requireWorkspaceId: (params) => requireWorkspaceId(ctx, params),
+    requireUserActor,
+    optionalString: optionalString2
+  };
+}
 function isTaskLifecycleErrorLike(error) {
   if (error instanceof TaskLifecycleError) {
     return true;
@@ -25343,13 +25626,13 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
       case "workspace.collaboration":
         return workspaceCollaborationRpc(ctx, p);
       case "workspace.settings":
-        return workspaceSettingsRpc(ctx, p);
+        return handleWorkspaceSettings(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.settings.update":
-        return workspaceSettingsUpdateRpc(ctx, p);
+        return handleWorkspaceSettingsUpdate(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.agents":
-        return workspaceAgentsRpc(ctx, p);
+        return handleWorkspaceAgents(makeWorkspaceAdminDeps(ctx), p);
       case "workspace.agents.write":
-        return workspaceAgentsWriteRpc(ctx, p);
+        return handleWorkspaceAgentsWrite(makeWorkspaceAdminDeps(ctx), p);
       case "docs.list":
         return docsList(ctx, p);
       case "docs.get":
@@ -25723,148 +26006,6 @@ async function workspaceUnmount(ctx, p) {
 function workspaceSetForeground(ctx, p) {
   const workspaceId = requireString(p, "workspaceId");
   return ctx.host.setForeground(workspaceId);
-}
-async function workspaceSettingsRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const settings = await loadWorkspaceSettings(mount.env.fs);
-  return {
-    workspaceId,
-    settings: projectWorkspaceSettings(settings)
-  };
-}
-async function workspaceSettingsUpdateRpc(ctx, p) {
-  requireUserActor(p, "workspace.settings.update");
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const patch = parseWorkspaceSettingsPatch(p);
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    let result;
-    try {
-      result = await updateWorkspaceSettings(mount.env.fs, patch);
-    } catch (err) {
-      if (err instanceof WorkspaceSettingsError || err instanceof Error && err.name === "WorkspaceSettingsError") {
-        const code = err instanceof WorkspaceSettingsError ? err.code : err.code ?? "INVALID_PATCH";
-        throw new RpcError(-32602, err.message, { code });
-      }
-      throw err;
-    }
-    if (result.changed) {
-      emitWorkspaceSettingsUpdated(ctx, workspaceId, result.settings);
-    }
-    return {
-      workspaceId,
-      settings: projectWorkspaceSettings(result.settings),
-      changed: result.changed
-    };
-  });
-}
-function parseWorkspaceSettingsPatch(p) {
-  if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
-    throw new RpcError(
-      -32602,
-      "workspace.settings.update does not accept nested patch; pass fields at the top level"
-    );
-  }
-  const reserved = /* @__PURE__ */ new Set(["workspaceId", "actor", "patch"]);
-  const supported = /* @__PURE__ */ new Set(["defaultAcceptMode"]);
-  const out = {};
-  for (const [key2, value] of Object.entries(p)) {
-    if (reserved.has(key2)) continue;
-    if (!supported.has(key2)) {
-      throw new RpcError(-32602, `Unknown workspace setting: ${key2}`);
-    }
-    if (value === void 0) continue;
-    out[key2] = value;
-  }
-  if ("defaultAcceptMode" in out) {
-    const v = out.defaultAcceptMode;
-    if (v !== "review-required" && v !== "auto-accept" && v !== "agent-decide") {
-      throw new RpcError(-32602, `Invalid defaultAcceptMode: ${String(v)}`, {
-        code: "INVALID_ACCEPT_MODE"
-      });
-    }
-  }
-  return out;
-}
-function projectWorkspaceSettings(settings) {
-  return { ...settings };
-}
-function emitWorkspaceSettingsUpdated(ctx, workspaceId, settings) {
-  ctx.events.emit(
-    "workspace.settings.updated",
-    workspaceId,
-    {
-      settings: projectWorkspaceSettings(settings)
-    },
-    "self"
-  );
-}
-async function workspaceAgentsRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const file = await loadWorkspaceAgents(mount.workspaceRoot);
-  return projectWorkspaceAgents(workspaceId, file);
-}
-async function workspaceAgentsWriteRpc(ctx, p) {
-  requireUserActor(p, "workspace.agents.write");
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  if (typeof p.content !== "string") {
-    throw new RpcError(-32602, "workspace.agents.write requires string content");
-  }
-  const content3 = p.content;
-  const baseEtag = optionalString2(p, "baseEtag");
-  return ctx.mutations.run(workspaceId, async () => {
-    const before = await loadWorkspaceAgents(mount.workspaceRoot);
-    const currentEtag = contentEtag(before.content);
-    if (baseEtag && baseEtag !== currentEtag) {
-      throw new RpcError(-32009, "etag conflict", {
-        currentEtag,
-        baseEtag,
-        path: WORKSPACE_AGENTS_FILENAME
-      });
-    }
-    ctx.host.markSelfWrite(workspaceId);
-    let result;
-    try {
-      result = await writeWorkspaceAgents(mount.workspaceRoot, content3);
-    } catch (err) {
-      if (err instanceof WorkspaceAgentsError || err instanceof Error && err.name === "WorkspaceAgentsError") {
-        const code = err instanceof WorkspaceAgentsError ? err.code : err.code ?? "INVALID_CONTENT";
-        throw new RpcError(-32602, err.message, { code });
-      }
-      throw err;
-    }
-    const projection = projectWorkspaceAgents(workspaceId, result.file);
-    if (result.changed) {
-      ctx.events.emit(
-        "workspace.agents.updated",
-        workspaceId,
-        {
-          path: projection.path,
-          content: projection.content,
-          exists: projection.exists,
-          etag: projection.etag
-        },
-        "self"
-      );
-    }
-    return {
-      ...projection,
-      changed: result.changed
-    };
-  });
-}
-function projectWorkspaceAgents(workspaceId, file) {
-  return {
-    workspaceId,
-    path: file.path,
-    content: file.content,
-    exists: file.exists,
-    etag: contentEtag(file.content)
-  };
 }
 async function docsList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -30038,14 +30179,16 @@ async function taskInterruptRpc(ctx, p) {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
+    await promoteManagedDraftBeforeTerminal(ctx, workspaceId, taskPath, before);
     const task = await taskInterrupt(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    await clearManagedDraftBestEffort(ctx, workspaceId, taskPath);
     await removePendingDecisionRequestForTerminal(
       ctx,
       workspaceId,
       taskPath,
       "task.interrupt"
     );
-    emitTaskState(ctx, workspaceId, task, "task.interrupt");
     await cancelTaskInputsForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
       try {
@@ -30098,17 +30241,18 @@ async function taskCancelRpc(ctx, p) {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
-    await removePendingDecisionRequestForTerminal(
-      ctx,
-      workspaceId,
-      taskPath,
-      "task.cancel"
-    );
     ctx.events.emit(
       "task.state",
       workspaceId,
       { path: taskPath, state: "interrupted", reason: "task.cancel" },
       "self"
+    );
+    await clearManagedDraftBestEffort(ctx, workspaceId, taskPath);
+    await removePendingDecisionRequestForTerminal(
+      ctx,
+      workspaceId,
+      taskPath,
+      "task.cancel"
     );
     return {
       workspaceId,
@@ -30132,6 +30276,32 @@ async function taskCancelRpc(ctx, p) {
     state: result.state,
     cancelled: result.cancelled
   };
+}
+async function promoteManagedDraftBeforeTerminal(ctx, workspaceId, taskPath, task) {
+  if (!task || task.state !== "running" && task.state !== "waiting") return task;
+  const draft = await ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+  if (!draft) return task;
+  if (!task.id || draft.taskId !== task.id || !task.sessionId || draft.sessionId !== task.sessionId) {
+    return task;
+  }
+  const draftOutcome = parseTaskOutcomeReport(draft.assistantText);
+  const visibleReport = draftOutcome?.outcome === "blocked" || draftOutcome?.outcome === "needs-input" ? draftOutcome.report || draft.assistantText : draft.assistantText;
+  const exactVisible = task.lastReturn?.report === visibleReport && (!task.lastReturn.sessionId || task.lastReturn.sessionId === draft.sessionId) && (!draftOutcome || task.lastReturn.kind === draftOutcome.outcome);
+  if (exactVisible) return task;
+  const mount = ctx.host.require(workspaceId);
+  const reportFits = Buffer.byteLength(draft.assistantText, "utf8") <= TASK_LAST_RETURN_REPORT_MAX_BYTES;
+  return taskRecordFailedReturn(mount.env, taskPath, {
+    ...reportFits ? { report: draft.assistantText } : {},
+    error: reportFits ? "Task ended before its managed return could be published." : "Managed return draft exceeded the Task return bound before termination.",
+    code: reportFits ? "TASK_TERMINATED_WITH_DRAFT" : "TASK_TERMINATED_DRAFT_OVERSIZE",
+    sessionId: draft.sessionId
+  });
+}
+async function clearManagedDraftBestEffort(ctx, workspaceId, taskPath) {
+  try {
+    await ctx.managedDeliveryReportDrafts.clear(workspaceId, taskPath);
+  } catch {
+  }
 }
 async function taskStartSessionRpc(ctx, p) {
   assertAllowedParams(
@@ -34096,7 +34266,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       report: rawReport
     };
   }
-  const summary = (parsedOutcome.report || rawReport).trim();
+  const summary = parsedOutcome.report.trim();
   const draftText = rawReport;
   const key2 = managedDeliverKey(sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key2) || managedAutoDeliverInFlight.has(key2)) {
@@ -34175,8 +34345,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       const recovered = await ctx.mutations.run(
         input.workspaceId,
         () => recoverCommittedTaskDeliver(mount.env, input.taskPath, {
-          summary,
-          lastOutcome: "delivered"
+          summary
         })
       );
       const current = recovered?.task ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -34240,7 +34409,6 @@ async function tryManagedAutoDeliver(ctx, input) {
           const opts = {
             summary,
             decision,
-            lastOutcome: "delivered",
             ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
             ...targetHead ? { targetHead } : {}
           };
@@ -34304,11 +34472,13 @@ async function tryManagedAutoDeliver(ctx, input) {
       } catch {
       }
     }
-    await stopManagedSessionAfterDelivery(ctx, {
-      workspaceId: input.workspaceId,
-      sessionId,
-      taskPath: input.taskPath
-    });
+    if (published) {
+      await stopManagedSessionAfterDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId,
+        taskPath: input.taskPath
+      });
+    }
     if (published) {
       try {
         const mountAfter = ctx.host.get(input.workspaceId);
@@ -34339,10 +34509,44 @@ async function tryManagedAutoDeliver(ctx, input) {
       } catch {
       }
     }
+    let taskWithReturn;
+    if (draftPreserved) {
+      try {
+        const returnMount = ctx.host.get(input.workspaceId);
+        if (!returnMount) throw new Error("workspace unmounted before managed return record");
+        taskWithReturn = await runTaskLifecycle(
+          input.workspaceId,
+          input.taskPath,
+          () => ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const report = summary || rawReport;
+            const reportFits = Buffer.byteLength(report, "utf8") <= TASK_LAST_RETURN_REPORT_MAX_BYTES;
+            return taskRecordFailedReturn(returnMount.env, input.taskPath, {
+              ...reportFits ? { report } : {},
+              error: boundedTaskReturnError(
+                message2,
+                "Managed Delivery publication failed."
+              ),
+              code: stableTaskReturnCode(errorCode, "MANAGED_DELIVERY_FAILED"),
+              sessionId
+            });
+          })
+        );
+      } catch {
+      }
+    }
+    if (taskWithReturn?.lastReturn?.kind === "failed") {
+      emitTaskState(
+        ctx,
+        input.workspaceId,
+        taskWithReturn,
+        "session.prompt_complete.failed"
+      );
+    }
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
-      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      const task = taskWithReturn ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (task.state === "running" || task.state === "waiting" || task.state === "delivered") {
         try {
           await ctx.runtime.registry.update(sessionId, {
@@ -34395,25 +34599,78 @@ async function handleManagedNonDeliveredOutcome(ctx, input) {
     const outcome = input.outcome;
     const report = input.report.trim() || (input.emptyDeliveredBody ? "outcome=delivered but report body was empty" : outcome ? `outcome=${outcome}` : "managed final report missing explicit outcome: delivered|blocked|needs-input");
     if (outcome === "needs-input" || outcome === "blocked") {
-      await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
-        await ctx.mutations.run(input.workspaceId, async () => {
-          ctx.host.markSelfWrite(input.workspaceId);
-          const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-          if (current.state !== "running") return;
-          await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-            lastOutcome: outcome,
-            state: "waiting",
-            wait: {
+      let parked = false;
+      let taskWithReturn;
+      try {
+        await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+          await ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+            if (current.state !== "running" || !task.id || current.id !== task.id || current.sessionId !== sessionId) {
+              return;
+            }
+            taskWithReturn = await taskWait(mount.env, input.taskPath, {
               reason: outcome === "needs-input" ? "user-input" : "external",
               summary: report.slice(0, 2e3),
-              code: outcome === "needs-input" ? "needs_input" : "blocked"
-            },
-            updatedAt: mount.env.clock.now()
+              code: outcome === "needs-input" ? "needs_input" : "blocked",
+              lastReturn: {
+                kind: outcome,
+                report,
+                at: mount.env.clock.now(),
+                sessionId
+              }
+            });
+            parked = true;
           });
         });
-      });
-      const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-      if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        try {
+          await runTaskLifecycle(
+            input.workspaceId,
+            input.taskPath,
+            () => ctx.mutations.run(input.workspaceId, async () => {
+              ctx.host.markSelfWrite(input.workspaceId);
+              const recorded = await taskRecordFailedReturn(mount.env, input.taskPath, {
+                error: boundedTaskReturnError(
+                  `Managed ${outcome} return could not be recorded: ${detail}`,
+                  "Managed control return could not be recorded."
+                ),
+                code: "MANAGED_RETURN_INVALID",
+                sessionId
+              });
+              if (recorded.lastReturn?.kind === "failed") taskWithReturn = recorded;
+            })
+          );
+        } catch {
+        }
+      }
+      if (parked) {
+        try {
+          await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
+        } catch {
+        }
+      }
+      if (taskWithReturn) {
+        emitTaskState(ctx, input.workspaceId, taskWithReturn, "session.prompt_complete");
+      }
+    } else if (input.emptyDeliveredBody) {
+      try {
+        await runTaskLifecycle(
+          input.workspaceId,
+          input.taskPath,
+          () => ctx.mutations.run(input.workspaceId, async () => {
+            ctx.host.markSelfWrite(input.workspaceId);
+            const recorded = await taskRecordFailedReturn(mount.env, input.taskPath, {
+              error: "Managed delivered return body is empty.",
+              code: "MANAGED_EMPTY_DELIVERY_REPORT",
+              sessionId
+            });
+            emitTaskState(ctx, input.workspaceId, recorded, "session.prompt_complete");
+          })
+        );
+      } catch {
+      }
     }
     try {
       await ctx.runtime.registry.update(sessionId, {
@@ -34443,6 +34700,20 @@ async function handleManagedNonDeliveredOutcome(ctx, input) {
   } finally {
     managedAutoDeliverInFlight.delete(key2);
   }
+}
+function boundedTaskReturnError(value, fallback) {
+  const text3 = value.trim() || fallback;
+  if (Buffer.byteLength(text3, "utf8") <= TASK_LAST_RETURN_ERROR_MAX_BYTES) return text3;
+  const suffix = "\u2026";
+  const budget = TASK_LAST_RETURN_ERROR_MAX_BYTES - Buffer.byteLength(suffix, "utf8");
+  const bytes = Buffer.from(text3, "utf8");
+  let end = Math.min(budget, bytes.length);
+  while (end > 0 && (bytes[end] & 192) === 128) end -= 1;
+  return `${bytes.subarray(0, end).toString("utf8").trimEnd()}${suffix}`;
+}
+function stableTaskReturnCode(value, fallback) {
+  const code = value?.trim() || "";
+  return code && Buffer.byteLength(code, "utf8") <= 128 && /^[A-Za-z0-9_.:-]+$/.test(code) ? code : fallback;
 }
 async function collectManagedDeliveryCommits(workspaceRoot, task, fs22) {
   const hasRecordedLane = Boolean(
@@ -35282,7 +35553,7 @@ function projectTask(task) {
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
-    lastOutcome: task.lastOutcome,
+    lastReturn: task.lastReturn ? { ...task.lastReturn } : void 0,
     workspaceLane: lane,
     // Compact first-claim baseCommit capture audit.
     ...task.baseCommitCapture ? {
@@ -36465,7 +36736,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 7;
+var TENT_SERVICE_PROTOCOL_VERSION = 8;
 
 // src/service/tool-approval-store.ts
 import * as fs19 from "node:fs/promises";
@@ -37134,7 +37405,7 @@ var ManagedDeliveryReportDraftStore = class {
     });
   }
   /**
-   * Remove draft after successful Delivery (or when no longer needed).
+   * Remove draft after successful Delivery or durable Task return projection.
    * Idempotent when already absent.
    */
   async clear(workspaceId, taskPath) {

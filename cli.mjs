@@ -2051,6 +2051,9 @@ function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/core/task.ts
+import { Buffer as Buffer2 } from "node:buffer";
+
 // src/core/task-model.ts
 var TaskLifecycleError = class extends Error {
   constructor(code, message) {
@@ -2481,6 +2484,71 @@ function assertIsoTimestamp(value, label) {
   }
   return raw;
 }
+var TASK_LAST_RETURN_REPORT_MAX_BYTES = 64 * 1024;
+var TASK_LAST_RETURN_ERROR_MAX_BYTES = 8 * 1024;
+var TASK_LAST_RETURN_CODE_MAX_BYTES = 128;
+function parseTaskLastReturn(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Task lastReturn must be an object.");
+  }
+  const raw = value;
+  const allowed = /* @__PURE__ */ new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) {
+    throw new Error("Task lastReturn contains unknown fields.");
+  }
+  const kind = raw.kind;
+  if (kind !== "blocked" && kind !== "needs-input" && kind !== "failed") {
+    throw new Error("Task lastReturn.kind must be blocked, needs-input, or failed.");
+  }
+  const report = parseBoundedTaskLastReturnString(
+    raw.report,
+    "report",
+    TASK_LAST_RETURN_REPORT_MAX_BYTES
+  );
+  const error = parseBoundedTaskLastReturnString(
+    raw.error,
+    "error",
+    TASK_LAST_RETURN_ERROR_MAX_BYTES
+  );
+  if (!report && !error) {
+    throw new Error("Task lastReturn requires report or error.");
+  }
+  const code = parseBoundedTaskLastReturnString(
+    raw.code,
+    "code",
+    TASK_LAST_RETURN_CODE_MAX_BYTES
+  );
+  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
+    throw new Error("Task lastReturn.code must be a stable machine identifier.");
+  }
+  const at = raw.at === void 0 ? void 0 : assertIsoTimestamp(String(raw.at), "Task lastReturn.at");
+  const sessionId = raw.sessionId === void 0 ? void 0 : String(raw.sessionId).trim();
+  if (sessionId && !isSessionId(sessionId)) {
+    throw new Error(`Invalid Task lastReturn.sessionId: ${sessionId}.`);
+  }
+  return {
+    kind,
+    ...report ? { report } : {},
+    ...error ? { error } : {},
+    ...code ? { code } : {},
+    ...at ? { at } : {},
+    ...sessionId ? { sessionId } : {}
+  };
+}
+function parseBoundedTaskLastReturnString(value, field, maxBytes) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "string") {
+    throw new Error(`Task lastReturn.${field} must be a string.`);
+  }
+  const text = value.trim();
+  if (!text) return void 0;
+  const bytes = Buffer2.byteLength(text, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`Task lastReturn.${field} exceeds ${maxBytes} UTF-8 bytes.`);
+  }
+  return text;
+}
 function parseBaseCommitCapture(value) {
   if (value === void 0 || value === null) return void 0;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -2600,9 +2668,8 @@ async function loadTaskEnvelope(fs10, path9) {
   }
   task.contextGeneration = contextCard.contextGeneration;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
-  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
-    task.lastOutcome = data.lastOutcome;
-  }
+  const lastReturn = parseTaskLastReturn(data.lastReturn);
+  if (lastReturn) task.lastReturn = lastReturn;
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
@@ -3292,7 +3359,7 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 7;
+var TENT_SERVICE_PROTOCOL_VERSION = 8;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -5056,7 +5123,7 @@ tasks: (none)
   const lines = [`workspaceId: ${row.workspaceId ?? "?"}`, `tasks: ${tasks.length}`, ""];
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}` + (t.roleId ? `	role=${t.roleId}` : "") + `	work=${(t.workNodeIds ?? []).join(",") || "-"}	context=${(t.contextNodeIds ?? []).join(",") || "-"}` + (t.sessionId ? `	session=${t.sessionId}` : "")
+      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}` + (t.roleId ? `	role=${t.roleId}` : "") + `	work=${(t.workNodeIds ?? []).join(",") || "-"}	context=${(t.contextNodeIds ?? []).join(",") || "-"}` + (t.sessionId ? `	session=${t.sessionId}` : "") + (t.lastReturn?.kind ? `	return=${t.lastReturn.kind}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -5073,10 +5140,29 @@ function formatTaskGet(result) {
     `contextNodeIds: ${(t.contextNodeIds ?? []).join(", ") || "-"}`
   ];
   if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
+  if (t.lastReturn?.kind) {
+    lines.push("", "--- last return ---", `kind: ${t.lastReturn.kind}`);
+    if (t.lastReturn.code) lines.push(`code: ${boundedCliText(t.lastReturn.code, 160)}`);
+    if (t.lastReturn.at) lines.push(`at: ${boundedCliText(t.lastReturn.at, 80)}`);
+    if (t.lastReturn.sessionId) {
+      lines.push(`sessionId: ${boundedCliText(t.lastReturn.sessionId, 80)}`);
+    }
+    if (t.lastReturn.report) {
+      lines.push("report:", boundedCliText(t.lastReturn.report, 2e3));
+    }
+    if (t.lastReturn.error) {
+      lines.push("error:", boundedCliText(t.lastReturn.error, 2e3));
+    }
+  }
   if (t.prompt) {
     lines.push("", "--- prompt ---", t.prompt.trimEnd());
   }
   return lines.join("\n") + "\n";
+}
+function boundedCliText(value, maxChars) {
+  const text = String(value).trim();
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}
+[truncated]`;
 }
 function formatTaskWorktreeReclaim(result, action) {
   const row = result;

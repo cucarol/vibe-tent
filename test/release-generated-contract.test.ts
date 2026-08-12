@@ -30,7 +30,7 @@ function generatedCall(text: string, marker: string): string {
   return text.slice(index, end + 3);
 }
 
-test("generated release artifacts require protocol 7 id-only review and Decision mutation", async () => {
+test("generated release artifacts require protocol 8 id-only review and Decision mutation", async () => {
   const [cli, service, desktopMain, desktopRenderer] = await Promise.all([
     generated("cli.mjs"),
     generated("service.mjs"),
@@ -38,8 +38,8 @@ test("generated release artifacts require protocol 7 id-only review and Decision
     generated("desktop/dist/renderer-next/main.js"),
   ]);
 
-  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
-  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
+  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
+  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
   assert.match(cli, /tent task accept <deliveryId> --actor <user\|role>/);
   assert.match(cli, /tent task reject <deliveryId> --actor <user\|role>/);
   assert.match(cli, /tent task decision respond <requestId>/);
@@ -68,7 +68,7 @@ test("generated release artifacts require protocol 7 id-only review and Decision
     /new Set\(\["workspaceId", "taskPath", "requestId", "response"\]\)/
   );
 
-  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
+  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
   assert.match(desktopMain, /task\.accept/);
   assert.match(desktopMain, /task\.reject/);
   assert.match(desktopMain, /decisionRequest\.respond/);
@@ -84,7 +84,7 @@ test("generated release artifacts require protocol 7 id-only review and Decision
     assert.doesNotMatch(mutation, /taskPath|taskId/);
   }
 
-  assert.match(desktopRenderer, /protocolVersion!==7/);
+  assert.match(desktopRenderer, /protocolVersion!==8/);
   assert.match(desktopRenderer, /acceptDelivery/);
   assert.match(desktopRenderer, /rejectDelivery/);
   assert.match(desktopRenderer, /respondDecision/);
