@@ -338,6 +338,27 @@ test("task.accept finalize rejects a Delivery-id collision introduced during Git
     assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
     await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
     await mount.env.fs.remove(collisionPath);
+
+    setBeforeTaskAcceptFinalizeForTests(async () => {
+      await writeDelivery(mount.env.fs, { ...exact, summary: "drifted after Git" });
+    });
+    try {
+      const drifted = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        deliveryId,
+        actor: "user",
+      });
+      assert.equal(
+        (drifted.error?.data as { code?: string } | undefined)?.code,
+        "DELIVERY_CHANGED"
+      );
+    } finally {
+      setBeforeTaskAcceptFinalizeForTests(null);
+    }
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+    await writeDelivery(mount.env.fs, exact);
+
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
       deliveryId,

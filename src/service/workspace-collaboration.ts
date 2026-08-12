@@ -15,6 +15,7 @@ type SessionBinding = {
   workspace?: string;
   lastTaskId?: string;
   connectionId?: string;
+  open: boolean;
 };
 
 type ConnectionIdentity = {
@@ -42,7 +43,7 @@ export async function buildWorkspaceCollaborationProjection(
 ): Promise<WorkspaceCollaborationProjection> {
   const tasksById = indexCanonicalTasks(input.tasks);
   const { byTaskId: decisionsByTaskId, actionable: actionableDecisions } =
-    selectActionableUserDecisions(input.pendingDecisions, tasksById);
+    await selectActionableUserDecisions(input, tasksById);
   const deliveriesById = indexDeliveriesById(input.deliveries);
   const readyDeliveriesByTaskId = indexReadyDeliveries(input.deliveries);
   const inboxItems = selectUserInboxDeliveries(input.tasks, deliveriesById, tasksById);
@@ -117,28 +118,31 @@ function indexCanonicalTasks(
   return tasksById;
 }
 
-function selectActionableUserDecisions(
-  decisions: readonly DecisionRequestRecord[],
+async function selectActionableUserDecisions(
+  input: Pick<WorkspaceCollaborationInput, "workspaceId" | "pendingDecisions" | "readSession">,
   tasksById: ReadonlyMap<string, readonly TaskEnvelope[]>
-): {
+): Promise<{
   byTaskId: Map<string, DecisionRequestRecord>;
   actionable: Array<{
     request: DecisionRequestRecord;
     task: TaskEnvelope & { id: string };
   }>;
-} {
+}> {
   const byTaskId = new Map<string, DecisionRequestRecord>();
   const actionable: Array<{
     request: DecisionRequestRecord;
     task: TaskEnvelope & { id: string };
   }> = [];
-  for (const request of decisions) {
+  for (const request of input.pendingDecisions) {
     if (request.target.kind !== "user") continue;
     const sameId = tasksById.get(request.taskId) ?? [];
     const exactPath = sameId.filter((candidate) => candidate.path === request.taskPath);
     const candidates = exactPath.filter(
       (candidate) =>
-        candidate.state === "waiting" && candidate.wait?.reason === "user-input"
+        candidate.state === "waiting" &&
+        candidate.wait?.reason === "user-input" &&
+        candidate.wait.code === `decision_request:${request.id}` &&
+        candidate.sessionId === request.requester.id
     );
     // A stale pending row is historical, not an actionable Inbox fact.
     if (candidates.length === 0) continue;
@@ -154,6 +158,17 @@ function selectActionableUserDecisions(
       });
     }
     const task = candidates[0] as TaskEnvelope & { id: string };
+    const session = await input.readSession(request.requester.id);
+    if (
+      !session ||
+      !session.open ||
+      session.workspace !== input.workspaceId ||
+      session.lastTaskId !== task.id
+    ) {
+      // A once-actionable request whose requester is no longer the exact open
+      // Task binding is historical inventory, not a workspace-wide failure.
+      continue;
+    }
     byTaskId.set(request.taskId, request);
     actionable.push({ request, task });
   }

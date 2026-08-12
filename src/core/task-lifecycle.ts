@@ -10,6 +10,7 @@ import {
 } from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
+  deliveryReviewSemanticsDigest,
   loadDelivery,
   peekDeliveryTaskId,
   removeNonAcceptedDeliveriesForTask,
@@ -269,6 +270,8 @@ export interface TaskAcceptPrepared {
   commits: string[];
   /** Canonical complete Output set validated before Git integration. */
   outputNodeIds: string[];
+  /** Fixed-size complete immutable ready-Delivery semantics proof. */
+  deliverySemanticsDigest?: string;
   /** Present only when prepare recovered a previously committed accept intent. */
   recovered?: TaskAcceptResult;
   acceptIntent?: TaskAcceptIntent;
@@ -567,6 +570,7 @@ export async function prepareTaskAccept(
       deliveryPath: delivery.path,
       commits: [...delivery.commits],
       outputNodeIds,
+      deliverySemanticsDigest: deliveryReviewSemanticsDigest(delivery),
     };
   });
 }
@@ -601,6 +605,15 @@ export async function finalizeTaskAccept(
       throw new TaskLifecycleError(
         "DELIVERY_CHANGED",
         "Ready delivery changed during integrate; refusing accept."
+      );
+    }
+    if (
+      !prepared.deliverySemanticsDigest ||
+      deliveryReviewSemanticsDigest(delivery) !== prepared.deliverySemanticsDigest
+    ) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery semantics changed during integrate; refusing accept."
       );
     }
     if (!exactStringListEqual(delivery.commits, prepared.commits)) {

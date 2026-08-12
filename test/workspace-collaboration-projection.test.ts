@@ -172,19 +172,31 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
       "2026-01-02T00:00:00.000Z"
     );
 
+    const decisionSession = await client.sessionEnter({
+      workspaceId,
+      externalKey: "workspace-collaboration-decision",
+      cwd: workspace,
+    }) as { session: { sessionId: string } };
     const userDecisionTask = await writeTask(systemFs, {
       workNodeIds: [decisionNode],
-      roleId: "rl-executor",
+      sessionId: decisionSession.session.sessionId,
       parentActor: { kind: "user", id: "user" },
     });
     await patchTaskEnvelope(systemFs, userDecisionTask.path, {
       state: "waiting",
-      wait: { reason: "user-input", summary: "Need user choice" },
+      wait: {
+        reason: "user-input",
+        summary: "Need user choice",
+        code: "decision_request:dr-0123456789",
+      },
+    });
+    await svc.runtime.registry.update(decisionSession.session.sessionId, {
+      lastTaskId: userDecisionTask.id,
     });
     const decision: PendingDecisionRequest = {
       id: "dr-0123456789",
       status: "pending",
-      requester: { kind: "session", id: "ss-0123456789" },
+      requester: { kind: "session", id: decisionSession.session.sessionId },
       target: { kind: "user", id: "user" },
       taskId: userDecisionTask.id!,
       question: "Choose one?",
@@ -313,6 +325,58 @@ test("workspace.collaboration distinguishes user responsibility from Connection 
     await assert.rejects(
       () => client.workspaceCollaboration(workspaceId, nodeId),
       /WORKSPACE_COLLABORATION_STALE|consistency error/i
+    );
+  });
+});
+
+test("workspace.collaboration exposes only an exact live Decision wait binding", async () => {
+  const { workspace, systemFs, ids } = await makeWorkspace();
+  await withService(async (svc, client) => {
+    const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
+    const entered = await client.sessionEnter({
+      workspaceId,
+      externalKey: "workspace-collaboration-decision-binding",
+      cwd: workspace,
+    }) as { session: { sessionId: string } };
+    const nodeId = ids.get("user-decision")!;
+    const task = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      sessionId: entered.session.sessionId,
+      parentActor: { kind: "user", id: "user" },
+    });
+    const requestId = "dr-binding001";
+    await patchTaskEnvelope(systemFs, task.path, {
+      state: "waiting",
+      wait: { reason: "user-input", summary: "Choose", code: "decision_request:other" },
+    });
+    await svc.runtime.registry.update(entered.session.sessionId, { lastTaskId: task.id });
+    await svc.ctx.decisionRequests.add({
+      workspaceId,
+      taskPath: task.path,
+      request: {
+        id: requestId,
+        status: "pending",
+        requester: { kind: "session", id: entered.session.sessionId },
+        target: { kind: "user", id: "user" },
+        taskId: task.id!,
+        question: "Choose?",
+        options: [],
+      },
+    });
+
+    const stale = await client.workspaceCollaboration(workspaceId);
+    assert.equal(stale.inbox.counts.decision, 0, "wrong wait identity is stale inventory");
+
+    await patchTaskEnvelope(systemFs, task.path, {
+      wait: { reason: "user-input", summary: "Choose", code: `decision_request:${requestId}` },
+    });
+    assert.equal((await client.workspaceCollaboration(workspaceId)).inbox.counts.decision, 1);
+
+    await svc.runtime.registry.update(entered.session.sessionId, { state: "stopped" });
+    assert.equal(
+      (await client.workspaceCollaboration(workspaceId)).inbox.counts.decision,
+      0,
+      "a closed requester is historical, not an actionable or workspace-poisoning row"
     );
   });
 });

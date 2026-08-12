@@ -97,6 +97,7 @@ import { cloneAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
 import {
   loadDeliveries,
   loadDelivery,
+  deliveryReviewSemanticsDigest,
   peekDeliveryIdentity,
   type DeliveryRecord,
 } from "../core/delivery.js";
@@ -6003,14 +6004,20 @@ function assertReviewDeliveryIdentityUnchanged(
   initial: { task: TaskEnvelope & { id: string }; delivery: DeliveryRecord },
   current: { task: TaskEnvelope & { id: string }; delivery: DeliveryRecord }
 ): void {
+  const initialDigest = deliveryReviewSemanticsDigest(initial.delivery);
+  const currentDigest = deliveryReviewSemanticsDigest(current.delivery);
   if (
     current.task.path !== initial.task.path ||
     current.task.id !== initial.task.id ||
     current.delivery.path !== initial.delivery.path ||
-    current.delivery.id !== initial.delivery.id ||
-    current.delivery.taskId !== initial.delivery.taskId
+    currentDigest !== initialDigest
   ) {
-    throw reviewDeliveryTaskLookupError(initial.delivery.id, 0, 0);
+    throw new RpcError(RPC_LIFECYCLE, "Review Delivery changed during mutation", {
+      code: "DELIVERY_CHANGED",
+      deliveryId: initial.delivery.id,
+      expectedDigest: initialDigest,
+      actualDigest: currentDigest,
+    });
   }
 }
 
@@ -8155,7 +8162,17 @@ async function workspaceCollaborationRpc(
     deliveries,
     pendingDecisions: decisions,
     roles: roles.roles,
-    readSession: (sessionId) => ctx.runtime.registry.read(sessionId),
+    readSession: async (sessionId) => {
+      const session = await ctx.runtime.registry.read(sessionId);
+      return session
+        ? {
+            workspace: session.workspace,
+            lastTaskId: session.lastTaskId,
+            connectionId: session.connectionId,
+            open: SessionRegistry.isOpen(session.state),
+          }
+        : null;
+    },
     getConnection: (connectionId) => ctx.connectionCatalog.get(connectionId),
   });
 }
@@ -9719,6 +9736,12 @@ async function decisionRequestRespondRpc(
               session.lastTaskId === task.id
           );
           if (canResume) {
+            ctx.events.emit(
+              "decisionRequest.resolved",
+              exact.workspaceId,
+              projectDecisionRequest(answered),
+              "self"
+            );
             ctx.host.markSelfWrite(exact.workspaceId);
             nextTask = await taskResume(mount.env, exact.taskPath);
             emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond.recover");

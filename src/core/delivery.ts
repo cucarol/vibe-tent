@@ -8,6 +8,7 @@ import {
   normalizeArtifactRefs,
   type ArtifactRef,
 } from "./artifact.js";
+import { canonicalSha256, sha256Hex } from "./canonical-digest.js";
 import {
   ROLES_TEMP_DIR,
   SESSIONS_TEMP_DIR,
@@ -141,8 +142,15 @@ export async function createDeliveryUnlocked(
 export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<DeliveryRecord> {
   const path = normalizeDeliveryPath(inputPath);
   if (!(await fs.exists(path))) throw new Error(`Delivery not found: ${path}.`);
-  const { data, body } = parseFrontmatter(await fs.readFile(path));
-  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+  const identity = await peekDeliveryIdentity(fs, path);
+  const raw = await fs.readFile(path);
+  const { data, body } = parseFrontmatter(raw);
+  if (
+    !identity ||
+    data.type !== "delivery" ||
+    data.id !== identity.id ||
+    data.taskId !== identity.taskId
+  ) {
     throw new Error(`Invalid delivery format: ${path}.`);
   }
   if (
@@ -221,13 +229,53 @@ export async function peekDeliveryIdentity(
   // Non-fatal decoding is intentional: an exact byte prefix may end halfway
   // through a later multibyte frontmatter/body value after the ASCII identity.
   const raw = new TextDecoder("utf-8").decode(bounded.bytes);
-  // Hard-cut canonical identity header. Identity is attributed only from the
-  // opening frontmatter's first fields, never from report body examples; the
-  // closing fence and potentially large checks/artifact fields need not fit.
-  const identity = raw.match(
-    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/
-  );
-  return identity ? { id: identity[1]!, taskId: identity[2]! } : undefined;
+  return parseCanonicalDeliveryIdentityPrefix(raw);
+}
+
+/**
+ * The full loader and bounded inventory share this exact identity invariant.
+ * Canonical scalar identity fields may be reordered, but must all occur once
+ * in the opening bounded frontmatter and agree with the complete parse.
+ */
+function parseCanonicalDeliveryIdentityPrefix(
+  raw: string
+): { id: string; taskId: string } | undefined {
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return undefined;
+  const values = new Map<string, string>();
+  for (const line of raw.split(/\r?\n/).slice(1)) {
+    if (line === "---") break;
+    const match = line.match(/^(type|id|taskId):\s*["']?([^"']+?)["']?\s*$/);
+    if (!match) continue;
+    if (values.has(match[1]!)) return undefined;
+    values.set(match[1]!, match[2]!);
+  }
+  const type = values.get("type");
+  const id = values.get("id");
+  const taskId = values.get("taskId");
+  return type === "delivery" && id && taskId && isDeliveryId(id) && /^tk-[a-z0-9]+$/.test(taskId)
+    ? { id, taskId }
+    : undefined;
+}
+
+/** Fixed-size proof that every immutable review candidate fact is unchanged. */
+export function deliveryReviewSemanticsDigest(record: DeliveryRecord): string {
+  return canonicalSha256({
+    version: 1,
+    id: record.id,
+    taskId: record.taskId,
+    sourceNodeId: record.sourceNodeId,
+    status: record.status,
+    summarySha256: sha256Hex(record.summary),
+    commits: [...record.commits],
+    targetHead: record.targetHead ?? null,
+    checks: record.checks.map((check) => ({ ...check })),
+    artifactRefs: normalizeArtifactRefs(record.artifactRefs),
+    taskLastOutcome: record.taskLastOutcome ?? null,
+    integrationMode: record.integrationMode,
+    review: record.review ? { ...record.review } : null,
+    createdAt: record.createdAt ?? null,
+    updatedAt: record.updatedAt ?? null,
+  });
 }
 
 function normalizeDeliveryIdentityPath(input: string): string {

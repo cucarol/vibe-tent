@@ -835,6 +835,36 @@ test("exact deliveryId lookup never reads or peeks unrelated Role Delivery files
   assert.equal(unrelatedReads, 0);
 });
 
+test("task.accept prepare digest rejects complete Delivery semantic drift before authority writes", async () => {
+  for (const field of ["summary", "targetHead"] as const) {
+    const { base, env, taskPath } = await runningTask("review-required");
+    const delivered = await taskDeliver(env as never, taskPath, {
+      summary: "immutable report",
+      commits: ["a".repeat(40)],
+      targetHead: "b".repeat(40),
+      checks: [{ name: "focused", command: "npm test", exitCode: 0 }],
+    });
+    const options = { actor: "user", deliveryId: delivered.delivery.id };
+    const prepared = await prepareTaskAccept(env as never, taskPath, options);
+    const taskRaw = await base.readFile(taskPath);
+    const drifted = {
+      ...delivered.delivery,
+      ...(field === "summary"
+        ? { summary: "changed report" }
+        : { targetHead: "c".repeat(40) }),
+    };
+    await writeDelivery(base, drifted);
+    const driftedRaw = await base.readFile(drifted.path);
+
+    await assert.rejects(
+      () => finalizeTaskAccept(env as never, taskPath, options, prepared),
+      /delivery semantics changed/i
+    );
+    assert.equal(await base.readFile(taskPath), taskRaw);
+    assert.equal(await base.readFile(drifted.path), driftedRaw);
+  }
+});
+
 test("shared-directory discovery uses a 1KiB prefix and never full-reads unrelated large reports", async () => {
   const { base, env, taskPath } = await runningTask("review-required");
   const secondPath = await dispatchSecondRoleTask(env);

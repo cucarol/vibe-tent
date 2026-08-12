@@ -536,14 +536,28 @@ test("answered Decision retry repairs the committed answer before Task resume", 
       response,
     });
 
+    const recoveryEvents: Array<{ type: string; payload: unknown }> = [];
+    const unsubscribe = svc.ctx.events.subscribe((event) => recoveryEvents.push(event));
     const recovered = (await root.decisionRequestRespond(
       workspaceId,
       request.id,
       response
     )) as { state: string; enqueued: boolean };
+    unsubscribe();
     assert.equal(recovered.state, "running");
     assert.equal(recovered.enqueued, true);
     assert.equal((await svc.ctx.taskInputs.listForTask(workspaceId, taskPath)).length, 1);
+    const resolvedIndex = recoveryEvents.findIndex(
+      (event) => event.type === "decisionRequest.resolved"
+    );
+    const taskStateIndex = recoveryEvents.findIndex(
+      (event) =>
+        event.type === "task.state" &&
+        (event.payload as { reason?: unknown }).reason === "decisionRequest.respond.recover"
+    );
+    assert.ok(resolvedIndex >= 0, "answered WAL recovery must invalidate the Decision");
+    assert.ok(taskStateIndex >= 0, "answered WAL recovery must project exact Task resume");
+    assert.ok(resolvedIndex < taskStateIndex, "Decision invalidation must precede Task resume");
   });
 });
 
