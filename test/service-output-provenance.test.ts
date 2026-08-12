@@ -350,6 +350,70 @@ test("ServiceClient accept response loss resolves through terminal authority pro
   });
 });
 
+test("Service task.accept retry returns accepted after intent-only WAL recovery", async () => {
+  await withService(async (svc) => {
+    const ws = await makeWorkspace("accept-intent-service-recovery");
+    const workspaceId = await mountWorkspace(svc, ws);
+    const source = await createNote(svc, workspaceId, {
+      name: "intent-recovery-job",
+      type: "prompt",
+    });
+    const { taskPath, deliveryId } = await readyDeliveryTask(
+      svc,
+      workspaceId,
+      ws,
+      source.nodeId
+    );
+    const readyDelivery = await rpc(svc, "delivery.get", { workspaceId, id: deliveryId });
+    assert.ok(!readyDelivery.error, JSON.stringify(readyDelivery.error));
+    const deliveryPath = (
+      readyDelivery.result as { delivery: { path: string } }
+    ).delivery.path;
+    const intentPath = `${taskPath.slice(0, -3)}.delivery-accept-intent.json`;
+    const mount = svc.hostApi.require(workspaceId);
+    const originalWriteFile = mount.env.fs.writeFile.bind(mount.env.fs);
+    let injected = false;
+    mount.env.fs.writeFile = async (target, content) => {
+      if (!injected && target === deliveryPath && await mount.env.fs.exists(intentPath)) {
+        injected = true;
+        throw new Error("injected failure after accept intent before authority write");
+      }
+      return originalWriteFile(target, content);
+    };
+    try {
+      const first = await rpc(svc, "task.accept", {
+        workspaceId,
+        deliveryId,
+        actor: "user",
+      });
+      assert.ok(first.error, "first accept must expose the injected pre-authority failure");
+    } finally {
+      mount.env.fs.writeFile = originalWriteFile;
+    }
+    assert.equal(injected, true);
+    assert.equal(await mount.env.fs.exists(intentPath), true);
+    assert.equal(
+      ((await rpc(svc, "task.get", { workspaceId, taskPath })).result as { task: { state: string } })
+        .task.state,
+      "delivered"
+    );
+
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId,
+      deliveryId,
+      actor: "user",
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.equal((retry.result as { state: string }).state, "accepted");
+    assert.equal(await mount.env.fs.exists(intentPath), false);
+    const accepted = await rpc(svc, "delivery.get", { workspaceId, id: deliveryId });
+    assert.equal(
+      (accepted.result as { delivery: { status: string } }).delivery.status,
+      "accepted"
+    );
+  });
+});
+
 test("accept all-or-nothing: bad Output leaves Task/Delivery/Output unbound", async () => {
   await withService(async (svc) => {
     const ws = await makeWorkspace();

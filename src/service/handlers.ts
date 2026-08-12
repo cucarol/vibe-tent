@@ -6021,6 +6021,34 @@ function assertReviewDeliveryIdentityUnchanged(
   }
 }
 
+function assertRecoveredReviewIdentityUnchanged(
+  current: { task: TaskEnvelope & { id: string }; delivery: DeliveryRecord },
+  recovered: Awaited<ReturnType<typeof finalizeTaskAccept>>
+): void {
+  const taskMatches =
+    recovered.task.state === "accepted" &&
+    current.task.path === recovered.task.path &&
+    current.task.id === recovered.task.id &&
+    current.task.state === recovered.task.state &&
+    current.task.activeDeliveryId === recovered.task.activeDeliveryId &&
+    current.task.updatedAt === recovered.task.updatedAt &&
+    current.task.wait == null &&
+    recovered.task.wait == null;
+  const deliveryMatches =
+    recovered.delivery.status === "accepted" &&
+    current.delivery.path === recovered.delivery.path &&
+    current.delivery.id === recovered.delivery.id &&
+    current.delivery.taskId === recovered.delivery.taskId &&
+    deliveryReviewSemanticsDigest(current.delivery) ===
+      deliveryReviewSemanticsDigest(recovered.delivery);
+  if (!taskMatches || !deliveryMatches) {
+    throw new RpcError(RPC_LIFECYCLE, "Recovered review authority changed before response", {
+      code: "DELIVERY_CHANGED",
+      deliveryId: recovered.delivery.id,
+    });
+  }
+}
+
 async function taskAcceptRpc(
   ctx: HandlerContext,
   p: Record<string, unknown>,
@@ -6095,7 +6123,11 @@ async function taskAcceptRpc(
           workspaceId,
           deliveryId
         );
-        assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
+        if (prepared.recovered) {
+          assertRecoveredReviewIdentityUnchanged(exactReview, prepared.recovered);
+        } else {
+          assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
+        }
         return finalizeTaskAccept(mount.env, taskPath, acceptOptions, prepared);
       });
     } catch (err) {
