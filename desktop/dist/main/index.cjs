@@ -168,7 +168,7 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 6;
+var TENT_SERVICE_PROTOCOL_VERSION = 7;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -525,45 +525,9 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// src/desktop/workbench/pending-interactions.ts
-var PENDING_INTERACTION_EVENT_TYPES = [
-  "toolApproval.pending",
-  "toolApproval.resolved",
-  "decisionRequest.pending",
-  "decisionRequest.resolved",
-  "taskInput.pending",
-  "taskInput.delivered",
-  "taskInput.consumed",
-  "taskInput.cancelled",
-  "delivery.updated",
-  "task.state",
-  "proposal.updated"
-];
-function isPendingInteractionEventType(type) {
-  return PENDING_INTERACTION_EVENT_TYPES.includes(type);
-}
-var TASK_PROJECTION_EVENT_TYPES = [
-  "task.state",
-  "delivery.updated",
-  "decisionRequest.pending",
-  "decisionRequest.resolved",
-  "toolApproval.pending",
-  "toolApproval.resolved",
-  "taskInput.pending",
-  "taskInput.delivered",
-  "taskInput.consumed",
-  "taskInput.cancelled"
-];
-function isTaskProjectionEventType(type) {
-  return TASK_PROJECTION_EVENT_TYPES.includes(type);
-}
-
 // src/desktop/main/service-host.ts
 function isDesktopProjectionEventType(type) {
-  return type === "node.changed" || type === "workspace.switched" || type === "service.health" || // Service exposes `session.state` as its single client-visible Session
-  // projection event. Keep this explicit: runtime stdout/config events are
-  // diagnostics, not renderer projection invalidations.
-  type === "session.state" || type === "registry.roles.updated" || type === "connection.changed" || isPendingInteractionEventType(type) || isTaskProjectionEventType(type);
+  return type === "node.changed" || type === "workspace.switched" || type === "service.health" || type === "registry.roles.updated" || type === "connection.changed" || type === "task.state" || type === "delivery.updated" || type === "decisionRequest.pending" || type === "decisionRequest.resolved";
 }
 var DesktopServiceHost = class {
   constructor(attachService = attachOrStartService) {
@@ -897,7 +861,6 @@ var DESKTOP_IPC = {
   listWorkspaces: "tent:list-workspaces",
   health: "tent:health",
   rpc: "tent:rpc",
-  listPendingInteractions: "tent:list-pending-interactions",
   document: "tent:document",
   collaboration: "tent:collaboration",
   openMain: "tent:open-main",
@@ -1087,56 +1050,17 @@ function isRecord2(value) {
 }
 function exactKeys(value, keys) {
   const expected = new Set(keys);
-  return Object.keys(value).every((key) => expected.has(key));
+  return Object.keys(value).length === expected.size && Object.keys(value).every((key) => expected.has(key));
 }
-function nonEmptyString(value) {
+function nonEmpty(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function stringArray(value, allowEmpty) {
-  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(nonEmptyString) && new Set(value).size === value.length;
-}
-function optionalNonEmptyString(value) {
-  return value === void 0 || nonEmptyString(value);
-}
-function minimalRoles(raw, workspaceId) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || !Array.isArray(raw.roles)) {
-    throw new InvalidCollaborationResponseError("registry.roles response is corrupt");
-  }
-  return {
-    workspaceId,
-    roles: raw.roles.map((item) => {
-      if (!isRecord2(item) || !nonEmptyString(item.roleId) || !nonEmptyString(item.name) || !nonEmptyString(item.displayName) || !optionalNonEmptyString(item.description) || !optionalNonEmptyString(item.color)) throw new InvalidCollaborationResponseError("registry.roles item is corrupt");
-      return {
-        roleId: item.roleId,
-        name: item.name,
-        displayName: item.displayName,
-        ...item.description ? { description: item.description } : {},
-        ...item.color ? { color: item.color } : {}
-      };
-    })
-  };
-}
-function minimalConnections(raw) {
-  if (!isRecord2(raw) || !Array.isArray(raw.connections)) {
-    throw new InvalidCollaborationResponseError("connection.list response is corrupt");
-  }
-  return {
-    connections: raw.connections.map((item) => {
-      if (!isRecord2(item) || !nonEmptyString(item.connectionId) || !nonEmptyString(item.displayName) || !nonEmptyString(item.provider) || !nonEmptyString(item.adapterId)) throw new InvalidCollaborationResponseError("connection.list item is corrupt");
-      return {
-        connectionId: item.connectionId,
-        displayName: item.displayName,
-        provider: item.provider,
-        adapterId: item.adapterId
-      };
-    })
-  };
+function uniqueStrings(value, allowEmpty) {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(nonEmpty) && new Set(value).size === value.length;
 }
 function normalizeRequest(raw) {
-  if (!isRecord2(raw) || !nonEmptyString(raw.workspaceId) || !nonEmptyString(raw.operation)) {
-    return null;
-  }
-  if (raw.operation === "snapshot" && exactKeys(raw, ["operation", "workspaceId", "nodeId"]) && nonEmptyString(raw.nodeId)) {
+  if (!isRecord2(raw) || !nonEmpty(raw.operation) || !nonEmpty(raw.workspaceId)) return null;
+  if (raw.operation === "targets" && exactKeys(raw, ["operation", "workspaceId"])) {
     return raw;
   }
   if (raw.operation === "dispatch" && exactKeys(raw, [
@@ -1147,243 +1071,35 @@ function normalizeRequest(raw) {
     "prompt",
     "target",
     "acceptMode"
-  ]) && stringArray(raw.workNodeIds, false) && stringArray(raw.contextNodeIds, true) && raw.workNodeIds.every(
-    (id) => !raw.contextNodeIds.includes(id)
-  ) && nonEmptyString(raw.prompt) && isRecord2(raw.target) && exactKeys(raw.target, ["kind", "id"]) && (raw.target.kind === "role" || raw.target.kind === "connection") && nonEmptyString(raw.target.id) && (raw.acceptMode === "review-required" || raw.acceptMode === "auto-accept" || raw.acceptMode === "agent-decide")) {
-    return raw;
-  }
-  if (raw.operation === "acceptDelivery" && exactKeys(raw, ["operation", "workspaceId", "taskPath", "deliveryId"]) && nonEmptyString(raw.taskPath) && nonEmptyString(raw.deliveryId)) {
-    return raw;
-  }
-  if (raw.operation === "rejectDelivery" && exactKeys(raw, ["operation", "workspaceId", "taskPath", "deliveryId", "note"]) && nonEmptyString(raw.taskPath) && nonEmptyString(raw.deliveryId) && nonEmptyString(raw.note)) {
-    return raw;
-  }
-  if (raw.operation === "respondDecision" && exactKeys(raw, ["operation", "workspaceId", "taskPath", "requestId", "response"]) && nonEmptyString(raw.taskPath) && nonEmptyString(raw.requestId) && isRecord2(raw.response)) {
+  ]) && uniqueStrings(raw.workNodeIds, false) && uniqueStrings(raw.contextNodeIds, true) && raw.workNodeIds.every((id) => !raw.contextNodeIds.includes(id)) && nonEmpty(raw.prompt) && isRecord2(raw.target) && exactKeys(raw.target, ["kind", "id"]) && (raw.target.kind === "role" || raw.target.kind === "connection") && nonEmpty(raw.target.id) && (raw.acceptMode === "review-required" || raw.acceptMode === "auto-accept" || raw.acceptMode === "agent-decide")) return raw;
+  if (raw.operation === "acceptDelivery" && exactKeys(raw, ["operation", "workspaceId", "deliveryId", "outputNodeIds"]) && nonEmpty(raw.deliveryId) && uniqueStrings(raw.outputNodeIds, true)) return raw;
+  if (raw.operation === "rejectDelivery" && exactKeys(raw, ["operation", "workspaceId", "deliveryId", "note", "resume"]) && nonEmpty(raw.deliveryId) && nonEmpty(raw.note) && raw.resume === true) return raw;
+  if (raw.operation === "respondDecision" && exactKeys(raw, ["operation", "workspaceId", "requestId", "response"]) && nonEmpty(raw.requestId) && isRecord2(raw.response)) {
     const response = raw.response;
-    if (response.kind === "option" && exactKeys(response, ["kind", "optionId"]) && nonEmptyString(response.optionId) || response.kind === "custom" && exactKeys(response, ["kind", "text"]) && nonEmptyString(response.text) || response.kind === "deny" && exactKeys(response, ["kind"])) {
-      return raw;
-    }
+    if (response.kind === "option" && exactKeys(response, ["kind", "optionId"]) && nonEmpty(response.optionId) || response.kind === "custom" && exactKeys(response, ["kind", "text"]) && nonEmpty(response.text) || response.kind === "deny" && exactKeys(response, ["kind"])) return raw;
   }
   return null;
 }
-function pendingDeliveryIds(raw, workspaceId) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || !Array.isArray(raw.items)) {
-    throw new InvalidCollaborationResponseError("interaction.listPending response is corrupt");
-  }
-  const ids = [];
-  for (const item of raw.items) {
-    if (!isRecord2(item) || !nonEmptyString(item.kind) || !nonEmptyString(item.id)) {
-      throw new InvalidCollaborationResponseError("interaction.listPending item is corrupt");
-    }
-    if (item.workspaceId !== workspaceId) {
-      throw new InvalidCollaborationResponseError("interaction.listPending item workspace mismatch");
-    }
-    if (item.kind === "delivery") ids.push(item.id);
-  }
-  return [...new Set(ids)];
-}
-function activeTaskPointers(raw, workspaceId, nodeId) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || raw.nodeId !== nodeId || !(raw.activeTask === null || isRecord2(raw.activeTask))) throw new InvalidCollaborationResponseError("node.collaboration response is corrupt");
-  if (raw.activeTask === null) return null;
-  const task = raw.activeTask.task;
-  if (!isRecord2(task) || !nonEmptyString(task.id) || !nonEmptyString(task.state) || !(task.path === void 0 || nonEmptyString(task.path)) || !(task.roleId === void 0 || nonEmptyString(task.roleId)) || !(task.sessionId === void 0 || nonEmptyString(task.sessionId)) || !(task.activeDeliveryId === void 0 || nonEmptyString(task.activeDeliveryId)) || !(task.createdAt === void 0 || nonEmptyString(task.createdAt))) throw new InvalidCollaborationResponseError("node.collaboration active Task is corrupt");
-  return {
-    taskId: task.id,
-    ...task.path ? { taskPath: task.path } : {},
-    ...task.sessionId ? { sessionId: task.sessionId } : {},
-    ...task.activeDeliveryId ? { activeDeliveryId: task.activeDeliveryId } : {}
-  };
-}
-function minimalCollaboration(raw, workspaceId, nodeId) {
-  const pointers = activeTaskPointers(raw, workspaceId, nodeId);
-  if (!pointers) return { workspaceId, nodeId, activeTask: null };
-  const activeTask = raw.activeTask;
-  const task = activeTask.task;
-  const session = activeTask.session;
-  const delivery = activeTask.delivery;
-  if (!(session === null || isRecord2(session)) || !(delivery === null || isRecord2(delivery)) || isRecord2(session) && (!nonEmptyString(session.id) || session.id !== pointers.sessionId || !nonEmptyString(session.state) || typeof session.alive !== "boolean" || typeof session.turnBusy !== "boolean") || isRecord2(delivery) && (!nonEmptyString(delivery.id) || delivery.id !== pointers.activeDeliveryId || !nonEmptyString(delivery.status))) {
-    throw new InvalidCollaborationResponseError("node.collaboration joins are corrupt");
-  }
-  return {
-    workspaceId,
-    nodeId,
-    activeTask: {
-      task: {
-        id: pointers.taskId,
-        state: task.state,
-        ...task.roleId ? { roleId: task.roleId } : {},
-        ...pointers.sessionId ? { sessionId: pointers.sessionId } : {},
-        ...pointers.activeDeliveryId ? { activeDeliveryId: pointers.activeDeliveryId } : {},
-        ...task.createdAt ? { createdAt: task.createdAt } : {},
-        ...pointers.taskPath ? { path: pointers.taskPath } : {}
-      },
-      session: session === null ? null : {
-        id: session.id,
-        state: session.state,
-        alive: session.alive,
-        turnBusy: session.turnBusy
-      },
-      delivery: delivery === null ? null : { id: delivery.id, status: delivery.status }
-    }
-  };
-}
-function joinedReadyDeliveryId(raw, pointers) {
-  if (!pointers || !isRecord2(raw) || !isRecord2(raw.activeTask)) return void 0;
-  const delivery = raw.activeTask.delivery;
-  if (!isRecord2(delivery) || delivery.status !== "ready") return void 0;
-  if (delivery.id !== pointers.activeDeliveryId) {
-    throw new InvalidCollaborationResponseError(
-      "node.collaboration ready Delivery pointer is corrupt"
-    );
-  }
-  return delivery.id;
-}
-function minimalTask(raw, workspaceId, nodeId, pointers) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || !isRecord2(raw.task)) {
-    throw new InvalidCollaborationResponseError("task.get response is corrupt");
-  }
-  const task = raw.task;
-  if (task.id !== pointers.taskId || task.path !== pointers.taskPath || !nonEmptyString(task.state) || !stringArray(task.workNodeIds, false) || !task.workNodeIds.includes(nodeId) || !stringArray(task.contextNodeIds, true) || !["review-required", "auto-accept", "agent-decide"].includes(String(task.acceptMode)) || !optionalNonEmptyString(task.roleId) || !optionalNonEmptyString(task.sessionId) || !optionalNonEmptyString(task.activeDeliveryId) || !optionalNonEmptyString(task.updatedAt) || task.sessionId !== pointers.sessionId || task.activeDeliveryId !== pointers.activeDeliveryId) {
-    throw new InvalidCollaborationResponseError("task.get exact Task join is corrupt");
-  }
-  return {
-    workspaceId,
-    task: {
-      id: task.id,
-      path: task.path,
-      state: task.state,
-      workNodeIds: [...task.workNodeIds],
-      contextNodeIds: [...task.contextNodeIds],
-      acceptMode: task.acceptMode,
-      ...task.roleId ? { roleId: task.roleId } : {},
-      ...task.sessionId ? { sessionId: task.sessionId } : {},
-      ...task.activeDeliveryId ? { activeDeliveryId: task.activeDeliveryId } : {},
-      ...task.updatedAt ? { updatedAt: task.updatedAt } : {}
-    }
-  };
-}
-function minimalSession(raw, workspaceId, pointers) {
-  if (!isRecord2(raw) || !isRecord2(raw.session)) {
-    throw new InvalidCollaborationResponseError("session.get response is corrupt");
-  }
-  const session = raw.session;
-  if (session.sessionId !== pointers.sessionId || session.workspace !== workspaceId || session.lastTaskId !== pointers.taskId || !nonEmptyString(session.state) || typeof session.alive !== "boolean" || !(session.turnBusy === void 0 || typeof session.turnBusy === "boolean") || !optionalNonEmptyString(session.connectionId) || !optionalNonEmptyString(session.roleId)) {
-    throw new InvalidCollaborationResponseError("session.get exact Task join is corrupt");
-  }
-  return {
-    session: {
-      sessionId: session.sessionId,
-      ...session.connectionId ? { connectionId: session.connectionId } : {},
-      ...session.roleId ? { roleId: session.roleId } : {},
-      state: session.state,
-      alive: session.alive,
-      turnBusy: session.turnBusy === true
-    }
-  };
-}
-function minimalDelivery(raw, workspaceId, pointers, taskWorkNodeIds) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || !isRecord2(raw.delivery)) {
-    throw new InvalidCollaborationResponseError("delivery.get response is corrupt");
-  }
-  const delivery = raw.delivery;
-  if (delivery.id !== pointers.activeDeliveryId || delivery.taskId !== pointers.taskId || !nonEmptyString(delivery.sourceNodeId) || !taskWorkNodeIds.includes(delivery.sourceNodeId) || delivery.status !== "ready" || typeof delivery.summary !== "string") {
-    throw new InvalidCollaborationResponseError("delivery.get exact Task join is corrupt");
-  }
-  return {
-    workspaceId,
-    delivery: {
-      id: delivery.id,
-      taskId: delivery.taskId,
-      sourceNodeId: delivery.sourceNodeId,
-      status: delivery.status,
-      summary: delivery.summary
-    }
-  };
-}
-function minimalPendingDecision(item, workspaceId, pointers) {
-  if (item.kind !== "decisionRequest" || !nonEmptyString(item.id) || item.workspaceId !== workspaceId || item.taskId !== pointers.taskId || item.taskPath !== pointers.taskPath || item.sessionId !== pointers.sessionId || !nonEmptyString(item.createdAt) || !isRecord2(item.target) || item.target.kind !== "user" || item.target.id !== "user" || !nonEmptyString(item.question) || !Array.isArray(item.options)) {
-    throw new InvalidCollaborationResponseError(
-      "pending Decision Request exact Task join is corrupt"
-    );
-  }
-  const options = item.options.map((option) => {
-    if (!isRecord2(option) || !nonEmptyString(option.id) || !nonEmptyString(option.label)) {
-      throw new InvalidCollaborationResponseError(
-        "pending Decision Request option is corrupt"
-      );
-    }
-    return { id: option.id, label: option.label };
+function dispatchTargets(rolesRaw, connectionsRaw, workspaceId) {
+  if (!isRecord2(rolesRaw) || rolesRaw.workspaceId !== workspaceId || !Array.isArray(rolesRaw.roles) || !isRecord2(connectionsRaw) || !Array.isArray(connectionsRaw.connections)) throw new InvalidCollaborationResponseError("dispatch targets response is corrupt");
+  const roles = rolesRaw.roles.map((item) => {
+    if (!isRecord2(item) || !nonEmpty(item.roleId) || !nonEmpty(item.displayName) || !(item.description === void 0 || nonEmpty(item.description))) throw new InvalidCollaborationResponseError("Role target is corrupt");
+    return {
+      kind: "role",
+      id: item.roleId,
+      label: item.displayName,
+      ...item.description ? { description: item.description } : {}
+    };
   });
-  if (new Set(options.map((option) => option.id)).size !== options.length) {
-    throw new InvalidCollaborationResponseError(
-      "pending Decision Request option ids are duplicated"
-    );
-  }
-  return {
-    kind: "decisionRequest",
-    id: item.id,
-    workspaceId,
-    createdAt: item.createdAt,
-    taskPath: item.taskPath,
-    taskId: item.taskId,
-    sessionId: item.sessionId,
-    question: item.question,
-    options
-  };
-}
-function minimalPendingDelivery(item, workspaceId, pointers) {
-  if (item.kind !== "delivery" || item.id !== pointers.activeDeliveryId || item.workspaceId !== workspaceId || item.taskId !== pointers.taskId || item.taskPath !== pointers.taskPath || !nonEmptyString(item.sourceNodeId) || !nonEmptyString(item.createdAt) || item.status !== "ready") {
-    throw new InvalidCollaborationResponseError(
-      "pending Delivery exact Task join is corrupt"
-    );
-  }
-  return {
-    kind: "delivery",
-    id: item.id,
-    workspaceId,
-    createdAt: item.createdAt,
-    taskPath: item.taskPath,
-    taskId: item.taskId,
-    sourceNodeId: item.sourceNodeId,
-    status: "ready"
-  };
-}
-function filterPendingForActiveTask(raw, workspaceId, pointers) {
-  if (!isRecord2(raw) || raw.workspaceId !== workspaceId || !Array.isArray(raw.items)) {
-    throw new InvalidCollaborationResponseError("interaction.listPending response is corrupt");
-  }
-  const items = [];
-  for (const item of raw.items) {
-    if (!isRecord2(item) || item.workspaceId !== workspaceId || !nonEmptyString(item.kind)) {
-      throw new InvalidCollaborationResponseError("interaction.listPending item is corrupt");
+  const connections = connectionsRaw.connections.map((item) => {
+    if (!isRecord2(item) || !nonEmpty(item.connectionId) || !nonEmpty(item.displayName)) {
+      throw new InvalidCollaborationResponseError("Connection target is corrupt");
     }
-    if (!pointers || item.taskId !== pointers.taskId) continue;
-    if (!pointers.taskPath || item.taskPath !== pointers.taskPath) {
-      throw new InvalidCollaborationResponseError(
-        "interaction.listPending exact Task path mismatch"
-      );
-    }
-    if (item.kind === "delivery") {
-      if (item.id === pointers.activeDeliveryId) {
-        items.push(minimalPendingDelivery(item, workspaceId, pointers));
-      }
-      continue;
-    }
-    if (item.kind === "decisionRequest") {
-      items.push(minimalPendingDecision(item, workspaceId, pointers));
-    }
-  }
-  const counts = { decisionRequest: 0, toolApproval: 0, delivery: 0, total: items.length };
-  for (const item of items) {
-    if (item.kind === "decisionRequest") counts.decisionRequest += 1;
-    else if (item.kind === "delivery") counts.delivery += 1;
-  }
-  return { workspaceId, items, counts };
+    return { kind: "connection", id: item.connectionId, label: item.displayName };
+  });
+  return { workspaceId, targets: [...roles, ...connections] };
 }
 async function handleDesktopCollaborationRequest(client, rawRequest) {
-  if (!client) {
-    return { ok: false, error: { kind: "transport", message: "Service not attached" } };
-  }
   const request = normalizeRequest(rawRequest);
   if (!request) {
     return {
@@ -1391,142 +1107,69 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
       error: { kind: "invalid-request", message: "Invalid collaboration request" }
     };
   }
+  if (!client) {
+    return { ok: false, error: { kind: "transport", message: "Service not attached" } };
+  }
   try {
-    if (request.operation === "snapshot") {
-      const [roles, connections, collaboration, pendingAll] = await Promise.all([
+    if (request.operation === "targets") {
+      const [roles, connections] = await Promise.all([
         client.call("registry.roles", { workspaceId: request.workspaceId }),
-        client.call("connection.list", {}),
-        client.call("node.collaboration", {
-          workspaceId: request.workspaceId,
-          nodeId: request.nodeId
-        }),
-        client.call("interaction.listPending", { workspaceId: request.workspaceId })
+        client.call("connection.list", {})
       ]);
-      const pointers = activeTaskPointers(
-        collaboration,
-        request.workspaceId,
-        request.nodeId
-      );
-      const pending = filterPendingForActiveTask(
-        pendingAll,
-        request.workspaceId,
-        pointers
-      );
-      const collaborationValue = minimalCollaboration(
-        collaboration,
-        request.workspaceId,
-        request.nodeId
-      );
-      const readyDeliveryId = joinedReadyDeliveryId(collaboration, pointers);
-      const pendingReadyDeliveryIds = pendingDeliveryIds(
-        pending,
-        request.workspaceId
-      );
-      if (readyDeliveryId && !pendingReadyDeliveryIds.includes(readyDeliveryId)) {
-        throw new InvalidCollaborationResponseError(
-          "ready Delivery is missing from interaction.listPending"
-        );
-      }
-      const [taskRaw, sessionRaw, deliveryRaw] = await Promise.all([
-        pointers?.taskPath ? client.call("task.get", {
-          workspaceId: request.workspaceId,
-          taskPath: pointers.taskPath
-        }) : null,
-        pointers?.sessionId ? client.call("session.get", {
-          sessionId: pointers.sessionId
-        }) : null,
-        readyDeliveryId ? client.call("delivery.get", {
-          workspaceId: request.workspaceId,
-          id: readyDeliveryId
-        }) : null
-      ]);
-      const minimalTaskValue = taskRaw && pointers ? minimalTask(taskRaw, request.workspaceId, request.nodeId, pointers) : null;
-      const minimalSessionValue = sessionRaw && pointers ? minimalSession(sessionRaw, request.workspaceId, pointers) : null;
-      const minimalDeliveryValue = deliveryRaw && pointers ? minimalDelivery(
-        deliveryRaw,
-        request.workspaceId,
-        pointers,
-        minimalTaskValue?.task.workNodeIds ?? []
-      ) : null;
-      return {
-        ok: true,
-        value: {
-          workspaceId: request.workspaceId,
-          nodeId: request.nodeId,
-          roles: minimalRoles(roles, request.workspaceId),
-          connections: minimalConnections(connections),
-          collaboration: collaborationValue,
-          task: minimalTaskValue,
-          session: minimalSessionValue,
-          pending,
-          deliveryDetail: minimalDeliveryValue
-        }
-      };
+      return { ok: true, value: dispatchTargets(roles, connections, request.workspaceId) };
     }
     if (request.operation === "dispatch") {
       const target = request.target.kind === "role" ? { roleId: request.target.id } : { connectionId: request.target.id };
-      const dispatched = await client.call("task.dispatch", {
+      const result = await client.call("task.dispatch", {
         workspaceId: request.workspaceId,
         workNodeIds: request.workNodeIds,
         contextNodeIds: request.contextNodeIds,
         prompt: request.prompt,
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        callerKind: "user",
         asSub: false,
         acceptMode: request.acceptMode,
         ...target
       });
-      if (!isRecord2(dispatched) || dispatched.workspaceId !== request.workspaceId || !nonEmptyString(dispatched.taskPath)) throw new InvalidCollaborationResponseError("task.dispatch response is corrupt");
-      return {
-        ok: true,
-        value: { workspaceId: request.workspaceId, taskPath: dispatched.taskPath }
-      };
+      if (!isRecord2(result) || result.workspaceId !== request.workspaceId || !nonEmpty(result.taskPath)) {
+        throw new InvalidCollaborationResponseError("task.dispatch response is corrupt");
+      }
+      return { ok: true, value: { workspaceId: request.workspaceId } };
     }
     if (request.operation === "acceptDelivery") {
-      const accepted = await client.call("task.accept", {
+      const result = await client.call("task.accept", {
         workspaceId: request.workspaceId,
-        taskPath: request.taskPath,
         deliveryId: request.deliveryId,
+        outputNodeIds: request.outputNodeIds,
         actor: "user"
       });
-      if (!isRecord2(accepted) || accepted.workspaceId !== request.workspaceId) {
+      if (!isRecord2(result) || result.workspaceId !== request.workspaceId) {
         throw new InvalidCollaborationResponseError("task.accept response is corrupt");
       }
-      return { ok: true, value: { workspaceId: request.workspaceId, taskPath: request.taskPath } };
+      return { ok: true, value: { workspaceId: request.workspaceId } };
     }
     if (request.operation === "rejectDelivery") {
-      const rejected = await client.call("task.reject", {
+      const result = await client.call("task.reject", {
         workspaceId: request.workspaceId,
-        taskPath: request.taskPath,
         deliveryId: request.deliveryId,
         actor: "user",
         note: request.note,
-        resume: true
+        resume: request.resume
       });
-      if (!isRecord2(rejected) || rejected.workspaceId !== request.workspaceId) {
+      if (!isRecord2(result) || result.workspaceId !== request.workspaceId) {
         throw new InvalidCollaborationResponseError("task.reject response is corrupt");
       }
-      return { ok: true, value: { workspaceId: request.workspaceId, taskPath: request.taskPath } };
+      return { ok: true, value: { workspaceId: request.workspaceId } };
     }
     if (request.operation === "respondDecision") {
-      const answered = await client.call("decisionRequest.respond", {
+      const result = await client.call("decisionRequest.respond", {
         workspaceId: request.workspaceId,
-        taskPath: request.taskPath,
         requestId: request.requestId,
         response: request.response
       });
-      if (!isRecord2(answered) || answered.accepted !== true) {
+      if (!isRecord2(result) || result.accepted !== true) {
         throw new InvalidCollaborationResponseError("decisionRequest.respond response is corrupt");
       }
-      return {
-        ok: true,
-        value: {
-          workspaceId: request.workspaceId,
-          taskPath: request.taskPath,
-          requestId: request.requestId
-        }
-      };
+      return { ok: true, value: { workspaceId: request.workspaceId } };
     }
     return {
       ok: false,
@@ -1557,8 +1200,7 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
 // src/desktop/projection-ipc.ts
 var DESKTOP_PROJECTION_METHODS = [
   "graph.projection",
-  "node.collaborations",
-  "node.collaboration",
+  "workspace.collaboration",
   "output.provenance"
 ];
 var DESKTOP_PROJECTION_METHOD_SET = new Set(
@@ -1601,88 +1243,7 @@ async function recoverDesktopStateOnce(args) {
       await args.model.mountWorkspace(prefs.lastWorkspaceRoot);
     }
   }
-  if (args.model.getSnapshot().foregroundWorkspaceId) {
-    await args.model.refreshTasks();
-  }
   return args.model.getSnapshot();
-}
-
-// src/desktop/inbox-ipc.ts
-function isRecord3(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function nonEmptyString2(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isInteractionKind(value) {
-  return value === "decisionRequest" || value === "toolApproval" || value === "delivery";
-}
-function normalizeServiceItem(value, workspaceId, index) {
-  if (!isRecord3(value) || value.workspaceId !== workspaceId) {
-    throw new Error(`interaction.listPending items[${index}] workspaceId mismatch`);
-  }
-  if (!nonEmptyString2(value.id) || !isInteractionKind(value.kind) || !nonEmptyString2(value.createdAt)) {
-    throw new Error(`interaction.listPending items[${index}] identity is corrupt`);
-  }
-  let summary;
-  if (value.kind === "decisionRequest") {
-    if (!nonEmptyString2(value.question)) {
-      throw new Error(`interaction.listPending items[${index}] question is corrupt`);
-    }
-    summary = value.question;
-  } else if (value.kind === "toolApproval") {
-    if (!nonEmptyString2(value.toolTitle)) {
-      throw new Error(`interaction.listPending items[${index}] tool title is corrupt`);
-    }
-    summary = value.toolTitle;
-  } else {
-    summary = "Delivery ready for review";
-  }
-  const sourceNodeId = value.kind === "delivery" ? value.sourceNodeId : void 0;
-  if (sourceNodeId !== void 0 && !nonEmptyString2(sourceNodeId)) {
-    throw new Error(`interaction.listPending items[${index}] sourceNodeId is corrupt`);
-  }
-  return {
-    id: value.id,
-    kind: value.kind,
-    createdAt: value.createdAt,
-    summary,
-    ...nonEmptyString2(sourceNodeId) ? { sourceNodeId } : {}
-  };
-}
-function normalizeServiceInboxResponse(value, expectedWorkspaceId) {
-  if (!nonEmptyString2(expectedWorkspaceId)) {
-    throw new Error("workspaceId is required");
-  }
-  if (!isRecord3(value) || value.workspaceId !== expectedWorkspaceId) {
-    throw new Error("interaction.listPending workspaceId mismatch or payload is not an object");
-  }
-  if (!Array.isArray(value.items) || !isRecord3(value.counts)) {
-    throw new Error("interaction.listPending payload is missing items or counts");
-  }
-  const items = value.items.map(
-    (item, index) => normalizeServiceItem(item, expectedWorkspaceId, index)
-  );
-  const counts = value.counts;
-  const byKind = {
-    decisionRequest: items.filter((item) => item.kind === "decisionRequest").length,
-    toolApproval: items.filter((item) => item.kind === "toolApproval").length,
-    delivery: items.filter((item) => item.kind === "delivery").length
-  };
-  if (counts.decisionRequest !== byKind.decisionRequest || counts.toolApproval !== byKind.toolApproval || counts.delivery !== byKind.delivery || counts.total !== items.length || Object.values(counts).some(
-    (count) => typeof count !== "number" || !Number.isInteger(count) || count < 0
-  )) {
-    throw new Error("interaction.listPending counts are corrupt");
-  }
-  return { workspaceId: expectedWorkspaceId, items, count: items.length };
-}
-async function handleDesktopInboxRequest(getClient, workspaceId) {
-  if (!nonEmptyString2(workspaceId)) throw new Error("workspaceId is required");
-  const client = getClient();
-  if (!client) throw new Error("Service not attached");
-  const ws = workspaceId.trim();
-  const raw = await client.call("interaction.listPending", { workspaceId: ws });
-  return normalizeServiceInboxResponse(raw, ws);
 }
 
 // src/desktop/main/ipc.ts
@@ -1718,10 +1279,6 @@ function registerDesktopIpc(ctx) {
     async (_e, method, params) => {
       return invokeDesktopProjectionRpc(() => ctx.host.client, method, params);
     }
-  );
-  import_electron2.ipcMain.handle(
-    DESKTOP_IPC.listPendingInteractions,
-    async (_e, workspaceId) => handleDesktopInboxRequest(() => ctx.host.client, workspaceId)
   );
   import_electron2.ipcMain.handle(
     DESKTOP_IPC.document,
@@ -1780,642 +1337,9 @@ function registerDesktopIpc(ctx) {
   );
   import_electron2.ipcMain.handle(DESKTOP_IPC.getFloatingStatus, async () => {
     await ctx.model.refreshHealth();
-    await ctx.model.refreshTasks();
+    await ctx.model.refreshFloatingTasks();
     return ctx.model.floatingStatus();
   });
-}
-
-// src/desktop/client/service-docs-client.ts
-var ServiceDocsClient = class {
-  constructor(options) {
-    this.rpc = options.rpc;
-    this.workspaceId = options.workspaceId;
-  }
-  getWorkspaceId() {
-    return this.workspaceId;
-  }
-  setWorkspaceId(workspaceId) {
-    this.workspaceId = workspaceId;
-  }
-  async list(parentPath) {
-    const result = await this.rpc.call("docs.list", {
-      workspaceId: this.workspaceId,
-      parentPath
-    });
-    const roots = (result.nodes ?? []).map(normalizeProjection);
-    if (!parentPath) return roots;
-    const parent = findByPath(roots, parentPath.replace(/\\/g, "/"));
-    return parent?.children ?? [];
-  }
-  async get(nodeId) {
-    try {
-      const result = await this.rpc.call("docs.get", {
-        workspaceId: this.workspaceId,
-        nodeId
-      });
-      return result.node ? normalizeProjection(result.node) : null;
-    } catch (err) {
-      if (err instanceof ServiceRpcError && err.code === -32004) return null;
-      throw err;
-    }
-  }
-  async readForEdit(nodeId) {
-    const result = await this.rpc.call("docs.readForEdit", {
-      workspaceId: this.workspaceId,
-      nodeId
-    });
-    const raw = result.raw ?? reconstructRaw(result.frontmatter ?? {}, result.body ?? "");
-    const name = result.name ?? (typeof result.frontmatter?.name === "string" ? result.frontmatter.name : result.path.split("/").pop() || result.path);
-    const type = result.type ?? (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
-    return {
-      nodeId: result.nodeId,
-      path: result.path,
-      name,
-      type,
-      body: result.body,
-      frontmatter: result.frontmatter ?? {},
-      raw,
-      etag: result.etag,
-      artifactRefs: result.artifactRefs ?? parseArtifactRefs(result.frontmatter ?? {})
-    };
-  }
-  async write(input) {
-    try {
-      const params = {
-        workspaceId: this.workspaceId,
-        nodeId: input.nodeId,
-        baseEtag: input.baseEtag
-      };
-      if (input.raw !== void 0) params.raw = input.raw;
-      if (input.body !== void 0) params.body = input.body;
-      if (input.frontmatter !== void 0) params.frontmatter = input.frontmatter;
-      const result = await this.rpc.call("docs.write", params);
-      return {
-        ok: true,
-        etag: result.etag,
-        nodeId: result.nodeId,
-        path: result.path
-      };
-    } catch (err) {
-      if (err instanceof ServiceRpcError) {
-        if (err.code === -32008) {
-          return {
-            ok: false,
-            code: "etag_required",
-            message: err.message || "docs.write requires baseEtag for existing nodes"
-          };
-        }
-        if (err.code === -32009) {
-          let disk;
-          try {
-            disk = await this.readForEdit(input.nodeId);
-          } catch {
-          }
-          return {
-            ok: false,
-            code: "etag_conflict",
-            message: err.message || "etag conflict",
-            disk
-          };
-        }
-        if (err.code === -32010) {
-          return {
-            ok: false,
-            code: "collab_field_protected",
-            message: err.message
-          };
-        }
-        if (err.code === -32004) {
-          return { ok: false, code: "not_found", message: err.message };
-        }
-        return { ok: false, code: "invalid", message: err.message };
-      }
-      throw err;
-    }
-  }
-  async createNote(input) {
-    const result = await this.rpc.call("docs.createNote", {
-      workspaceId: this.workspaceId,
-      name: input.name,
-      type: input.type ?? "prompt",
-      parentPath: input.parentPath ?? "",
-      body: input.body
-    });
-    return { nodeId: result.nodeId, path: result.path };
-  }
-  async fork(nodeId) {
-    const result = await this.rpc.call("docs.fork", {
-      workspaceId: this.workspaceId,
-      nodeId
-    });
-    return { nodeId: result.nodeId };
-  }
-  /**
-   * User-only rename of display name / folder (cx- immutable).
-   * Pass newName only — never attempt to edit id.
-   */
-  async rename(nodeId, newName, actor = "user") {
-    const result = await this.rpc.call("docs.rename", {
-      workspaceId: this.workspaceId,
-      nodeId,
-      newName,
-      actor
-    });
-    return { nodeId: result.nodeId, name: result.name, path: result.path };
-  }
-  async setMode(nodeId, mode) {
-    return this.rpc.call("docs.setMode", {
-      workspaceId: this.workspaceId,
-      nodeId,
-      mode
-    });
-  }
-  async search(query) {
-    const result = await this.rpc.call("docs.search", {
-      workspaceId: this.workspaceId,
-      query
-    });
-    return result.hits ?? [];
-  }
-  async backlinks(nodeId) {
-    const result = await this.rpc.call("docs.backlinks", {
-      workspaceId: this.workspaceId,
-      nodeId
-    });
-    return result.backlinks ?? [];
-  }
-  async resolveLink(_fromNodeIdOrPath, raw) {
-    const hits = await this.search(raw);
-    const exact = hits.find((h) => h.name === raw || h.path.endsWith(raw));
-    if (exact) {
-      return { raw, kind: "wiki", targetNodeId: exact.nodeId, targetPath: exact.path, label: exact.name };
-    }
-    return { raw, kind: "unresolved" };
-  }
-  async importAttachment(nodeId, fileName, bytes) {
-    const payload = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
-    const bytesBase64 = typeof Buffer !== "undefined" ? Buffer.from(payload).toString("base64") : uint8ToBase64(payload);
-    const result = await this.rpc.call("docs.importAttachment", {
-      workspaceId: this.workspaceId,
-      nodeId,
-      fileName,
-      bytesBase64
-    });
-    return {
-      relativePath: result.relativePath,
-      markdown: result.markdown,
-      artifactRef: result.artifactRef
-    };
-  }
-};
-function uint8ToBase64(bytes) {
-  let binary = "";
-  const chunk = 32768;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-function normalizeProjection(c) {
-  const mode = c.mode === "archived" ? "archived" : "editable";
-  return {
-    nodeId: c.nodeId,
-    path: c.path,
-    name: c.name,
-    type: c.type,
-    tags: c.tags ?? [],
-    title: c.title,
-    mode,
-    archived: mode === "archived" || !!c.archived,
-    invalid: !!c.invalid,
-    bodyPreview: c.bodyPreview,
-    children: (c.children ?? []).map(normalizeProjection),
-    artifactRefs: c.artifactRefs
-  };
-}
-function findByPath(nodes, path7) {
-  for (const n of nodes) {
-    if (n.path === path7) return n;
-    const child = findByPath(n.children ?? [], path7);
-    if (child) return child;
-  }
-  return null;
-}
-function reconstructRaw(frontmatter, body) {
-  const lines = ["---"];
-  for (const [k, v] of Object.entries(frontmatter)) {
-    if (v === void 0) continue;
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-      lines.push(`${k}: ${JSON.stringify(v)}`);
-    } else {
-      lines.push(`${k}: ${JSON.stringify(v)}`);
-    }
-  }
-  lines.push("---");
-  lines.push(body.endsWith("\n") || body === "" ? body : body + "\n");
-  return lines.join("\n");
-}
-function parseArtifactRefs(data) {
-  const raw = data.artifactRefs;
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item;
-    const kind = rec.kind;
-    const target = rec.target;
-    if ((kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") && typeof target === "string") {
-      out.push({
-        kind,
-        target,
-        label: typeof rec.label === "string" ? rec.label : void 0
-      });
-    }
-  }
-  return out;
-}
-
-// src/markdown/render.ts
-function escapeHtml(text) {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function renderMarkdownToHtml(body, options) {
-  const lines = body.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  let i = 0;
-  let inCode = false;
-  let codeLang = "";
-  let codeBuf = [];
-  let listType = null;
-  const closeList = () => {
-    if (listType) {
-      html.push(`</${listType}>`);
-      listType = null;
-    }
-  };
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.startsWith("```")) {
-      if (!inCode) {
-        closeList();
-        inCode = true;
-        codeLang = line.slice(3).trim();
-        codeBuf = [];
-      } else {
-        html.push(
-          `<pre class="md-code"${codeLang ? ` data-lang="${escapeHtml(codeLang)}"` : ""}><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`
-        );
-        inCode = false;
-        codeLang = "";
-        codeBuf = [];
-      }
-      i++;
-      continue;
-    }
-    if (inCode) {
-      codeBuf.push(line);
-      i++;
-      continue;
-    }
-    if (!line.trim()) {
-      closeList();
-      i++;
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      html.push(`<h${level}>${inline(heading[2], options)}</h${level}>`);
-      i++;
-      continue;
-    }
-    const ul = /^[-*+]\s+(.*)$/.exec(line);
-    if (ul) {
-      if (listType !== "ul") {
-        closeList();
-        listType = "ul";
-        html.push("<ul>");
-      }
-      html.push(`<li>${inline(ul[1], options)}</li>`);
-      i++;
-      continue;
-    }
-    const ol = /^(\d+)\.\s+(.*)$/.exec(line);
-    if (ol) {
-      if (listType !== "ol") {
-        closeList();
-        listType = "ol";
-        html.push("<ol>");
-      }
-      html.push(`<li>${inline(ol[2], options)}</li>`);
-      i++;
-      continue;
-    }
-    closeList();
-    html.push(`<p>${inline(line, options)}</p>`);
-    i++;
-  }
-  closeList();
-  if (inCode) {
-    html.push(`<pre class="md-code"><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
-  }
-  if (options?.artifactRefs?.length) {
-    html.push(`<aside class="artifact-chips" aria-label="Artifact references">`);
-    for (const ref of options.artifactRefs) {
-      const label = escapeHtml(ref.label || ref.target);
-      html.push(
-        `<span class="artifact-chip" data-kind="${escapeHtml(ref.kind)}" data-target="${escapeHtml(ref.target)}" title="Open externally">${label}</span>`
-      );
-    }
-    html.push(`</aside>`);
-  }
-  return html.join("\n");
-}
-function inline(text, options) {
-  let s = escapeHtml(text);
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, src) => {
-    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`;
-  });
-  s = applyLinksFromOriginal(text, options);
-  return s;
-}
-function applyLinksFromOriginal(text, options) {
-  const parts = [];
-  let cursor = 0;
-  const re = /(!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\])|(!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\))/g;
-  let m;
-  while (m = re.exec(text)) {
-    if (m.index > cursor) {
-      parts.push({ kind: "text", value: text.slice(cursor, m.index) });
-    }
-    const full = m[0];
-    if (full.startsWith("![[") || full.startsWith("![") && !full.startsWith("![[")) {
-      if (full.startsWith("![")) {
-        const alt = m[5] ?? "";
-        const src = m[6] ?? "";
-        parts.push({
-          kind: "html",
-          value: `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`
-        });
-      } else {
-        parts.push({ kind: "text", value: full });
-      }
-    } else if (full.startsWith("[[")) {
-      const raw = (m[2] ?? "").trim();
-      const label = (m[3] ?? raw).trim();
-      const href = options?.resolveWikiHref?.(raw) ?? `#cx:${encodeURIComponent(raw)}`;
-      parts.push({
-        kind: "html",
-        value: `<a class="wiki-link" href="${escapeHtml(href)}" data-wiki="${escapeHtml(raw)}">${escapeHtml(label)}</a>`
-      });
-    } else {
-      const label = m[5] ?? "";
-      const href = m[6] ?? "";
-      parts.push({
-        kind: "html",
-        value: `<a href="${escapeHtml(href)}">${escapeHtml(label || href)}</a>`
-      });
-    }
-    cursor = m.index + full.length;
-  }
-  if (cursor < text.length) parts.push({ kind: "text", value: text.slice(cursor) });
-  return parts.map((p) => {
-    if (p.kind === "html") return p.value;
-    let t = escapeHtml(p.value);
-    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-    return t;
-  }).join("");
-}
-
-// src/markdown/workspace-controller.ts
-var WorkspaceController = class {
-  constructor(docs) {
-    this.docs = docs;
-    this.tree = [];
-    this.tabs = /* @__PURE__ */ new Map();
-    this.tabOrder = [];
-    this.activeCx = null;
-    this.searchQuery = "";
-    this.searchHits = [];
-    this.backlinks = [];
-    this.statusMessage = null;
-    this.listeners = /* @__PURE__ */ new Set();
-  }
-  subscribe(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  getSnapshot() {
-    return {
-      tree: this.tree,
-      tabs: this.tabOrder.map((cx) => this.tabs.get(cx)).filter(Boolean),
-      activeCx: this.activeCx,
-      searchQuery: this.searchQuery,
-      searchHits: this.searchHits,
-      backlinks: this.backlinks,
-      statusMessage: this.statusMessage
-    };
-  }
-  getActiveTab() {
-    return this.activeCx ? this.tabs.get(this.activeCx) ?? null : null;
-  }
-  async refreshTree() {
-    this.tree = await this.docs.list();
-    this.emit();
-  }
-  async openNode(cxOrPath) {
-    const snap = await this.docs.readForEdit(cxOrPath);
-    const existing = this.tabs.get(snap.nodeId);
-    if (existing && existing.dirty) {
-      this.activeCx = snap.nodeId;
-      this.statusMessage = "Tab already open with unsaved changes.";
-      this.emit();
-      return existing;
-    }
-    const tab = {
-      nodeId: snap.nodeId,
-      path: snap.path,
-      name: snap.name,
-      type: snap.type,
-      etag: snap.etag,
-      buffer: snap.raw,
-      savedRaw: snap.raw,
-      dirty: false,
-      mode: existing?.mode ?? "source",
-      conflict: null,
-      artifactRefs: snap.artifactRefs,
-      frontmatter: snap.frontmatter
-    };
-    if (!this.tabs.has(snap.nodeId)) this.tabOrder.push(snap.nodeId);
-    this.tabs.set(snap.nodeId, tab);
-    this.activeCx = snap.nodeId;
-    this.backlinks = await this.docs.backlinks(snap.nodeId);
-    this.statusMessage = null;
-    this.emit();
-    return tab;
-  }
-  setActive(cx) {
-    if (!this.tabs.has(cx)) return;
-    this.activeCx = cx;
-    void this.docs.backlinks(cx).then((hits) => {
-      this.backlinks = hits;
-      this.emit();
-    });
-    this.emit();
-  }
-  closeTab(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return;
-    if (tab.dirty) {
-      this.statusMessage = "Cannot close dirty tab; save or discard first.";
-      this.emit();
-      return;
-    }
-    this.tabs.delete(cx);
-    this.tabOrder = this.tabOrder.filter((id) => id !== cx);
-    if (this.activeCx === cx) {
-      this.activeCx = this.tabOrder[this.tabOrder.length - 1] ?? null;
-    }
-    this.emit();
-  }
-  updateBuffer(cx, raw) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return;
-    tab.buffer = raw;
-    tab.dirty = raw !== tab.savedRaw;
-    if (tab.dirty && tab.conflict) {
-    }
-    this.emit();
-  }
-  setMode(cx, mode) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return;
-    tab.mode = mode;
-    this.emit();
-  }
-  previewHtml(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return "";
-    const body = splitBody(tab.buffer);
-    return renderMarkdownToHtml(body, {
-      resolveWikiHref: (raw) => `#open=${encodeURIComponent(raw)}`,
-      artifactRefs: tab.artifactRefs
-    });
-  }
-  async save(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return false;
-    const result = await this.docs.write({
-      nodeId: tab.nodeId,
-      baseEtag: tab.etag,
-      raw: tab.buffer
-    });
-    if (!result.ok) {
-      if (result.code === "etag_conflict" && result.disk) {
-        tab.conflict = {
-          message: result.message,
-          disk: result.disk
-        };
-        this.statusMessage = result.message;
-        this.emit();
-        return false;
-      }
-      this.statusMessage = result.message;
-      this.emit();
-      return false;
-    }
-    tab.etag = result.etag;
-    tab.savedRaw = tab.buffer;
-    tab.dirty = false;
-    tab.conflict = null;
-    this.statusMessage = "Saved.";
-    await this.refreshTree();
-    this.emit();
-    return true;
-  }
-  /** Conflict UI: load disk version into buffer. */
-  loadDiskVersion(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab?.conflict) return;
-    const disk = tab.conflict.disk;
-    tab.buffer = disk.raw;
-    tab.etag = disk.etag;
-    tab.savedRaw = disk.raw;
-    tab.dirty = false;
-    tab.artifactRefs = disk.artifactRefs;
-    tab.frontmatter = disk.frontmatter;
-    tab.conflict = null;
-    this.statusMessage = "Loaded disk version.";
-    this.emit();
-  }
-  /** Conflict UI: keep mine and overwrite disk (re-base etag then write). */
-  async overwriteWithMine(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab?.conflict) return false;
-    tab.etag = tab.conflict.disk.etag;
-    tab.conflict = null;
-    return this.save(cx);
-  }
-  discard(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab) return;
-    tab.buffer = tab.savedRaw;
-    tab.dirty = false;
-    tab.conflict = null;
-    this.statusMessage = "Discarded local edits.";
-    this.emit();
-  }
-  async search(query) {
-    this.searchQuery = query;
-    this.searchHits = query.trim() ? await this.docs.search(query) : [];
-    this.emit();
-  }
-  async createNote(name, parentPath) {
-    const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
-    await this.refreshTree();
-    await this.openNode(created.nodeId);
-    this.statusMessage = `Created note ${created.path}`;
-    this.emit();
-    return created.nodeId;
-  }
-  /** Apply external node.changed: reload clean tabs only. */
-  async onNodeChanged(cx) {
-    const tab = this.tabs.get(cx);
-    if (!tab) {
-      await this.refreshTree();
-      return;
-    }
-    if (tab.dirty) {
-      try {
-        const disk = await this.docs.readForEdit(cx);
-        if (disk.etag !== tab.etag) {
-          tab.conflict = {
-            message: "Disk content changed externally while tab is dirty.",
-            disk
-          };
-          this.statusMessage = tab.conflict.message;
-          this.emit();
-        }
-      } catch {
-      }
-      return;
-    }
-    await this.openNode(cx);
-  }
-  emit() {
-    for (const listener of this.listeners) listener();
-  }
-};
-function splitBody(raw) {
-  const text = raw.replace(/\r\n/g, "\n");
-  if (!text.startsWith("---\n")) return raw;
-  const end = text.indexOf("\n---", 4);
-  if (end === -1) return raw;
-  const after = text.indexOf("\n", end + 1);
-  return after === -1 ? "" : text.slice(after + 1);
 }
 
 // src/desktop/workbench/context-card-store.ts
@@ -2467,256 +1391,6 @@ var ContextCardStore = class {
   }
 };
 
-// src/desktop/workbench/node-collaboration.ts
-function isUsableTreeNode(node) {
-  return !node.invalid && !node.archived && node.mode !== "archived";
-}
-function normalizeActiveTask(raw) {
-  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration activeTask.");
-  const record = raw;
-  const task = record.task;
-  if (!task || typeof task !== "object" || Array.isArray(task)) {
-    throw new Error("Invalid node.collaboration activeTask.task.");
-  }
-  const taskRecord = task;
-  if (typeof taskRecord.id !== "string" || typeof taskRecord.state !== "string") {
-    throw new Error("Invalid node.collaboration active Task identity/state.");
-  }
-  return raw;
-}
-function normalizeNodeCollaboration(raw) {
-  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration projection.");
-  const record = raw;
-  if (typeof record.workspaceId !== "string" || !record.workspaceId || typeof record.nodeId !== "string" || !record.nodeId || !(record.activeTask === null || record.activeTask && typeof record.activeTask === "object")) {
-    throw new Error("Invalid node.collaboration projection.");
-  }
-  const activeTask = record.activeTask === null ? null : normalizeActiveTask(record.activeTask);
-  return {
-    workspaceId: record.workspaceId,
-    nodeId: record.nodeId,
-    activeTask
-  };
-}
-function collectUsableNodeIds(nodes) {
-  const ids = [];
-  const walk = (list) => {
-    for (const node of list) {
-      if (isUsableTreeNode(node) && node.nodeId) ids.push(node.nodeId);
-      if (node.children?.length) walk(node.children);
-    }
-  };
-  walk(nodes);
-  return ids;
-}
-function applyNodeCollaborationsToTree(nodes, byNodeId) {
-  return nodes.map((node) => applyOne(node, byNodeId));
-}
-function applyOne(node, byNodeId) {
-  const children = node.children?.length ? node.children.map((child) => applyOne(child, byNodeId)) : node.children;
-  const next = { ...node, children };
-  delete next.status;
-  delete next.assignee;
-  if (!isUsableTreeNode(node)) return next;
-  const active = byNodeId.get(node.nodeId)?.activeTask?.task;
-  if (!active) return next;
-  next.status = "doing";
-  const executor = active.roleId ?? active.sessionId;
-  if (executor) next.assignee = executor;
-  return next;
-}
-
-// src/desktop/workbench/collaboration-ui.ts
-function listCoordinationTypeNames(types) {
-  return types.filter((t) => {
-    const tier = "tier" in t ? t.tier : "base";
-    if (tier !== void 0 && tier !== "base") return false;
-    if ("coordination" in t && typeof t.coordination === "boolean") {
-      return t.coordination === true;
-    }
-    return true;
-  }).map((t) => t.name).sort((a, b) => a.localeCompare(b));
-}
-function listCoordinationTypeOptions(types) {
-  return listCoordinationTypeNames(types).map((name) => ({ name }));
-}
-function listRoleOptions(roles) {
-  return roles.map((r) => ({ roleId: r.roleId, name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
-}
-function listConnectionOptions(connections) {
-  return connections.map((connection) => {
-    const parts = [connection.displayName || connection.connectionId, connection.adapterId, connection.model].filter(Boolean);
-    return {
-      connectionId: connection.connectionId,
-      adapterId: connection.adapterId,
-      displayName: connection.displayName || connection.connectionId,
-      model: connection.model,
-      label: parts.join(" \xB7 ")
-    };
-  }).sort((a, b) => a.connectionId.localeCompare(b.connectionId));
-}
-function pickDefaultConnectionId(connections) {
-  return connections[0]?.connectionId ?? null;
-}
-function buildStartSessionPayload(taskPath) {
-  const path7 = taskPath.trim();
-  if (!path7) {
-    return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
-  }
-  return {
-    ok: true,
-    payload: {
-      taskPath: path7,
-      callerKind: "user"
-    }
-  };
-}
-function taskStateLabel(state) {
-  const s = state;
-  switch (s) {
-    case "queued":
-      return "\u6392\u961F\u4E2D";
-    case "running":
-      return "\u6267\u884C\u4E2D";
-    case "waiting":
-      return "\u7B49\u5F85\u4E2D";
-    case "delivered":
-      return "\u5F85\u786E\u8BA4\u4EA4\u4ED8";
-    case "accepted":
-      return "\u5DF2\u63A5\u53D7";
-    case "rejected":
-      return "\u5DF2\u9A73\u56DE";
-    case "interrupted":
-      return "\u5DF2\u4E2D\u65AD";
-    case "failed":
-      return "\u5931\u8D25";
-    default:
-      return s || "\u672A\u77E5";
-  }
-}
-function sessionStateLabel(state) {
-  if (!state) return "";
-  switch (state) {
-    case "starting":
-      return "\u542F\u52A8\u4E2D";
-    case "live":
-    case "running":
-      return "\u8FD0\u884C\u4E2D";
-    case "waiting-user":
-    case "waiting_user":
-      return "\u7B49\u5F85\u7528\u6237";
-    case "stopped":
-      return "\u5DF2\u505C\u6B62";
-    case "failed":
-      return "\u4F1A\u8BDD\u5931\u8D25";
-    case "external":
-      return "\u5916\u90E8\u4F1A\u8BDD";
-    default:
-      return state;
-  }
-}
-function canStartAgentOnTask(taskState, session, opts) {
-  const s = taskState || "";
-  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted") {
-    return false;
-  }
-  if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
-    return false;
-  }
-  if (!opts?.hasSessionId) return false;
-  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
-}
-function canInterruptTask(taskState, session, opts) {
-  if (session) {
-    return !!session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user");
-  }
-  if (!opts?.hasSessionId) return false;
-  const s = taskState || "";
-  return s === "running" || s === "waiting" || s === "taken";
-}
-function canCancelTask(taskState, session) {
-  const s = taskState || "";
-  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted" || s === "cancelled" || s === "canceled") {
-    return false;
-  }
-  if (session && session.alive) return false;
-  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
-}
-function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
-  const byId = /* @__PURE__ */ new Map();
-  const byTaskId = /* @__PURE__ */ new Map();
-  for (const d of deliveries) {
-    byId.set(d.id, d);
-    const list = byTaskId.get(d.taskId) ?? [];
-    list.push(d);
-    byTaskId.set(d.taskId, list);
-  }
-  const sessionById = /* @__PURE__ */ new Map();
-  const sessionByTaskId = /* @__PURE__ */ new Map();
-  for (const s of sessions) {
-    sessionById.set(s.sessionId, s);
-    if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
-  }
-  return tasks.map((task) => {
-    const state = task.state;
-    let delivery;
-    if (task.activeDeliveryId) {
-      delivery = byId.get(task.activeDeliveryId);
-    }
-    if (!delivery && task.id) {
-      const list = byTaskId.get(task.id) ?? [];
-      delivery = list.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
-    }
-    let session;
-    if (task.sessionId) {
-      session = sessionById.get(task.sessionId);
-    }
-    if (!session && task.id) {
-      session = sessionByTaskId.get(task.id);
-    }
-    const commits = delivery?.commits ?? [];
-    const deliverySummary = delivery?.summary;
-    const label = taskStateLabel(state);
-    const sessLabel = sessionStateLabel(session?.state);
-    const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
-    const summaryLine = [
-      label,
-      sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
-      task.roleId ? `role:${task.roleId}` : task.sessionId ? `session:${task.sessionId}` : null,
-      deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
-    ].filter(Boolean).join(" \xB7 ");
-    return {
-      path: task.path,
-      id: task.id,
-      roleId: task.roleId,
-      state,
-      workNodeIds: task.workNodeIds ?? [],
-      contextNodeIds: task.contextNodeIds ?? [],
-      prompt: task.prompt,
-      activeDeliveryId: task.activeDeliveryId,
-      sessionId: task.sessionId ?? session?.sessionId,
-      sessionState: session?.state,
-      sessionAlive: session?.alive,
-      sessionConnectionId: session?.connectionId,
-      deliverySummary,
-      commits,
-      canAcceptOrReject: state === "delivered",
-      canStartAgent: canStartAgentOnTask(state, session, {
-        hasSessionId: !!(task.sessionId || session?.sessionId)
-      }),
-      canInterrupt: canInterruptTask(state, session, {
-        hasSessionId: !!(task.sessionId || session?.sessionId)
-      }),
-      canCancel: canCancelTask(state, session),
-      summaryLine
-    };
-  });
-}
-function truncate(text, max) {
-  const t = text.replace(/\s+/g, " ").trim();
-  if (t.length <= max) return t;
-  return t.slice(0, max - 1) + "\u2026";
-}
-
 // src/desktop/workbench/shell-model.ts
 var DesktopShellModel = class {
   constructor(rpc = null) {
@@ -2724,17 +1398,7 @@ var DesktopShellModel = class {
     this.health = { status: "offline" };
     this.workspaces = [];
     this.foregroundWorkspaceId = null;
-    this.docs = null;
-    this.controller = null;
-    this.tasks = [];
-    this.deliveries = [];
-    this.sessions = [];
-    this.roles = [];
-    this.coordinationTypes = [];
-    this.connections = [];
-    this.selectedConnectionId = null;
-    this.statusMessage = null;
-    this.nodeCollaborations = /* @__PURE__ */ new Map();
+    this.floatingTasks = [];
     this.listeners = /* @__PURE__ */ new Set();
     this.cards = new ContextCardStore();
   }
@@ -2746,54 +1410,11 @@ var DesktopShellModel = class {
     return () => this.listeners.delete(listener);
   }
   getSnapshot() {
-    const raw = this.controller?.getSnapshot() ?? null;
-    let workspace = raw;
-    if (raw) {
-      const stripped = stripTreeCollab(raw.tree);
-      const overlaid = applyNodeCollaborationsToTree(stripped, this.nodeCollaborations);
-      workspace = {
-        ...raw,
-        tree: overlaid
-      };
-    }
     return {
       health: this.health,
       workspaces: this.workspaces,
-      foregroundWorkspaceId: this.foregroundWorkspaceId,
-      workspace,
-      tasks: this.tasks,
-      taskReview: buildTaskReviewItems(
-        this.tasks.map((t) => ({
-          path: t.path,
-          id: t.id,
-          roleId: t.roleId,
-          workNodeIds: t.workNodeIds,
-          contextNodeIds: t.contextNodeIds,
-          state: t.state,
-          prompt: t.prompt,
-          activeDeliveryId: t.activeDeliveryId,
-          sessionId: t.sessionId,
-          manifest: "",
-          acceptMode: t.acceptMode,
-          contextCard: t.contextCard
-        })),
-        this.deliveries,
-        this.sessions
-      ),
-      roles: this.roles,
-      coordinationTypes: this.coordinationTypes,
-      connections: this.connections,
-      selectedConnectionId: this.selectedConnectionId,
-      statusMessage: this.statusMessage,
-      nodeCollaborations: [...this.nodeCollaborations.values()]
+      foregroundWorkspaceId: this.foregroundWorkspaceId
     };
-  }
-  getController() {
-    return this.controller;
-  }
-  setSelectedConnectionId(connectionId) {
-    this.selectedConnectionId = connectionId;
-    this.emit();
   }
   async refreshHealth() {
     if (!this.rpc) {
@@ -2822,18 +1443,19 @@ var DesktopShellModel = class {
   async refreshWorkspaces() {
     if (!this.rpc) {
       this.workspaces = [];
+      this.foregroundWorkspaceId = null;
       this.emit();
       return this.workspaces;
     }
     const result = await this.rpc.call("workspace.list", {});
-    this.workspaces = (result.workspaces ?? []).map((w) => ({
-      workspaceId: w.workspaceId,
-      workspaceRoot: w.workspaceRoot,
-      tentName: w.tentName,
-      foreground: w.foreground
+    this.workspaces = (result.workspaces ?? []).map((workspace) => ({
+      workspaceId: workspace.workspaceId,
+      workspaceRoot: workspace.workspaceRoot,
+      tentName: workspace.tentName,
+      foreground: workspace.foreground
     }));
-    const fg = this.workspaces.find((w) => w.foreground);
-    this.foregroundWorkspaceId = fg?.workspaceId ?? this.health.foregroundWorkspaceId ?? null;
+    const foreground = this.workspaces.find((workspace) => workspace.foreground);
+    this.foregroundWorkspaceId = foreground?.workspaceId ?? this.health.foregroundWorkspaceId ?? null;
     this.emit();
     return this.workspaces;
   }
@@ -2842,9 +1464,7 @@ var DesktopShellModel = class {
     const info = await this.rpc.call("workspace.mount", { workspaceRoot });
     await this.rpc.call("workspace.setForeground", { workspaceId: info.workspaceId });
     await this.refreshWorkspaces();
-    await this.bindForeground(info.workspaceId);
-    this.statusMessage = `Mounted ${info.workspaceRoot}`;
-    this.emit();
+    this.bindForeground(info.workspaceId);
     return {
       workspaceId: info.workspaceId,
       workspaceRoot: info.workspaceRoot,
@@ -2856,209 +1476,58 @@ var DesktopShellModel = class {
     if (!this.rpc) throw new Error("Service not attached");
     await this.rpc.call("workspace.setForeground", { workspaceId });
     await this.refreshWorkspaces();
-    await this.bindForeground(workspaceId);
+    this.bindForeground(workspaceId);
   }
-  async bindForeground(workspaceId) {
-    if (!this.rpc) return;
+  /** Bind only bootstrap identity; renderer-next owns graph/document/collaboration. */
+  bindForeground(workspaceId) {
     this.foregroundWorkspaceId = workspaceId;
-    this.nodeCollaborations.clear();
-    this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
-    this.controller = new WorkspaceController(this.docs);
-    this.controller.subscribe(() => this.emit());
-    await this.controller.refreshTree();
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshConnections()]);
+    this.floatingTasks = [];
     this.emit();
   }
-  /** Refresh canonical Node collaboration in one batch. */
-  async refreshNodeCollaborations() {
-    if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
-      this.nodeCollaborations.clear();
-      this.emit();
-      return;
-    }
-    const snap = this.controller.getSnapshot();
-    const ids = collectUsableNodeIds(snap.tree ?? []);
-    if (ids.length === 0) {
-      this.nodeCollaborations.clear();
-      this.emit();
-      return;
-    }
-    const ws = this.foregroundWorkspaceId;
-    const batch = await this.rpc.call("node.collaborations", {
-      workspaceId: ws,
-      nodeIds: ids
-    });
-    const results = batch.items.map((item) => normalizeNodeCollaboration(item));
-    this.nodeCollaborations.clear();
-    for (const p of results) {
-      if (p) this.nodeCollaborations.set(p.nodeId, p);
-    }
-    this.emit();
-  }
-  async refreshTasks() {
+  /** Float-only task counts, loaded only when the floating window asks for them. */
+  async refreshFloatingTasks() {
     if (!this.rpc || !this.foregroundWorkspaceId) {
-      this.tasks = [];
-      this.deliveries = [];
-      this.sessions = [];
+      this.floatingTasks = [];
       this.emit();
       return;
     }
     try {
-      const [taskResult, deliveryResult, sessionResult] = await Promise.all([
-        this.rpc.call("task.list", {
-          workspaceId: this.foregroundWorkspaceId
-        }),
-        this.rpc.call("delivery.list", {
-          workspaceId: this.foregroundWorkspaceId
-        }),
-        this.rpc.call("session.list", {
-          workspaceId: this.foregroundWorkspaceId
-        })
-      ]);
-      this.tasks = (taskResult.tasks ?? []).map((t) => ({
-        path: t.path,
-        roleId: t.roleId,
-        workNodeIds: t.workNodeIds ?? [],
-        contextNodeIds: t.contextNodeIds ?? [],
-        state: t.state,
-        acceptMode: t.acceptMode,
-        id: t.id,
-        prompt: t.prompt,
-        activeDeliveryId: t.activeDeliveryId,
-        sessionId: t.sessionId,
-        contextCard: t.contextCard
-      }));
-      this.deliveries = deliveryResult.deliveries ?? [];
-      this.sessions = sessionResult.sessions ?? [];
-      await this.refreshNodeCollaborations();
+      const result = await this.rpc.call("task.list", {
+        workspaceId: this.foregroundWorkspaceId
+      });
+      this.floatingTasks = (result.tasks ?? []).map((task) => ({ state: task.state }));
     } catch {
-      this.tasks = [];
-      this.deliveries = [];
-      this.sessions = [];
+      this.floatingTasks = [];
     }
     this.emit();
-  }
-  async refreshRegistry() {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      this.roles = [];
-      this.coordinationTypes = [];
-      this.emit();
-      return;
-    }
-    try {
-      const [typesResult, rolesResult] = await Promise.all([
-        this.rpc.call("registry.types", {
-          workspaceId: this.foregroundWorkspaceId
-        }),
-        this.rpc.call("registry.roles", {
-          workspaceId: this.foregroundWorkspaceId
-        })
-      ]);
-      this.coordinationTypes = listCoordinationTypeOptions(typesResult.types ?? []);
-      this.roles = listRoleOptions(rolesResult.roles ?? []);
-    } catch {
-      this.roles = [];
-      this.coordinationTypes = [];
-    }
-    this.emit();
-  }
-  /**
-   * Load machine-local Agent Connections.
-   * Does not start sessions; selection only.
-   */
-  async refreshConnections() {
-    if (!this.rpc) {
-      this.connections = [];
-      this.selectedConnectionId = null;
-      this.emit();
-      return this.connections;
-    }
-    try {
-      const result = await this.rpc.call("connection.list", {});
-      this.connections = listConnectionOptions(result.connections ?? []);
-      if (!this.selectedConnectionId || !this.connections.some((connection) => connection.connectionId === this.selectedConnectionId)) {
-        this.selectedConnectionId = pickDefaultConnectionId(this.connections);
-      }
-    } catch {
-      this.connections = [];
-      if (!this.connections.length) this.selectedConnectionId = null;
-    }
-    this.emit();
-    return this.connections;
-  }
-  /**
-   * User-clicked start agent. Builds task.startSession with callerKind=user.
-   * Does not auto-run; service may claim queued tasks for user callers.
-   */
-  async startAgentSession(taskPath) {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      throw new Error("\u670D\u52A1\u672A\u8FDE\u63A5\u6216\u672A\u9009\u62E9\u5DE5\u4F5C\u533A\u3002");
-    }
-    const built = buildStartSessionPayload(taskPath);
-    if (!built.ok) {
-      throw new Error(built.reason);
-    }
-    const result = await this.rpc.call("task.startSession", {
-      workspaceId: this.foregroundWorkspaceId,
-      taskPath: built.payload.taskPath,
-      callerKind: built.payload.callerKind
-    });
-    await this.refreshTasks();
-    return result;
-  }
-  async interruptTask(taskPath) {
-    if (!this.rpc || !this.foregroundWorkspaceId) {
-      throw new Error("\u670D\u52A1\u672A\u8FDE\u63A5\u6216\u672A\u9009\u62E9\u5DE5\u4F5C\u533A\u3002");
-    }
-    const result = await this.rpc.call("task.interrupt", {
-      workspaceId: this.foregroundWorkspaceId,
-      taskPath
-    });
-    await this.refreshTasks();
-    return result;
-  }
-  emitContextCardForActive() {
-    const tab = this.controller?.getActiveTab();
-    if (!tab) return;
-    const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
-    this.cards.pushNode(tab.nodeId, tab.path, tab.name, fg?.workspaceRoot);
   }
   floatingStatus() {
-    const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
+    const foreground = this.workspaces.find(
+      (workspace) => workspace.workspaceId === this.foregroundWorkspaceId
+    );
     return {
       health: this.health,
-      pendingTasks: this.tasks.filter(
-        (t) => t.state === "queued"
-      ).length,
-      takenTasks: this.tasks.filter(
-        (t) => t.state === "running" || t.state === "waiting" || t.state === "delivered"
+      pendingTasks: this.floatingTasks.filter((task) => task.state === "queued").length,
+      takenTasks: this.floatingTasks.filter(
+        (task) => task.state === "running" || task.state === "waiting" || task.state === "delivered"
       ).length,
       recentCards: this.cards.list(),
-      foregroundRoot: fg?.workspaceRoot ?? null
+      foregroundRoot: foreground?.workspaceRoot ?? null
     };
   }
   emit() {
-    for (const l of this.listeners) l();
+    for (const listener of this.listeners) listener();
   }
 };
-function stripTreeCollab(nodes) {
-  return nodes.map((n) => {
-    const { status: _s, assignee: _a, children, ...rest } = n;
-    return {
-      ...rest,
-      children: children ? stripTreeCollab(children) : children
-    };
-  });
-}
 
 // src/desktop/main/service-event-refresh.ts
 async function refreshDesktopShellForEvent(model2, type) {
   if (type === "workspace.switched" || type === "service.health" || type === "service.disconnected") {
     const health = await model2.refreshHealth();
     if (health.status === "ok") await model2.refreshWorkspaces();
-    return;
+    return true;
   }
-  await model2.refreshTasks();
+  return false;
 }
 
 // src/desktop/main/float-window-persistence.ts
@@ -3262,9 +1731,10 @@ async function bootstrap() {
         workspaceId: ev.workspaceId
       });
     }
-    void refreshDesktopShellForEvent(model, ev.type).then(() => {
+    void refreshDesktopShellForEvent(model, ev.type).then((changed) => {
       const snap = model.getSnapshot();
-      for (const win of import_electron3.BrowserWindow.getAllWindows()) {
+      const windows = changed ? import_electron3.BrowserWindow.getAllWindows() : floatWindow && !floatWindow.isDestroyed() ? [floatWindow] : [];
+      for (const win of windows) {
         if (win.isDestroyed()) continue;
         win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
       }

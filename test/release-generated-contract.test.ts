@@ -16,7 +16,21 @@ async function assertGeneratedFile(relativePath: string): Promise<void> {
   assert.ok(stat.size > 0, `${relativePath} must not be empty`);
 }
 
-test("generated release artifacts require protocol 6 delivery-bound review", async () => {
+function generatedWindow(text: string, marker: string, radius = 500): string {
+  const index = text.indexOf(marker);
+  assert.notEqual(index, -1, `generated artifact must contain ${marker}`);
+  return text.slice(Math.max(0, index - radius), Math.min(text.length, index + radius));
+}
+
+function generatedCall(text: string, marker: string): string {
+  const index = text.indexOf(marker);
+  assert.notEqual(index, -1, `generated artifact must contain ${marker}`);
+  const end = text.indexOf("});", index);
+  assert.notEqual(end, -1, `generated call must close after ${marker}`);
+  return text.slice(index, end + 3);
+}
+
+test("generated release artifacts require protocol 7 id-only review and Decision mutation", async () => {
   const [cli, service, desktopMain, desktopRenderer] = await Promise.all([
     generated("cli.mjs"),
     generated("service.mjs"),
@@ -24,33 +38,62 @@ test("generated release artifacts require protocol 6 delivery-bound review", asy
     generated("desktop/dist/renderer-next/main.js"),
   ]);
 
-  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
-  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
-  assert.match(cli, /tent task accept <taskPath> --delivery-id <deliveryId>/);
-  assert.match(cli, /tent task reject <taskPath> --delivery-id <deliveryId>/);
-  assert.doesNotMatch(cli, /--expected-delivery-id/);
+  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
+  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
+  assert.match(cli, /tent task accept <deliveryId> --actor <user\|role>/);
+  assert.match(cli, /tent task reject <deliveryId> --actor <user\|role>/);
+  assert.match(cli, /tent task decision respond <requestId>/);
+  assert.doesNotMatch(cli, /task accept <taskPath>/);
+  assert.doesNotMatch(cli, /task reject <taskPath>/);
+  assert.doesNotMatch(cli, /--delivery-id/);
 
   assert.match(
     service,
-    /new Set\(\["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"\]\)/
+    /new Set\(\["workspaceId", "deliveryId", "actor", "outputNodeIds"\]\)/
   );
   assert.match(
     service,
-    /new Set\(\["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"\]\)/
+    /new Set\(\["workspaceId", "deliveryId", "actor", "note", "resume"\]\)/
   );
-  assert.doesNotMatch(service, /expectedDeliveryId/);
+  assert.match(
+    service,
+    /new Set\(\["workspaceId", "requestId", "response"\]\)/
+  );
+  assert.doesNotMatch(
+    service,
+    /new Set\(\["workspaceId", "taskPath", "deliveryId", "actor"/
+  );
+  assert.doesNotMatch(
+    service,
+    /new Set\(\["workspaceId", "taskPath", "requestId", "response"\]\)/
+  );
 
-  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
+  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 7/);
   assert.match(desktopMain, /task\.accept/);
   assert.match(desktopMain, /task\.reject/);
+  assert.match(desktopMain, /decisionRequest\.respond/);
   assert.match(desktopMain, /deliveryId/);
+  assert.match(desktopMain, /requestId/);
   assert.doesNotMatch(desktopMain, /expectedDeliveryId/);
+  for (const marker of [
+    'client.call("task.accept"',
+    'client.call("task.reject"',
+    'client.call("decisionRequest.respond"',
+  ]) {
+    const mutation = generatedCall(desktopMain, marker);
+    assert.doesNotMatch(mutation, /taskPath|taskId/);
+  }
 
-  assert.match(desktopRenderer, /protocolVersion!==6/);
+  assert.match(desktopRenderer, /protocolVersion!==7/);
   assert.match(desktopRenderer, /acceptDelivery/);
   assert.match(desktopRenderer, /rejectDelivery/);
+  assert.match(desktopRenderer, /respondDecision/);
   assert.match(desktopRenderer, /deliveryId/);
+  assert.match(desktopRenderer, /requestId/);
   assert.doesNotMatch(desktopRenderer, /expectedDeliveryId/);
+  assert.doesNotMatch(generatedWindow(desktopRenderer, "acceptDelivery", 240), /taskPath|taskId/);
+  assert.doesNotMatch(generatedWindow(desktopRenderer, "rejectDelivery", 240), /taskPath|taskId/);
+  assert.doesNotMatch(generatedWindow(desktopRenderer, "respondDecision", 240), /taskPath|taskId/);
 
   for (const artifact of [cli, service, desktopMain, desktopRenderer]) {
     assert.doesNotMatch(artifact, /taskDeltaDigest/);

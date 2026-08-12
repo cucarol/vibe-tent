@@ -2054,6 +2054,9 @@ function isRecord3(value) {
 // src/core/artifact.ts
 import path3 from "node:path";
 
+// src/core/canonical-digest.ts
+import { createHash as createHash2 } from "node:crypto";
+
 // src/core/task-model.ts
 var TaskLifecycleError = class extends Error {
   constructor(code, message) {
@@ -2101,20 +2104,6 @@ function parseTaskActorRef(value, label) {
   }
   return { kind, id };
 }
-function assertParentReviewerEqual(parentActor, reviewer) {
-  if (parentActor.kind !== reviewer.kind || parentActor.id !== reviewer.id) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task reviewer must equal parentActor (no arbitrary delegation); got parentActor=${parentActor.kind}:${parentActor.id} reviewer=${reviewer.kind}:${reviewer.id}.`
-    );
-  }
-}
-function resolveParentReviewerPair(input) {
-  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
-  assertParentReviewerEqual(parentActor, reviewer);
-  return { parentActor, reviewer };
-}
 function isAcceptMode(value) {
   return value === "review-required" || value === "auto-accept" || value === "agent-decide";
 }
@@ -2130,9 +2119,9 @@ function isActiveTaskState(state) {
 function isTaskId(id) {
   return /^tk-[a-z0-9]+$/i.test(id);
 }
-
-// src/core/canonical-digest.ts
-import { createHash as createHash2 } from "node:crypto";
+function isDeliveryId(id) {
+  return /^dl-[a-z0-9]+$/.test(id);
+}
 
 // src/core/task-node-selection.ts
 var TaskNodeSelectionError = class extends Error {
@@ -2383,30 +2372,26 @@ function loadTaskContextCardFromFrontmatter(data) {
 }
 function deriveIntegrationAuthority(input) {
   try {
-    const pair = resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer
-    });
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
     return {
-      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      actor: { kind: parentActor.kind, id: parentActor.id },
       mutator: INTEGRATION_MUTATOR_SERVICE
     };
   } catch (err) {
     if (err instanceof TaskLifecycleError) {
       throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor: input.parentActor,
-        reviewer: input.reviewer
+        parentActor: input.parentActor
       });
     }
     throw err;
   }
 }
-function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
-  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+function assertIntegrationAuthorityMatchesParent(authority, parentActor) {
+  const derived = deriveIntegrationAuthority({ parentActor });
   if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      "integrationAuthority must be { actor, mutator: service } derived from parentActor.",
       { authority }
     );
   }
@@ -2430,7 +2415,7 @@ function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewe
   if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      `integrationAuthority.actor must equal Task parentActor (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
       { authority, derived }
     );
   }
@@ -2552,7 +2537,7 @@ async function loadTaskEnvelope(fs10, path10) {
     throw new Error(`Invalid task envelope format: ${path10} (canonical task id is required).`);
   }
   const state = parseTaskState(data.state);
-  const actors = resolveActorsFromDisk(data);
+  const parentActor = resolveParentActorFromDisk(data);
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
   if (!contextCard) {
     throw new Error(
@@ -2576,8 +2561,7 @@ async function loadTaskEnvelope(fs10, path10) {
     manifest: data.manifest,
     state,
     id: data.id,
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
+    parentActor,
     prompt: body.trim() || void 0,
     contextCard,
     workNodeIds: contextCard.workNodeIds,
@@ -2611,11 +2595,10 @@ async function loadTaskEnvelope(fs10, path10) {
     }
     task.baseCommitCapture = baseCommitCapture;
   }
-  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
-      task.parentActor,
-      task.reviewer
+      task.parentActor
     );
   }
   task.contextGeneration = contextCard.contextGeneration;
@@ -2629,21 +2612,17 @@ async function loadTaskEnvelope(fs10, path10) {
   if (wait) task.wait = wait;
   return task;
 }
-function resolveActorsFromDisk(data) {
-  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
-  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
-  if (hasParent || hasReviewer) {
-    if (!hasParent || !hasReviewer) {
-      throw new Error(
-        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
-      );
-    }
-    return resolveParentReviewerPair({
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-    });
+function resolveParentActorFromDisk(data) {
+  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
+    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
   }
-  throw new Error("Invalid task envelope: missing parentActor/reviewer.");
+  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
+    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
+  }
+  if (data.parentActor === void 0 || data.parentActor === null) {
+    throw new Error("Invalid task envelope: missing parentActor.");
+  }
+  return parseTaskActorRef(data.parentActor, "parentActor");
 }
 async function ensureRoleInit(fs10, role, tentName) {
   if (!role.id || !isRoleId(role.id)) {
@@ -3354,7 +3333,7 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 6;
+var TENT_SERVICE_PROTOCOL_VERSION = 7;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -3953,7 +3932,7 @@ var ServiceClient = class {
   /**
    * Create and immediately claim a durable Role's own execution Task.
    * This is execution ownership, not downstream dispatch: there is no target,
-   * caller-authored parent/reviewer, asSub flag, or managed Session launch.
+   * caller-authored responsibility override, asSub flag, or managed Session launch.
    */
   taskClaimDirect(workspaceId, args) {
     return this.call("task.claimDirect", { workspaceId, ...args });
@@ -3981,17 +3960,16 @@ var ServiceClient = class {
   taskDeliver(workspaceId, taskPath, args) {
     return this.call("task.deliver", { workspaceId, taskPath, ...args });
   }
-  taskAccept(workspaceId, taskPath, deliveryId, actor, opts) {
+  taskAccept(workspaceId, deliveryId, actor, opts) {
     return this.call("task.accept", {
       workspaceId,
-      taskPath,
       deliveryId,
       actor,
       ...opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}
     });
   }
-  taskReject(workspaceId, taskPath, deliveryId, actor, opts) {
-    return this.call("task.reject", { workspaceId, taskPath, deliveryId, actor, ...opts });
+  taskReject(workspaceId, deliveryId, actor, opts) {
+    return this.call("task.reject", { workspaceId, deliveryId, actor, ...opts });
   }
   taskInterrupt(workspaceId, taskPath) {
     return this.call("task.interrupt", { workspaceId, taskPath });
@@ -4017,6 +3995,13 @@ var ServiceClient = class {
   }
   taskGet(workspaceId, taskPath) {
     return this.call("task.get", { workspaceId, taskPath });
+  }
+  /** Optional selected Node collaboration + user-actionable Inbox in one authoritative read. */
+  workspaceCollaboration(workspaceId, nodeId) {
+    return this.call("workspace.collaboration", {
+      workspaceId,
+      ...nodeId ? { nodeId } : {}
+    });
   }
   /**
    * List deliveries for a workspace (optional Task / Node / responsibility filters).
@@ -4139,10 +4124,9 @@ var ServiceClient = class {
     return this.call("decisionRequest.get", { workspaceId, taskPath, requestId });
   }
   /** Respond through authenticated transport authority; caller actor text is forbidden. */
-  decisionRequestRespond(workspaceId, taskPath, requestId, response) {
+  decisionRequestRespond(workspaceId, requestId, response) {
     return this.call("decisionRequest.respond", {
       workspaceId,
-      taskPath,
       requestId,
       response
     });
@@ -4511,11 +4495,13 @@ async function runTaskCommand(sub, args, globals = {}) {
       );
     }
     if (sub === "accept" || sub === "reject") {
-      const allowed = sub === "accept" ? /* @__PURE__ */ new Set(["delivery-id", "actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS]) : /* @__PURE__ */ new Set(["delivery-id", "actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS]);
+      const allowed = sub === "accept" ? /* @__PURE__ */ new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS]) : /* @__PURE__ */ new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS]);
       const unknown = findUnknownFlag(flags, allowed);
       if (unknown) return failUsage(`Unknown option --${unknown} for task ${sub}`);
-      if (!flags["delivery-id"]) {
-        return failUsage(`tent task ${sub} requires --delivery-id <deliveryId>`);
+      if (positionals.length !== 1 || !isDeliveryId(positionals[0])) {
+        return failUsage(
+          `Usage: tent task ${sub} <deliveryId> --actor <user|role> [--workspace <path>] [--json]`
+        );
       }
     }
     const workspaceFlag = flags.workspace || globals.workspace;
@@ -4728,15 +4714,12 @@ ${usage2}`);
         ).trim();
         const roleCaller = Boolean(envRole && envRole !== "user");
         const parentActor = roleCaller ? { kind: "role", id: envRole } : { kind: "user", id: "user" };
-        const callerKind = roleCaller ? "role" : "user";
         const asSub = roleCaller ? true : void 0;
         const common = {
           workNodeIds,
           contextNodeIds,
           prompt,
           parentActor,
-          reviewer: parentActor,
-          callerKind,
           ...asSub ? { asSub: true } : {}
         };
         const dispatchArgs = targetKind === "role" ? {
@@ -4750,18 +4733,21 @@ ${usage2}`);
         return okPrint(result, json, (r) => formatTaskDispatch(r));
       }
       case "accept": {
-        const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const unknown = findUnknownFlag(
+          flags,
+          /* @__PURE__ */ new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task accept`);
+        const deliveryId = positionals[0];
+        if (!deliveryId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
+            "Usage: tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
-        const deliveryId = flags["delivery-id"];
-        if (!deliveryId) return failUsage("tent task accept requires --delivery-id <deliveryId>");
         const outputNodeIds = parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
-        const result = await client.taskAccept(workspaceId, taskPath, deliveryId, actor, {
+        const result = await client.taskAccept(workspaceId, deliveryId, actor, {
           outputNodeIds
         });
         return okPrint(result, json, (r) => {
@@ -4775,18 +4761,21 @@ state: ${row.state ?? "accepted"}
         });
       }
       case "reject": {
-        const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const unknown = findUnknownFlag(
+          flags,
+          /* @__PURE__ */ new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task reject`);
+        const deliveryId = positionals[0];
+        if (!deliveryId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
+            "Usage: tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task reject requires --actor <user|role>");
-        const deliveryId = flags["delivery-id"];
-        if (!deliveryId) return failUsage("tent task reject requires --delivery-id <deliveryId>");
         const resume = flags.resume === "true" ? true : flags["no-resume"] === "true" ? false : void 0;
-        const result = await client.taskReject(workspaceId, taskPath, deliveryId, actor, {
+        const result = await client.taskReject(workspaceId, deliveryId, actor, {
           note: flags.note,
           resume
         });
@@ -4909,11 +4898,10 @@ state: ${row.state ?? "waiting"}
             /* @__PURE__ */ new Set(["option", "text", "deny", ...TASK_COMMON_FLAGS])
           );
           if (unknown) return failUsage(`Unknown option --${unknown} for task decision respond`);
-          const taskPath = positionals[1];
-          const requestId = positionals[2];
-          if (!taskPath || !requestId || positionals.length !== 3) {
+          const requestId = positionals[1];
+          if (!requestId || positionals.length !== 2) {
             return failUsage(
-              "Usage: tent task decision respond <taskPath> <requestId> (--option <id> | --text <text>|- | --deny) [--workspace <path>] [--json]"
+              "Usage: tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny) [--workspace <path>] [--json]"
             );
           }
           let text = flags.text;
@@ -4929,7 +4917,6 @@ state: ${row.state ?? "waiting"}
           const response = optionId?.trim() ? { kind: "option", optionId: optionId.trim() } : text?.trim() ? { kind: "custom", text } : { kind: "deny" };
           const result = await client.decisionRequestRespond(
             workspaceId,
-            taskPath,
             requestId,
             response
           );
@@ -5087,13 +5074,11 @@ function formatTaskDispatch(result) {
   const sessionState = sessionView?.state ? String(sessionView.state) : void 0;
   const sessionConnectionId = sessionView?.connectionId ? String(sessionView.connectionId) : void 0;
   const parentLabel = row.parentActor?.kind && row.parentActor?.id ? `${row.parentActor.kind}:${row.parentActor.id}` : void 0;
-  const reviewerLabel = row.reviewer?.kind && row.reviewer?.id ? `${row.reviewer.kind}:${row.reviewer.id}` : void 0;
   return `\u2713 Dispatched via service RPC
 taskPath: ${row.taskPath}
 state: ${row.state ?? "queued"}
 ` + (row.roleId ? `roleId: ${row.roleId}
 ` : "") + (parentLabel ? `parentActor: ${parentLabel}
-` : "") + (reviewerLabel ? `reviewer: ${reviewerLabel}
 ` : "") + (sessionId ? `sessionId: ${sessionId}
 ` : "") + (sessionState ? `sessionState: ${sessionState}
 ` : "") + (sessionConnectionId ? `sessionConnectionId: ${sessionConnectionId}
@@ -5342,17 +5327,17 @@ Commands:
   tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
-      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
+      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/review authority from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target connection:* machine Settings Connection + exact managed Session
       # --work-node      repeatable writable Nodes (at least one; exact occupation)
       # --context-node   repeatable shared read-only context Nodes
-      # parentActor/reviewer derive from the durable Role or local user boundary
+      # parentActor derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
-  tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
+  tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
+  tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]

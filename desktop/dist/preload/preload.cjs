@@ -26,7 +26,6 @@ var DESKTOP_IPC = {
   listWorkspaces: "tent:list-workspaces",
   health: "tent:health",
   rpc: "tent:rpc",
-  listPendingInteractions: "tent:list-pending-interactions",
   document: "tent:document",
   collaboration: "tent:collaboration",
   openMain: "tent:open-main",
@@ -46,8 +45,7 @@ var DESKTOP_IPC = {
 // src/desktop/projection-ipc.ts
 var DESKTOP_PROJECTION_METHODS = [
   "graph.projection",
-  "node.collaborations",
-  "node.collaboration",
+  "workspace.collaboration",
   "output.provenance"
 ];
 var DESKTOP_PROJECTION_METHOD_SET = new Set(
@@ -72,7 +70,6 @@ var api = {
     }
     return import_electron.ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params);
   },
-  listPendingInteractions: (workspaceId) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.listPendingInteractions, workspaceId),
   document: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.document, request),
   collaboration: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),

@@ -1482,20 +1482,6 @@ function parseTaskActorRef(value, label) {
   }
   return { kind, id };
 }
-function assertParentReviewerEqual(parentActor, reviewer) {
-  if (parentActor.kind !== reviewer.kind || parentActor.id !== reviewer.id) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task reviewer must equal parentActor (no arbitrary delegation); got parentActor=${parentActor.kind}:${parentActor.id} reviewer=${reviewer.kind}:${reviewer.id}.`
-    );
-  }
-}
-function resolveParentReviewerPair(input) {
-  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
-  assertParentReviewerEqual(parentActor, reviewer);
-  return { parentActor, reviewer };
-}
 function allowsNonReviewAcceptMode(input) {
   const parent = input.parentActor;
   return Boolean(parent && parent.kind === "user" && parent.id === "user");
@@ -1556,7 +1542,7 @@ function isTaskId(id) {
   return /^tk-[a-z0-9]+$/i.test(id);
 }
 function isDeliveryId(id) {
-  return id.startsWith("dl-") && id.length > 3;
+  return /^dl-[a-z0-9]+$/.test(id);
 }
 function assertTransition(from, event, to) {
   const ok2 = allowedTransitions(from).some((t) => t.event === event && t.to === to);
@@ -1650,24 +1636,24 @@ function assertReviewAuthority(input) {
       `task.${action} actor must not equal executing Role (${executorRoleId}).`
     );
   }
-  const reviewer = input.reviewer;
-  if (!reviewer) {
+  const parentActor = input.parentActor;
+  if (!parentActor) {
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
-      `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
+      `task.${action} requires an explicit Task.parentActor.`
     );
   }
-  if (reviewer.kind === "user") {
-    if (actor === reviewer.id && actor === "user") return;
+  if (parentActor.kind === "user") {
+    if (actor === parentActor.id && actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
-  if (actor === reviewer.id) return;
+  if (actor === parentActor.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
+    `task.${action} requires actor equal to parent role (${parentActor.id}); got ${actor}.`
   );
 }
 
@@ -1693,6 +1679,9 @@ function canonicalJson(value) {
 }
 function sha256Hex(text3) {
   return createHash2("sha256").update(text3, "utf8").digest("hex");
+}
+function canonicalSha256(value) {
+  return sha256Hex(canonicalJson(value));
 }
 
 // src/core/task-node-selection.ts
@@ -2250,30 +2239,26 @@ function connectionAdapterCompatibilityDigest(input) {
 }
 function deriveIntegrationAuthority(input) {
   try {
-    const pair = resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer
-    });
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
     return {
-      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      actor: { kind: parentActor.kind, id: parentActor.id },
       mutator: INTEGRATION_MUTATOR_SERVICE
     };
   } catch (err) {
     if (err instanceof TaskLifecycleError) {
       throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor: input.parentActor,
-        reviewer: input.reviewer
+        parentActor: input.parentActor
       });
     }
     throw err;
   }
 }
-function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
-  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+function assertIntegrationAuthorityMatchesParent(authority, parentActor) {
+  const derived = deriveIntegrationAuthority({ parentActor });
   if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      "integrationAuthority must be { actor, mutator: service } derived from parentActor.",
       { authority }
     );
   }
@@ -2297,7 +2282,7 @@ function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewe
   if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      `integrationAuthority.actor must equal Task parentActor (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
       { authority, derived }
     );
   }
@@ -2309,18 +2294,8 @@ function projectExecutionLaneFromTask(task) {
   const branch = typeof task.branch === "string" ? task.branch.trim() : "";
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
   let integrationAuthority;
-  if (task.parentActor || task.reviewer) {
-    if (!task.parentActor || !task.reviewer) {
-      throw new TaskContextCardError(
-        "INVALID_ACTOR",
-        "executionLane requires both parentActor and reviewer to derive integrationAuthority.",
-        { parentActor: task.parentActor, reviewer: task.reviewer }
-      );
-    }
-    integrationAuthority = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer
-    });
+  if (task.parentActor) {
+    integrationAuthority = deriveIntegrationAuthority({ parentActor: task.parentActor });
   }
   if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
     return void 0;
@@ -2588,16 +2563,13 @@ function parseBaseCommitCapture(value) {
   }
   return { source, baseCommit, actor, capturedAt };
 }
-function resolveDispatchActors(input) {
+function resolveDispatchParentActor(input) {
   if (!input.parentActor) {
     throw new Error(
       "task.dispatch requires explicit parentActor { kind, id }."
     );
   }
-  return resolveParentReviewerPair({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer
-  });
+  return parseTaskActorRef(input.parentActor, "parentActor");
 }
 async function loadTaskEnvelope(fs22, path23) {
   if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
@@ -2620,7 +2592,7 @@ async function loadTaskEnvelope(fs22, path23) {
     throw new Error(`Invalid task envelope format: ${path23} (canonical task id is required).`);
   }
   const state = parseTaskState(data.state);
-  const actors = resolveActorsFromDisk(data);
+  const parentActor = resolveParentActorFromDisk(data);
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
   if (!contextCard) {
     throw new Error(
@@ -2644,8 +2616,7 @@ async function loadTaskEnvelope(fs22, path23) {
     manifest: data.manifest,
     state,
     id: data.id,
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
+    parentActor,
     prompt: body.trim() || void 0,
     contextCard,
     workNodeIds: contextCard.workNodeIds,
@@ -2679,11 +2650,10 @@ async function loadTaskEnvelope(fs22, path23) {
     }
     task.baseCommitCapture = baseCommitCapture;
   }
-  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
-      task.parentActor,
-      task.reviewer
+      task.parentActor
     );
   }
   task.contextGeneration = contextCard.contextGeneration;
@@ -2697,21 +2667,17 @@ async function loadTaskEnvelope(fs22, path23) {
   if (wait) task.wait = wait;
   return task;
 }
-function resolveActorsFromDisk(data) {
-  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
-  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
-  if (hasParent || hasReviewer) {
-    if (!hasParent || !hasReviewer) {
-      throw new Error(
-        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
-      );
-    }
-    return resolveParentReviewerPair({
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-    });
+function resolveParentActorFromDisk(data) {
+  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
+    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
   }
-  throw new Error("Invalid task envelope: missing parentActor/reviewer.");
+  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
+    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
+  }
+  if (data.parentActor === void 0 || data.parentActor === null) {
+    throw new Error("Invalid task envelope: missing parentActor.");
+  }
+  return parseTaskActorRef(data.parentActor, "parentActor");
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {
@@ -2739,9 +2705,6 @@ function formatTaskPointers(task) {
     lines.push(
       `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
     );
-  }
-  if (task.reviewer) {
-    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   lines.push(`acceptMode: ${task.acceptMode}`);
   if (task.roleId) {
@@ -2839,19 +2802,16 @@ async function writeTaskEnvelope(fs22, clock, input) {
   const path23 = await uniqueMarkdownPath(fs22, dir, stem);
   input.onPathAllocated?.(path23);
   const now = clock.now();
-  const actors = resolveDispatchActors({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer
-  });
+  const parentActor = resolveDispatchParentActor({ parentActor: input.parentActor });
   const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
   if (!isAcceptMode(acceptMode)) {
     throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
   }
   if (acceptMode !== "review-required" && !allowsNonReviewAcceptMode({
-    parentActor: actors.parentActor
+    parentActor
   })) {
     throw new Error(
-      `acceptMode=${acceptMode} is only legal for a user-facing Task; downstream Task Agent \u2192 parent must use review-required (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+      `acceptMode=${acceptMode} is only legal for a user-facing Task; downstream Task Agent \u2192 parent must use review-required (parent=${parentActor.kind}:${parentActor.id}).`
     );
   }
   const contextCard = buildTaskContextCard({
@@ -2863,8 +2823,7 @@ async function writeTaskEnvelope(fs22, clock, input) {
     state: "queued",
     ...roleId ? { roleId } : {},
     ...sessionId ? { sessionId } : {},
-    parentActor: serializeTaskActorRef(actors.parentActor),
-    reviewer: serializeTaskActorRef(actors.reviewer),
+    parentActor: serializeTaskActorRef(parentActor),
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     acceptMode,
@@ -2918,6 +2877,12 @@ async function patchTaskEnvelope(fs22, path23, patch) {
   const raw = await fs22.readFile(path23);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
+  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
+    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
+    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
+  }
   if (patch.state) {
     data.state = patch.state;
   }
@@ -2939,24 +2904,10 @@ async function patchTaskEnvelope(fs22, path23, patch) {
   }
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
-  if (patch.parentActor || patch.reviewer) {
-    const nextParent = patch.parentActor ? parseTaskActorRef(patch.parentActor, "parentActor") : data.parentActor !== void 0 && data.parentActor !== null ? parseTaskActorRef(data.parentActor, "parentActor") : void 0;
-    if (!nextParent) {
-      throw new Error(
-        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
-      );
-    }
-    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? void 0 : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : void 0;
-    const pair = resolveParentReviewerPair({
-      parentActor: nextParent,
-      reviewer: nextReviewer
-    });
-    data.parentActor = serializeTaskActorRef(pair.parentActor);
-    data.reviewer = serializeTaskActorRef(pair.reviewer);
-    const derived = deriveIntegrationAuthority({
-      parentActor: pair.parentActor,
-      reviewer: pair.reviewer
-    });
+  if (patch.parentActor) {
+    const nextParent = parseTaskActorRef(patch.parentActor, "parentActor");
+    data.parentActor = serializeTaskActorRef(nextParent);
+    const derived = deriveIntegrationAuthority({ parentActor: nextParent });
     data.integrationAuthority = {
       actor: { kind: derived.actor.kind, id: derived.actor.id },
       mutator: "service"
@@ -2988,15 +2939,13 @@ async function patchTaskEnvelope(fs22, path23, patch) {
   else if (patch.integrationAuthority) {
     if (data.parentActor === void 0 || data.parentActor === null) {
       throw new Error(
-        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+        "patchTaskEnvelope integrationAuthority requires parentActor on the envelope."
       );
     }
     const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
-    const reviewerForAuth = data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : parentForAuth;
     const validated = assertIntegrationAuthorityMatchesParent(
       patch.integrationAuthority,
-      parentForAuth,
-      reviewerForAuth
+      parentForAuth
     );
     data.integrationAuthority = {
       actor: { kind: validated.actor.kind, id: validated.actor.id },
@@ -3595,8 +3544,10 @@ async function createDeliveryUnlocked(fs22, clock, input) {
 async function loadDelivery(fs22, inputPath) {
   const path23 = normalizeDeliveryPath(inputPath);
   if (!await fs22.exists(path23)) throw new Error(`Delivery not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
-  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+  const raw = await fs22.readFile(path23);
+  const identity = parseDeliveryIdentityFromRaw(raw);
+  const { data, body } = parseFrontmatter(raw);
+  if (!identity || data.type !== "delivery" || data.id !== identity.id || data.taskId !== identity.taskId) {
     throw new Error(`Invalid delivery format: ${path23}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.sourceNodeId !== "string" || !isNodeId(data.sourceNodeId)) {
@@ -3632,7 +3583,10 @@ async function loadDelivery(fs22, inputPath) {
 }
 var DELIVERY_IDENTITY_PREFIX_MAX_BYTES = 1024;
 async function peekDeliveryTaskId(fs22, inputPath) {
-  const path23 = normalizeDeliveryPath(inputPath);
+  return (await peekDeliveryIdentity(fs22, inputPath))?.taskId;
+}
+async function peekDeliveryIdentity(fs22, inputPath) {
+  const path23 = normalizeDeliveryIdentityPath(inputPath);
   if (!fs22.readBinaryBounded) {
     throw new Error("Delivery identity discovery requires bounded prefix reads.");
   }
@@ -3644,10 +3598,69 @@ async function peekDeliveryTaskId(fs22, inputPath) {
     throw error;
   }
   const raw = new TextDecoder("utf-8").decode(bounded.bytes);
-  const identity = raw.match(
-    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/i
+  return parseDeliveryIdentityFromRaw(raw);
+}
+function parseDeliveryIdentityFromRaw(raw) {
+  const prefixBytes = new TextEncoder().encode(raw.slice(0, DELIVERY_IDENTITY_PREFIX_MAX_BYTES));
+  const prefix = new TextDecoder("utf-8").decode(
+    prefixBytes.subarray(0, DELIVERY_IDENTITY_PREFIX_MAX_BYTES)
   );
-  return identity?.[2];
+  if (!prefix.startsWith("---\n") && !prefix.startsWith("---\r\n")) return void 0;
+  const values = /* @__PURE__ */ new Map();
+  for (const line of prefix.split(/\r?\n/).slice(1)) {
+    if (line === "---") break;
+    const match = line.match(/^(type|id|taskId):\s*["']?([^"']+?)["']?\s*$/);
+    if (!match) continue;
+    if (values.has(match[1])) return void 0;
+    values.set(match[1], match[2]);
+  }
+  const type = values.get("type");
+  const id = values.get("id");
+  const taskId = values.get("taskId");
+  return type === "delivery" && id && taskId && isDeliveryId(id) && /^tk-[a-z0-9]+$/.test(taskId) ? { id, taskId } : void 0;
+}
+function deliveryReviewSemanticsDigest(record) {
+  return canonicalSha256({
+    version: 1,
+    id: record.id,
+    taskId: record.taskId,
+    sourceNodeId: record.sourceNodeId,
+    status: record.status,
+    summarySha256: sha256Hex(record.summary),
+    commits: [...record.commits],
+    targetHead: record.targetHead ?? null,
+    checks: record.checks.map((check) => ({ ...check })),
+    artifactRefs: normalizeArtifactRefs(record.artifactRefs),
+    taskLastOutcome: record.taskLastOutcome ?? null,
+    integrationMode: record.integrationMode,
+    review: record.review ? { ...record.review } : null,
+    createdAt: record.createdAt ?? null,
+    updatedAt: record.updatedAt ?? null
+  });
+}
+function deliveryAcceptCandidateDigest(record) {
+  return canonicalSha256({
+    version: 1,
+    id: record.id,
+    taskId: record.taskId,
+    sourceNodeId: record.sourceNodeId,
+    summarySha256: sha256Hex(record.summary),
+    commits: [...record.commits],
+    targetHead: record.targetHead ?? null,
+    checks: record.checks.map((check) => ({ ...check })),
+    artifactRefs: normalizeArtifactRefs(record.artifactRefs),
+    taskLastOutcome: record.taskLastOutcome ?? null,
+    createdAt: record.createdAt ?? null
+  });
+}
+function normalizeDeliveryIdentityPath(input) {
+  const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/(roles|sessions)\/[^/]+\/deliveries\/dl-[^/]+\.md$/i.test(path23)) {
+    throw new Error(
+      "Delivery identity must point under a Role/Session deliveries directory."
+    );
+  }
+  return path23;
 }
 async function loadDeliveries(fs22, filter) {
   const out = [];
@@ -4380,7 +4393,7 @@ async function prepareTaskAccept(env, taskPath, options) {
     assertReviewAuthority({
       actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "accept"
     });
     let outputNodeIds = [];
@@ -4394,7 +4407,8 @@ async function prepareTaskAccept(env, taskPath, options) {
       deliveryId: delivery.id,
       deliveryPath: delivery.path,
       commits: [...delivery.commits],
-      outputNodeIds
+      outputNodeIds,
+      deliverySemanticsDigest: deliveryReviewSemanticsDigest(delivery)
     };
   });
 }
@@ -4420,6 +4434,12 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
         "Ready delivery changed during integrate; refusing accept."
       );
     }
+    if (!prepared.deliverySemanticsDigest || deliveryReviewSemanticsDigest(delivery) !== prepared.deliverySemanticsDigest) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery semantics changed during integrate; refusing accept."
+      );
+    }
     if (!exactStringListEqual(delivery.commits, prepared.commits)) {
       throw new TaskLifecycleError(
         "DELIVERY_CHANGED",
@@ -4430,7 +4450,7 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     assertReviewAuthority({
       actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "accept"
     });
     const tent = await loadTent(env.fs);
@@ -4451,6 +4471,8 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
       version: 1,
       taskId: requireCanonicalTaskId(task),
       deliveryId: delivery.id,
+      deliveryPath: delivery.path,
+      candidateDigest: deliveryAcceptCandidateDigest(delivery),
       actor,
       commits: [...delivery.commits],
       outputNodeIds,
@@ -4575,7 +4597,7 @@ async function taskReject(env, taskPath, options) {
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,
-      reviewer: task.reviewer,
+      parentActor: task.parentActor,
       action: "reject"
     });
     const intent = {
@@ -4785,8 +4807,10 @@ async function loadTaskAcceptIntent(fs22, taskPath) {
   const keys = Object.keys(value).sort();
   const expectedKeys = [
     "actor",
+    "candidateDigest",
     "commits",
     "deliveryId",
+    "deliveryPath",
     "outputNodeIds",
     "taskId",
     "type",
@@ -4803,7 +4827,7 @@ async function loadTaskAcceptIntent(fs22, taskPath) {
   } catch {
     throw new Error(`Invalid exact-Task accept recovery intent: ${path23}.`);
   }
-  if (!exactStringListEqual(keys, expectedKeys) || value.type !== TASK_ACCEPT_INTENT_TYPE || value.version !== 1 || typeof value.taskId !== "string" || !isTaskId(value.taskId) || typeof value.deliveryId !== "string" || !isDeliveryId(value.deliveryId) || typeof value.actor !== "string" || !value.actor.trim() || value.actor !== value.actor.trim() || !Array.isArray(value.commits) || !value.commits.every(
+  if (!exactStringListEqual(keys, expectedKeys) || value.type !== TASK_ACCEPT_INTENT_TYPE || value.version !== 1 || typeof value.taskId !== "string" || !isTaskId(value.taskId) || typeof value.deliveryId !== "string" || !isDeliveryId(value.deliveryId) || typeof value.deliveryPath !== "string" || !value.deliveryPath.trim() || value.deliveryPath !== value.deliveryPath.trim() || typeof value.candidateDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.candidateDigest) || typeof value.actor !== "string" || !value.actor.trim() || value.actor !== value.actor.trim() || !Array.isArray(value.commits) || !value.commits.every(
     (item) => typeof item === "string" && Boolean(item.trim()) && item === item.trim()
   ) || new Set(value.commits).size !== value.commits.length || !Array.isArray(value.outputNodeIds) || !value.outputNodeIds.every((item) => typeof item === "string") || !exactStringListEqual(value.outputNodeIds, outputNodeIds) || typeof value.updatedAt !== "string" || value.updatedAt !== updatedAt) {
     throw new Error(`Invalid exact-Task accept recovery intent: ${path23}.`);
@@ -4851,7 +4875,7 @@ async function completeTaskAcceptIntent(env, taskPath, intent) {
   assertReviewAuthority({
     actor: intent.actor,
     executorRoleId: task.roleId,
-    reviewer: task.reviewer,
+    parentActor: task.parentActor,
     action: "accept"
   });
   const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
@@ -4897,7 +4921,7 @@ async function completeTaskAcceptIntent(env, taskPath, intent) {
 function assertTaskAcceptIntentCanConverge(task, delivery, intent) {
   const taskStateMatches = delivery.status === "ready" ? task.state === "delivered" : delivery.status === "accepted" && (task.state === "delivered" || task.state === "accepted" && task.updatedAt === intent.updatedAt && task.wait == null);
   const deliveryMatches = delivery.status === "ready" ? isReadyDeliveryModeForTask(task, delivery.integrationMode) && !delivery.review : delivery.status === "accepted" && delivery.integrationMode === "manual-accept" && delivery.updatedAt === intent.updatedAt && delivery.review?.decision === "accept" && delivery.review.by === intent.actor && delivery.review.note === void 0;
-  if (delivery.sourceNodeId !== primaryNodeId(task) || !exactStringListEqual(delivery.commits, intent.commits) || !taskStateMatches || !deliveryMatches) {
+  if (delivery.sourceNodeId !== primaryNodeId(task) || delivery.path !== intent.deliveryPath || deliveryAcceptCandidateDigest(delivery) !== intent.candidateDigest || !exactStringListEqual(delivery.commits, intent.commits) || !taskStateMatches || !deliveryMatches) {
     throw new TaskLifecycleError(
       "DELIVERY_CHANGED",
       `Exact-Task accept recovery cannot converge Delivery ${delivery.id} from Task ${requireCanonicalTaskId(task)}.`
@@ -4942,7 +4966,7 @@ async function reconcilePendingTaskReject(env, taskPath) {
   assertReviewAuthority({
     actor: intent.actor,
     executorRoleId: task.roleId,
-    reviewer: task.reviewer,
+    parentActor: task.parentActor,
     action: "reject"
   });
   const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
@@ -6039,7 +6063,7 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
   let allocatedTaskPath;
   if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor; reviewer may be derived equal."
+      "Dispatch requires explicit parentActor."
     );
   }
   void options.asSub;
@@ -6094,7 +6118,6 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
       userPrompt,
       workspace: options.workspace,
       parentActor: options.parentActor,
-      reviewer: options.reviewer,
       asSub: options.asSub === true,
       acceptMode: options.acceptMode,
       id: taskId,
@@ -19716,6 +19739,13 @@ var DecisionRequestStore = class {
     if (!item || item.workspaceId !== workspaceId || item.taskPath !== taskPath) return void 0;
     return cloneRecord2(item);
   }
+  /** Public-id lookup; taskPath remains internal authority carried by the row. */
+  async getExactById(workspaceId, requestId) {
+    await this.requireHealthy();
+    const item = this.items.get(requestId);
+    if (!item || item.workspaceId !== workspaceId) return void 0;
+    return cloneRecord2(item);
+  }
   async getPendingForTask(workspaceId, taskPath) {
     await this.requireHealthy();
     const item = [...this.items.values()].find(
@@ -20698,6 +20728,367 @@ function prepareDecisionResponse(input) {
   return { answered, taskInput };
 }
 
+// src/service/rpc-error.ts
+var RpcError = class extends Error {
+  constructor(code, message2, data) {
+    super(message2);
+    this.name = "RpcError";
+    this.code = code;
+    this.data = data;
+  }
+};
+
+// src/service/workspace-collaboration.ts
+async function buildWorkspaceCollaborationProjection(input) {
+  const tasksById = indexCanonicalTasks(input.tasks);
+  const { byTaskId: decisionsByTaskId, actionable: actionableDecisions } = await selectActionableUserDecisions(input, tasksById);
+  const deliveriesById = indexDeliveriesById(input.deliveries);
+  const readyDeliveriesByTaskId = indexReadyDeliveries(input.deliveries);
+  const inboxItems = selectUserInboxDeliveries(input.tasks, deliveriesById, tasksById);
+  for (const { request, task } of actionableDecisions) {
+    inboxItems.push({
+      kind: "decision",
+      requestId: request.id,
+      taskId: task.id,
+      nodeIds: [...task.workNodeIds],
+      question: request.question,
+      options: request.options.map((option) => ({ ...option })),
+      createdAt: request.createdAt
+    });
+  }
+  inboxItems.sort(compareWorkspaceUserInboxItem);
+  let selectedNode = null;
+  if (input.nodeId) {
+    const occupations = listDirectActiveTasksForNode(input.nodeId, input.tasks);
+    if (occupations.length > 1) {
+      throw consistencyError("Node has multiple active Task occupations", {
+        nodeId: input.nodeId,
+        taskIds: occupations.map((task) => task.id ?? null)
+      });
+    }
+    const selectedTask = occupations[0];
+    if (selectedTask?.id) {
+      const sameId = tasksById.get(selectedTask.id) ?? [];
+      if (sameId.length !== 1) {
+        throw consistencyError("Selected Task identity is ambiguous", {
+          nodeId: input.nodeId,
+          taskId: selectedTask.id
+        });
+      }
+    }
+    const activeTask = selectedTask ? await projectActiveTask({
+      ...input,
+      task: selectedTask,
+      deliveriesById,
+      readyDeliveries: selectedTask.id ? readyDeliveriesByTaskId.get(selectedTask.id) ?? [] : [],
+      decisionByTaskId: decisionsByTaskId
+    }) : null;
+    selectedNode = { nodeId: input.nodeId, activeTask };
+  }
+  const counts = { delivery: 0, decision: 0, total: inboxItems.length };
+  for (const item of inboxItems) counts[item.kind] += 1;
+  return {
+    workspaceId: input.workspaceId,
+    selectedNode,
+    inbox: { items: inboxItems, counts }
+  };
+}
+function indexCanonicalTasks(tasks) {
+  const tasksById = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (!task.id) continue;
+    const sameId = tasksById.get(task.id) ?? [];
+    sameId.push(task);
+    tasksById.set(task.id, sameId);
+  }
+  return tasksById;
+}
+async function selectActionableUserDecisions(input, tasksById) {
+  const byTaskId = /* @__PURE__ */ new Map();
+  const actionable = [];
+  for (const request of input.pendingDecisions) {
+    if (request.target.kind !== "user") continue;
+    const sameId = tasksById.get(request.taskId) ?? [];
+    const exactPath = sameId.filter((candidate) => candidate.path === request.taskPath);
+    const candidates = exactPath.filter(
+      (candidate) => candidate.state === "waiting" && candidate.wait?.reason === "user-input" && candidate.wait.code === `decision_request:${request.id}` && candidate.sessionId === request.requester.id
+    );
+    if (candidates.length === 0) continue;
+    if (sameId.length !== 1 || candidates.length !== 1) {
+      throw consistencyError("Actionable user DecisionRequest has ambiguous Task identity", {
+        requestId: request.id,
+        taskId: request.taskId
+      });
+    }
+    if (byTaskId.has(request.taskId)) {
+      throw consistencyError("Task has multiple pending user DecisionRequests", {
+        taskId: request.taskId
+      });
+    }
+    const task = candidates[0];
+    const session = await input.readSession(request.requester.id);
+    if (!session || !session.open || session.workspace !== input.workspaceId || session.lastTaskId !== task.id) {
+      continue;
+    }
+    byTaskId.set(request.taskId, request);
+    actionable.push({ request, task });
+  }
+  return { byTaskId, actionable };
+}
+function indexReadyDeliveries(deliveries) {
+  const result = /* @__PURE__ */ new Map();
+  for (const delivery of deliveries) {
+    if (delivery.status !== "ready") continue;
+    const sameTask = result.get(delivery.taskId) ?? [];
+    sameTask.push(delivery);
+    result.set(delivery.taskId, sameTask);
+  }
+  return result;
+}
+function indexDeliveriesById(deliveries) {
+  const result = /* @__PURE__ */ new Map();
+  for (const delivery of deliveries) {
+    const sameId = result.get(delivery.id) ?? [];
+    sameId.push(delivery);
+    result.set(delivery.id, sameId);
+  }
+  return result;
+}
+function selectUserInboxDeliveries(tasks, deliveriesById, tasksById) {
+  const items = [];
+  for (const task of tasks) {
+    if (task.state !== "delivered") continue;
+    if (!task.parentActor) {
+      throw consistencyError("Delivered Task lacks responsibility", {
+        taskId: task.id ?? null
+      });
+    }
+    if (task.parentActor.kind !== "user") continue;
+    if (task.parentActor.id !== "user") {
+      throw consistencyError("Delivered Task has invalid user responsibility", {
+        taskId: task.id ?? null
+      });
+    }
+    if (!task.id) {
+      throw consistencyError("User-reviewable Task is missing canonical id", {});
+    }
+    const sameId = tasksById.get(task.id) ?? [];
+    if (sameId.length !== 1) {
+      throw consistencyError("User-reviewable Task identity is ambiguous", {
+        taskId: task.id
+      });
+    }
+    const sameDeliveryId = task.activeDeliveryId ? deliveriesById.get(task.activeDeliveryId) ?? [] : [];
+    if (sameDeliveryId.length !== 1) {
+      throw consistencyError("User-reviewable Delivery identity is not unique", {
+        taskId: task.id,
+        deliveryId: task.activeDeliveryId ?? null,
+        matches: sameDeliveryId.length
+      });
+    }
+    const delivery = sameDeliveryId[0];
+    if (!delivery || delivery.status !== "ready" || delivery.taskId !== task.id || !task.workNodeIds.includes(delivery.sourceNodeId)) {
+      throw consistencyError("User-reviewable Delivery identity is stale", {
+        deliveryId: task.activeDeliveryId ?? null,
+        taskId: task.id,
+        taskState: task.state,
+        activeDeliveryId: task.activeDeliveryId ?? null
+      });
+    }
+    items.push({
+      kind: "delivery",
+      deliveryId: delivery.id,
+      taskId: delivery.taskId,
+      sourceNodeId: delivery.sourceNodeId,
+      summary: delivery.summary,
+      createdAt: requireDeliveryCreatedAt(delivery, task.id)
+    });
+  }
+  return items;
+}
+async function projectActiveTask(input) {
+  const taskId = input.task.id;
+  if (!taskId) {
+    throw consistencyError("Selected Task is missing canonical id", {});
+  }
+  const responsibility = projectResponsibility(input.task, input.roles);
+  const execution = await projectExecution(input, taskId);
+  const readyDelivery = projectSelectedReadyDelivery(input, taskId);
+  const decision = input.decisionByTaskId.get(taskId);
+  return {
+    taskId,
+    state: input.task.state,
+    responsibility,
+    execution,
+    readyDelivery,
+    pendingDecision: decision ? projectDecision(decision) : null
+  };
+}
+function projectResponsibility(task, roles) {
+  const taskId = task.id;
+  if (!task.parentActor) {
+    throw consistencyError("Selected Task lacks parent responsibility", { taskId });
+  }
+  if (task.parentActor.kind === "user") {
+    if (task.parentActor.id !== "user") {
+      throw consistencyError("Task has invalid user responsibility", {
+        taskId,
+        parentActorId: task.parentActor.id
+      });
+    }
+    return { kind: "user" };
+  }
+  const role = roles.find((candidate) => candidate.id === task.parentActor.id);
+  if (!role) {
+    throw consistencyError("Task parent responsibility Role is missing", {
+      taskId,
+      roleId: task.parentActor.id
+    });
+  }
+  return {
+    kind: "role",
+    roleId: task.parentActor.id,
+    displayName: role.displayName?.trim() || role.name
+  };
+}
+async function projectExecution(input, taskId) {
+  if (input.task.roleId) {
+    const role = input.roles.find((candidate) => candidate.id === input.task.roleId);
+    if (!role) {
+      throw consistencyError("Task assignee Role is missing", {
+        taskId,
+        roleId: input.task.roleId
+      });
+    }
+    return {
+      kind: "role",
+      roleId: input.task.roleId,
+      displayName: role.displayName?.trim() || role.name
+    };
+  }
+  if (input.task.sessionId) {
+    const session = await input.readSession(input.task.sessionId);
+    if (!session || session.workspace !== input.workspaceId || session.lastTaskId !== taskId) {
+      throw consistencyError("Selected Task Session binding is stale", { taskId });
+    }
+    if (!session.connectionId) return null;
+    const connection = input.getConnection(session.connectionId);
+    if (!connection) {
+      throw consistencyError("Selected Task references a missing Agent Connection", {
+        taskId,
+        connectionId: session.connectionId
+      });
+    }
+    return {
+      kind: "connection",
+      connectionId: connection.connectionId,
+      displayName: connection.displayName?.trim() || connection.connectionId
+    };
+  }
+  if (input.task.state === "queued") return null;
+  throw consistencyError("Active Task has no exact assignee", { taskId });
+}
+function projectSelectedReadyDelivery(input, taskId) {
+  if (input.readyDeliveries.length > 1) {
+    throw consistencyError("Selected Task has multiple ready Deliveries", {
+      taskId,
+      deliveryIds: input.readyDeliveries.map((delivery) => delivery.id)
+    });
+  }
+  let readyDelivery = null;
+  if (input.task.activeDeliveryId) {
+    const sameDeliveryId = input.deliveriesById.get(input.task.activeDeliveryId) ?? [];
+    if (sameDeliveryId.length !== 1) {
+      throw consistencyError("Selected Task Delivery identity is not unique", {
+        taskId,
+        deliveryId: input.task.activeDeliveryId,
+        matches: sameDeliveryId.length
+      });
+    }
+    const delivery = sameDeliveryId[0];
+    if (delivery.taskId !== taskId) {
+      throw consistencyError("Selected Task Delivery binding is stale", {
+        taskId,
+        deliveryId: input.task.activeDeliveryId
+      });
+    }
+    if (delivery.status === "ready") {
+      if (!input.task.workNodeIds.includes(delivery.sourceNodeId)) {
+        throw consistencyError("Selected Task ready Delivery has foreign source Node", {
+          taskId,
+          deliveryId: delivery.id,
+          sourceNodeId: delivery.sourceNodeId
+        });
+      }
+      if (input.task.state !== "delivered") {
+        throw consistencyError("Selected Task has a ready Delivery outside delivered state", {
+          taskId,
+          taskState: input.task.state,
+          deliveryId: delivery.id
+        });
+      }
+      readyDelivery = {
+        deliveryId: delivery.id,
+        summary: delivery.summary,
+        createdAt: requireDeliveryCreatedAt(delivery, taskId)
+      };
+    }
+  }
+  if (input.task.state === "delivered") {
+    if (!readyDelivery) {
+      throw consistencyError("Delivered selected Task lacks its exact ready Delivery", {
+        taskId,
+        activeDeliveryId: input.task.activeDeliveryId ?? null
+      });
+    }
+    if (input.readyDeliveries.length !== 1 || input.readyDeliveries[0].id !== readyDelivery.deliveryId) {
+      throw consistencyError("Delivered selected Task has inconsistent ready Delivery authority", {
+        taskId,
+        activeDeliveryId: readyDelivery.deliveryId
+      });
+    }
+  } else if (input.readyDeliveries.length > 0) {
+    throw consistencyError("Selected Task has an unbound ready Delivery", {
+      taskId,
+      taskState: input.task.state,
+      deliveryId: input.readyDeliveries[0].id
+    });
+  }
+  return readyDelivery;
+}
+function requireDeliveryCreatedAt(delivery, taskId) {
+  const createdAt = delivery.createdAt;
+  if (typeof createdAt !== "string" || createdAt.trim() !== createdAt || !Number.isFinite(Date.parse(createdAt))) {
+    throw consistencyError("Current ready Delivery lacks durable createdAt", {
+      taskId,
+      deliveryId: delivery.id
+    });
+  }
+  return createdAt;
+}
+function projectDecision(request) {
+  return {
+    requestId: request.id,
+    question: request.question,
+    options: request.options.map((option) => ({ ...option }))
+  };
+}
+function compareWorkspaceUserInboxItem(a, b) {
+  const byTime = a.createdAt.localeCompare(b.createdAt);
+  if (byTime !== 0) return byTime;
+  const byKind = a.kind.localeCompare(b.kind);
+  if (byKind !== 0) return byKind;
+  const aId = a.kind === "delivery" ? a.deliveryId : a.requestId;
+  const bId = b.kind === "delivery" ? b.deliveryId : b.requestId;
+  return aId.localeCompare(bId);
+}
+function consistencyError(message2, data) {
+  return new RpcError(-32010, `workspace.collaboration consistency error: ${message2}`, {
+    code: "WORKSPACE_COLLABORATION_STALE",
+    ...data
+  });
+}
+
 // src/service/types.ts
 var PROVIDER_VERIFICATION_LEVELS = [
   "adapter-implemented",
@@ -20712,6 +21103,8 @@ var CLIENT_METHODS = [
   "workspace.unmount",
   "workspace.list",
   "workspace.setForeground",
+  /** Selected Node collaboration + user-actionable Inbox; read-only product join. */
+  "workspace.collaboration",
   /**
    * Workspace collaboration settings (system-root settings.json).
    * settings is a read projection; settings.update is user-only MutationBus.
@@ -20853,7 +21246,7 @@ var CLIENT_METHODS = [
   /**
    * Durable Role self-execution: atomically create + claim from exact
    * workNodeIds[] with optional shared contextNodeIds[].
-   * Service derives parent/reviewer from persisted Task/Session responsibility;
+   * Service derives parent/review authority from persisted Task/Session responsibility;
    * callers cannot provide actor, target, asSub, or Delivery authority fields.
    */
   "task.claimDirect",
@@ -24725,16 +25118,6 @@ function projectProviderCatalog() {
   return { providers };
 }
 
-// src/service/rpc-error.ts
-var RpcError = class extends Error {
-  constructor(code, message2, data) {
-    super(message2);
-    this.name = "RpcError";
-    this.code = code;
-    this.data = data;
-  }
-};
-
 // src/machine/skills.ts
 import * as fs16 from "node:fs/promises";
 import * as os4 from "node:os";
@@ -24957,6 +25340,8 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
         return { workspaces: ctx.host.list() };
       case "workspace.setForeground":
         return workspaceSetForeground(ctx, p);
+      case "workspace.collaboration":
+        return workspaceCollaborationRpc(ctx, p);
       case "workspace.settings":
         return workspaceSettingsRpc(ctx, p);
       case "workspace.settings.update":
@@ -27103,10 +27488,8 @@ async function taskDispatch(ctx, p) {
       "connectionId",
       "prompt",
       "parentActor",
-      "reviewer",
       "asSub",
-      "acceptMode",
-      "callerKind"
+      "acceptMode"
     ]),
     "task.dispatch"
   );
@@ -27122,35 +27505,31 @@ async function taskDispatch(ctx, p) {
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
-  const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitAcceptMode = parseAcceptMode(optionalString2(p, "acceptMode"));
-  const resolvedActors = resolveDispatchActorsFromRpc({
-    parentActor: explicitParentActor,
-    reviewer: explicitReviewer
-  });
+  const parentActor = resolveDispatchParentActorFromRpc(explicitParentActor);
   const roleRegistry = requestedRoleId || asSub ? await loadRolesRegistry(mount.env.fs) : void 0;
   const roleDefinition = requestedRoleId ? roleRegistry?.roles.find((role) => role.id === requestedRoleId) : void 0;
   if (requestedRoleId && !roleDefinition) {
     throw new RpcError(-32004, `Role not found in registry: ${requestedRoleId}`);
   }
-  const parentRoleDefinition = asSub && resolvedActors.parentActor.kind === "role" ? roleRegistry?.roles.find((role) => role.id === resolvedActors.parentActor.id) : void 0;
+  const parentRoleDefinition = asSub && parentActor.kind === "role" ? roleRegistry?.roles.find((role) => role.id === parentActor.id) : void 0;
   if (asSub && !parentRoleDefinition) {
     throw new RpcError(
       -32004,
-      `Parent Role not found in registry: ${resolvedActors.parentActor.id}`
+      `Parent Role not found in registry: ${parentActor.id}`
     );
   }
   if (connectionId && !ctx.connectionCatalog.get(connectionId)) {
     throw new RpcError(-32004, `Agent Connection not found: ${connectionId}`);
   }
-  const callerKind = resolvedActors.parentActor.kind;
+  const callerKind = parentActor.kind;
   const preallocatedTaskId = connectionId ? makeTaskId() : void 0;
   const reservedSessionId = connectionId ? makeSessionId() : void 0;
   const result = await ctx.mutations.run(workspaceId, async () => {
     if (asSub) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
-        parentActor: resolvedActors.parentActor,
+        parentActor,
         targetRoleId: requestedRoleId
       });
     }
@@ -27186,15 +27565,15 @@ async function taskDispatch(ctx, p) {
       acceptMode = settings.defaultAcceptMode;
     }
     if (acceptMode !== "review-required" && !allowsNonReviewAcceptMode({
-      parentActor: resolvedActors.parentActor
+      parentActor
     })) {
       if (explicitAcceptMode !== void 0) {
         throw new RpcError(
           -32602,
-          `acceptMode=${acceptMode} is only legal for a user-facing Task; Task Agent \u2192 parent must use review-required (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
+          `acceptMode=${acceptMode} is only legal for a user-facing Task; Task Agent \u2192 parent must use review-required (parent=${parentActor.kind}:${parentActor.id})`,
           {
             acceptMode,
-            parentActor: resolvedActors.parentActor,
+            parentActor,
             roleId: requestedRoleId
           }
         );
@@ -27215,8 +27594,7 @@ async function taskDispatch(ctx, p) {
     try {
       dispatched2 = await dispatch(mount.env, primaryNodeId3, {
         userPrompt: prompt,
-        parentActor: resolvedActors.parentActor,
-        reviewer: resolvedActors.reviewer,
+        parentActor,
         asSub,
         acceptMode,
         workspace: workspaceLane2,
@@ -27366,7 +27744,6 @@ async function taskDispatch(ctx, p) {
     sessionId: dispatched.sessionId,
     asSub: taskAsSub(taskAfter),
     parentActor: taskAfter.parentActor,
-    reviewer: taskAfter.reviewer,
     state: taskAfter.state,
     session,
     // Prefer envelope projection (Role baseCommit only after claim; Connection-asSub may
@@ -27451,28 +27828,14 @@ function resolveTaskNodeSelection(p, tentName, method) {
     throw new RpcError(-32602, message2, { field: "workNodeIds" });
   }
 }
-function resolveDispatchActorsFromRpc(input) {
-  if (!input.parentActor) {
+function resolveDispatchParentActorFromRpc(parentActor) {
+  if (!parentActor) {
     throw new RpcError(
       -32602,
       "task.dispatch requires explicit parentActor { kind: user|role, id }"
     );
   }
-  try {
-    return resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer
-    });
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error ? err.message : "task.dispatch reviewer must equal parentActor",
-      {
-        parentActor: input.parentActor,
-        reviewer: input.reviewer
-      }
-    );
-  }
+  return parentActor;
 }
 async function taskClaimDirectRpc(ctx, p, caller = {}) {
   assertAllowedParams(
@@ -27513,7 +27876,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
       workspaceId,
       callerSession.id
     );
-    const actors = await resolveDirectClaimResponsibility(ctx, {
+    const parentActor = await resolveDirectClaimResponsibility(ctx, {
       workspaceId,
       roleId,
       sourceTaskPath,
@@ -27522,7 +27885,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
     await ensureRoleWorkspaceIfGit(mount.workspaceRoot, roleDefinition.name);
     const settings = await loadWorkspaceSettings(mount.env.fs);
     const acceptMode = allowsNonReviewAcceptMode({
-      parentActor: actors.parentActor
+      parentActor
     }) ? settings.defaultAcceptMode : "review-required";
     ctx.host.markSelfWrite(workspaceId);
     const roleRootPath = roleTempRoot(roleId);
@@ -27535,8 +27898,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
     try {
       created = await dispatch(mount.env, selection.primaryId, {
         userPrompt: prompt,
-        parentActor: actors.parentActor,
-        reviewer: actors.reviewer,
+        parentActor,
         acceptMode,
         roleId,
         sessionId: callerSession.id,
@@ -27650,10 +28012,7 @@ async function resolveDirectClaimResponsibility(ctx, input) {
       );
     }
   }
-  const rootResponsibility = () => resolveParentReviewerPair({
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" }
-  });
+  const rootResponsibility = () => ({ kind: "user", id: "user" });
   const explicitSourceTask = Boolean(input.sourceTaskPath);
   const sourceRef = input.sourceTaskPath || session?.lastTaskId?.trim() || "";
   if (!sourceRef) {
@@ -27721,25 +28080,14 @@ async function resolveDirectClaimResponsibility(ctx, input) {
   if (!explicitSourceTask && session && isActiveTaskState(sourceTask.state) && sourceTask.sessionId && sourceTask.sessionId !== session.id) {
     return rootResponsibility();
   }
-  if (!sourceTask.parentActor || !sourceTask.reviewer) {
+  if (!sourceTask.parentActor) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      "task.claimDirect source Task is missing persisted parent/reviewer",
+      "task.claimDirect source Task is missing persisted parentActor",
       { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_MISSING", taskPath: sourceTask.path }
     );
   }
-  try {
-    return resolveParentReviewerPair({
-      parentActor: sourceTask.parentActor,
-      reviewer: sourceTask.reviewer
-    });
-  } catch (err) {
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      err instanceof Error ? err.message : "Invalid source Task responsibility chain",
-      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_INVALID", taskPath: sourceTask.path }
-    );
-  }
+  return sourceTask.parentActor;
 }
 async function taskClaimRpc(ctx, p, caller = {}) {
   assertAllowedParams(
@@ -27970,10 +28318,10 @@ async function prepareRoleClaimWrite(ctx, workspaceId, task) {
   const mount = ctx.host.require(workspaceId);
   if (!await isGitWorkspace(mount.workspaceRoot)) return void 0;
   if (task.baseCommit?.trim() && task.baseCommitCapture) return void 0;
-  if (!task.parentActor || !task.reviewer) {
+  if (!task.parentActor) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.claim Role capture requires exact persisted parentActor/reviewer (task ${task.id || task.path})`,
+      `task.claim Role capture requires exact persisted parentActor (task ${task.id || task.path})`,
       { taskPath: task.path, code: "BASE_CAPTURE_ACTOR" }
     );
   }
@@ -28068,10 +28416,7 @@ async function prepareRoleClaimWrite(ctx, workspaceId, task) {
     capturedAt: now
   };
   if (!task.integrationAuthority) {
-    patch.integrationAuthority = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer
-    });
+    patch.integrationAuthority = deriveIntegrationAuthority({ parentActor: task.parentActor });
   }
   return patch;
 }
@@ -28216,7 +28561,8 @@ async function taskRequestDecisionRpc(ctx, p, caller) {
     };
     const task = await taskWait(mount.env, taskPath, {
       reason: "user-input",
-      summary: `Decision Request pending: ${question.slice(0, 200)}`
+      summary: `Decision Request pending: ${question.slice(0, 200)}`,
+      code: `decision_request:${request.id}`
     });
     let stored;
     try {
@@ -29185,16 +29531,131 @@ async function resolveReviewCallerActor(ctx, workspaceId, requestedActor, action
   }
   return derivedActor;
 }
+async function loadExactWorkspaceDeliveriesById(ctx, workspaceId, deliveryId) {
+  const mount = ctx.host.require(workspaceId);
+  const fs22 = mount.env.fs;
+  if (!await fs22.exists(TEMP_DIR)) return [];
+  const matches = [];
+  for (const namespace of [ROLES_TEMP_DIR, SESSIONS_TEMP_DIR]) {
+    const ownerRoot = `${TEMP_DIR}/${namespace}`;
+    if (!await fs22.exists(ownerRoot)) continue;
+    for (const owner of await fs22.listDir(ownerRoot)) {
+      if (!owner.isDir) continue;
+      const deliveriesDir = `${ownerRoot}/${owner.name}/deliveries`;
+      if (!await fs22.exists(deliveriesDir)) continue;
+      for (const entry of await fs22.listDir(deliveriesDir)) {
+        if (entry.isDir || !entry.name.toLowerCase().endsWith(".md")) continue;
+        const candidate = `${deliveriesDir}/${entry.name}`;
+        const canonicalTarget = entry.name === `${deliveryId}.md`;
+        const identity = await peekDeliveryIdentity(fs22, candidate).catch((error) => {
+          if (!canonicalTarget) return void 0;
+          throw error;
+        });
+        if (!canonicalTarget && identity?.id !== deliveryId) continue;
+        const delivery = await loadDelivery(fs22, candidate);
+        if (entry.name !== `${delivery.id}.md`) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `Review Delivery filename and record identity differ: ${candidate}`,
+            {
+              code: "REVIEW_DELIVERY_IDENTITY_MISMATCH",
+              requestedDeliveryId: deliveryId,
+              recordId: delivery.id,
+              filename: entry.name,
+              path: delivery.path
+            }
+          );
+        }
+        if (delivery.id !== deliveryId) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `Review Delivery filename and record identity differ: ${candidate}`,
+            {
+              code: "REVIEW_DELIVERY_IDENTITY_MISMATCH",
+              requestedDeliveryId: deliveryId,
+              recordId: delivery.id,
+              filename: entry.name,
+              path: delivery.path
+            }
+          );
+        }
+        matches.push(delivery);
+      }
+    }
+  }
+  return matches.sort((left, right) => left.path.localeCompare(right.path));
+}
+async function requireUniqueTaskForReviewDelivery(ctx, workspaceId, deliveryId) {
+  const mount = ctx.host.require(workspaceId);
+  const deliveries = await loadExactWorkspaceDeliveriesById(ctx, workspaceId, deliveryId);
+  if (deliveries.length !== 1) {
+    throw reviewDeliveryTaskLookupError(deliveryId, 0, deliveries.length);
+  }
+  const delivery = deliveries[0];
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const taskIdMatches = tasks.filter(
+    (task) => task.id === delivery.taskId
+  );
+  const activeMatches = tasks.filter(
+    (task) => typeof task.id === "string" && task.activeDeliveryId === deliveryId
+  );
+  if (taskIdMatches.length !== 1 || activeMatches.length !== 1 || taskIdMatches[0].path !== activeMatches[0].path) {
+    throw reviewDeliveryTaskLookupError(
+      deliveryId,
+      Math.max(taskIdMatches.length, activeMatches.length),
+      deliveries.length
+    );
+  }
+  return { task: taskIdMatches[0], delivery };
+}
+function reviewDeliveryTaskLookupError(deliveryId, taskMatches, deliveryMatches = 1) {
+  return new RpcError(
+    taskMatches === 0 && deliveryMatches === 0 ? -32004 : RPC_LIFECYCLE,
+    `Review Delivery must identify exactly one durable Delivery and canonical Task: ${deliveryId}`,
+    {
+      code: "REVIEW_DELIVERY_TASK_NOT_UNIQUE",
+      deliveryId,
+      deliveryMatches,
+      taskMatches
+    }
+  );
+}
+function assertReviewDeliveryIdentityUnchanged(initial, current) {
+  const initialDigest = deliveryReviewSemanticsDigest(initial.delivery);
+  const currentDigest = deliveryReviewSemanticsDigest(current.delivery);
+  if (current.task.path !== initial.task.path || current.task.id !== initial.task.id || current.delivery.path !== initial.delivery.path || currentDigest !== initialDigest) {
+    throw new RpcError(RPC_LIFECYCLE, "Review Delivery changed during mutation", {
+      code: "DELIVERY_CHANGED",
+      deliveryId: initial.delivery.id,
+      expectedDigest: initialDigest,
+      actualDigest: currentDigest
+    });
+  }
+}
+function assertRecoveredReviewIdentityUnchanged(current, recovered) {
+  const taskMatches = recovered.task.state === "accepted" && current.task.path === recovered.task.path && current.task.id === recovered.task.id && current.task.state === recovered.task.state && current.task.activeDeliveryId === recovered.task.activeDeliveryId && current.task.updatedAt === recovered.task.updatedAt && current.task.wait == null && recovered.task.wait == null;
+  const deliveryMatches = recovered.delivery.status === "accepted" && current.delivery.path === recovered.delivery.path && current.delivery.id === recovered.delivery.id && current.delivery.taskId === recovered.delivery.taskId && deliveryReviewSemanticsDigest(current.delivery) === deliveryReviewSemanticsDigest(recovered.delivery);
+  if (!taskMatches || !deliveryMatches) {
+    throw new RpcError(RPC_LIFECYCLE, "Recovered review authority changed before response", {
+      code: "DELIVERY_CHANGED",
+      deliveryId: recovered.delivery.id
+    });
+  }
+}
 async function taskAcceptRpc(ctx, p, callContext) {
   assertAllowedParams(
     p,
-    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
+    /* @__PURE__ */ new Set(["workspaceId", "deliveryId", "actor", "outputNodeIds"]),
     "task.accept"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const taskPath = requireString(p, "taskPath");
   const deliveryId = requireString(p, "deliveryId");
+  if (!isDeliveryId(deliveryId)) {
+    throw new RpcError(-32602, `Invalid Delivery id: ${deliveryId}`);
+  }
+  const initialReview = await requireUniqueTaskForReviewDelivery(ctx, workspaceId, deliveryId);
+  const taskPath = initialReview.task.path;
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
@@ -29211,6 +29672,12 @@ async function taskAcceptRpc(ctx, p, callContext) {
     try {
       prepared = await ctx.mutations.run(workspaceId, async () => {
         ctx.host.markSelfWrite(workspaceId);
+        const exactReview = await requireUniqueTaskForReviewDelivery(
+          ctx,
+          workspaceId,
+          deliveryId
+        );
+        assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
         const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
         expectedTargetHead = await loadReadyDeliveryTargetHead(
           mount.env.fs,
@@ -29234,6 +29701,16 @@ async function taskAcceptRpc(ctx, p, callContext) {
     try {
       return await ctx.mutations.run(workspaceId, async () => {
         ctx.host.markSelfWrite(workspaceId);
+        const exactReview = await requireUniqueTaskForReviewDelivery(
+          ctx,
+          workspaceId,
+          deliveryId
+        );
+        if (prepared.recovered) {
+          assertRecoveredReviewIdentityUnchanged(exactReview, prepared.recovered);
+        } else {
+          assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
+        }
         return finalizeTaskAccept(mount.env, taskPath, acceptOptions, prepared);
       });
     } catch (err) {
@@ -29327,13 +29804,17 @@ function outputProvenanceErrorToRpc(err) {
 async function taskRejectRpc(ctx, p, callContext) {
   assertAllowedParams(
     p,
-    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
+    /* @__PURE__ */ new Set(["workspaceId", "deliveryId", "actor", "note", "resume"]),
     "task.reject"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const taskPath = requireString(p, "taskPath");
   const deliveryId = requireString(p, "deliveryId");
+  if (!isDeliveryId(deliveryId)) {
+    throw new RpcError(-32602, `Invalid Delivery id: ${deliveryId}`);
+  }
+  const initialReview = await requireUniqueTaskForReviewDelivery(ctx, workspaceId, deliveryId);
+  const taskPath = initialReview.task.path;
   const actor = requireString(p, "actor");
   const noteForDelivery = optionalString2(p, "note");
   const noteExact = optionalStringExact(p, "note");
@@ -29348,6 +29829,12 @@ async function taskRejectRpc(ctx, p, callContext) {
     );
     return ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
+      const exactReview = await requireUniqueTaskForReviewDelivery(
+        ctx,
+        workspaceId,
+        deliveryId
+      );
+      assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
       const rejected = await taskReject(mount.env, taskPath, {
         actor: reviewerActor,
         deliveryId,
@@ -29728,13 +30215,12 @@ function captureTaskSessionBindSnapshot(task) {
     targetBranch: task.targetBranch,
     baseCommit: task.baseCommit,
     acceptMode: task.acceptMode,
-    parentActor: task.parentActor,
-    reviewer: task.reviewer
+    parentActor: task.parentActor
   };
 }
 function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
   const actual = captureTaskSessionBindSnapshot(current);
-  const unchanged = actual.taskId === expected.taskId && actual.state === expected.state && actual.sessionId === expected.sessionId && actual.updatedAt === expected.updatedAt && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) && JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) && actual.nodeContextJson === expected.nodeContextJson;
+  const unchanged = actual.taskId === expected.taskId && actual.state === expected.state && actual.sessionId === expected.sessionId && actual.updatedAt === expected.updatedAt && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) && actual.nodeContextJson === expected.nodeContextJson;
   if (unchanged && current.state === "running") return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -29749,7 +30235,7 @@ function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
 }
 function assertTaskSessionPostStartOwnership(operation, taskPath, current, expected) {
   const actual = captureTaskSessionBindSnapshot(current);
-  const immutableIdentityUnchanged = actual.taskId === expected.taskId && actual.sessionId === expected.sessionId && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) && JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) && actual.nodeContextJson === expected.nodeContextJson;
+  const immutableIdentityUnchanged = actual.taskId === expected.taskId && actual.sessionId === expected.sessionId && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) && actual.nodeContextJson === expected.nodeContextJson;
   const validSameSessionProgress = current.state === "running" || current.state === "waiting";
   if (immutableIdentityUnchanged && validSameSessionProgress) return;
   throw new RpcError(
@@ -30824,6 +31310,63 @@ async function taskGet(ctx, p) {
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
   return { workspaceId, task: projectTask(task) };
 }
+async function workspaceCollaborationRpc(ctx, p) {
+  assertAllowedParams(p, /* @__PURE__ */ new Set(["workspaceId", "nodeId"]), "workspace.collaboration");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const nodeId = optionalString2(p, "nodeId");
+  const mount = ctx.host.require(workspaceId);
+  let tent;
+  let tasks;
+  let deliveries;
+  let decisions;
+  let roles;
+  try {
+    [tent, tasks, deliveries, decisions, roles] = await Promise.all([
+      nodeId ? loadTent(mount.env.fs) : Promise.resolve(void 0),
+      loadTaskEnvelopes(mount.env.fs),
+      loadDeliveries(mount.env.fs),
+      ctx.decisionRequests.listPending(workspaceId),
+      loadRolesRegistry(mount.env.fs)
+    ]);
+  } catch (error) {
+    const message2 = error instanceof Error ? error.message : String(error);
+    throw new RpcError(
+      -32e3,
+      `workspace.collaboration failed to load authoritative facts: ${message2}`,
+      { workspaceId, nodeId }
+    );
+  }
+  let canonicalNodeId;
+  if (nodeId) {
+    const node2 = requireCanonicalNode(tent, nodeId);
+    if (node2.invalid) {
+      throw new RpcError(
+        -32004,
+        `Node is invalid and has no collaboration projection: ${node2.path}`,
+        { nodeId: node2.id, path: node2.path, detail: node2.invalidReason }
+      );
+    }
+    canonicalNodeId = node2.id;
+  }
+  return buildWorkspaceCollaborationProjection({
+    workspaceId,
+    ...canonicalNodeId ? { nodeId: canonicalNodeId } : {},
+    tasks,
+    deliveries,
+    pendingDecisions: decisions,
+    roles: roles.roles,
+    readSession: async (sessionId) => {
+      const session = await ctx.runtime.registry.read(sessionId);
+      return session ? {
+        workspace: session.workspace,
+        lastTaskId: session.lastTaskId,
+        connectionId: session.connectionId,
+        open: SessionRegistry.isOpen(session.state)
+      } : null;
+    },
+    getConnection: (connectionId) => ctx.connectionCatalog.get(connectionId)
+  });
+}
 async function deliveryList(ctx, p) {
   assertAllowedParams(
     p,
@@ -31806,6 +32349,37 @@ async function requireExactDecisionRequest(ctx, p) {
   }
   return { workspaceId, taskPath, request };
 }
+async function requireDecisionRequestById(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const requestId = requireString(p, "requestId");
+  const request = await ctx.decisionRequests.getExactById(workspaceId, requestId);
+  if (!request) {
+    throw new RpcError(-32004, `Decision Request not found: ${requestId}`);
+  }
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const matches = tasks.filter(
+    (task) => task.id === request.taskId
+  );
+  if (matches.length !== 1 || matches[0].path !== request.taskPath) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Decision Request must identify exactly one canonical Task: ${requestId}`,
+      {
+        code: "DECISION_REQUEST_TASK_NOT_UNIQUE",
+        requestId,
+        taskId: request.taskId,
+        matches: matches.length
+      }
+    );
+  }
+  return {
+    workspaceId,
+    taskPath: request.taskPath,
+    request,
+    task: matches[0]
+  };
+}
 async function decisionRequestGet(ctx, p, caller) {
   assertAllowedParams(
     p,
@@ -31831,60 +32405,67 @@ function parseDecisionResponseParam(raw, options) {
     throw new RpcError(-32602, error instanceof Error ? error.message : String(error));
   }
 }
+function assertAnsweredDecisionResponseInputMatches(existing, expected, currentTask) {
+  for (const field of [
+    "id",
+    "workspaceId",
+    "taskPath",
+    "taskId",
+    "role",
+    "kind",
+    "text"
+  ]) {
+    if (existing[field] !== expected[field]) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Answered Decision Request TaskInput conflicts on immutable field ${field}`,
+        {
+          code: "DECISION_RESPONSE_INPUT_MISMATCH",
+          inputId: expected.id,
+          field
+        }
+      );
+    }
+  }
+  if ((existing.status === "pending" || existing.status === "processing" || existing.status === "failed") && existing.sessionId !== currentTask.sessionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Answered Decision Request TaskInput conflicts on current Session binding",
+      {
+        code: "DECISION_RESPONSE_INPUT_MISMATCH",
+        inputId: expected.id,
+        field: "sessionId"
+      }
+    );
+  }
+}
 async function decisionRequestRespondRpc(ctx, p, caller) {
   assertAllowedParams(
     p,
-    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "requestId", "response"]),
+    /* @__PURE__ */ new Set(["workspaceId", "requestId", "response"]),
     "decisionRequest.respond"
   );
-  const exact = await requireExactDecisionRequest(ctx, p);
+  const exact = await requireDecisionRequestById(ctx, p);
   const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
   assertDecisionAuthority(exact.request, responder);
-  const response = parseDecisionResponseParam(p.response, exact.request.options);
+  parseDecisionResponseParam(p.response, exact.request.options);
   const mount = ctx.host.require(exact.workspaceId);
   const result = await runTaskLifecycle(
     exact.workspaceId,
     exact.taskPath,
     () => ctx.mutations.run(exact.workspaceId, async () => {
-      const currentRequest = await ctx.decisionRequests.getExact(
-        exact.workspaceId,
-        exact.taskPath,
-        exact.request.id
-      );
-      if (!currentRequest) {
-        throw new RpcError(-32004, `Decision Request not found: ${exact.request.id}`);
-      }
-      assertDecisionAuthority(currentRequest, responder);
-      const task = await loadTaskEnvelope(mount.env.fs, exact.taskPath);
-      if (!task.id || task.id !== currentRequest.taskId) {
+      const current = await requireDecisionRequestById(ctx, p);
+      if (current.taskPath !== exact.taskPath || current.request.id !== exact.request.id || current.request.taskId !== exact.request.taskId) {
         throw new RpcError(RPC_LIFECYCLE, "Decision Request Task identity changed", {
           code: "DECISION_TASK_MISMATCH",
-          requestId: currentRequest.id
+          requestId: exact.request.id
         });
       }
-      if (TERMINAL_TASK_STATES.has(task.state)) {
-        throw new RpcError(RPC_LIFECYCLE, "Cannot respond to a Decision Request for a terminal Task", {
-          code: "DECISION_TASK_TERMINAL",
-          requestId: currentRequest.id,
-          taskId: task.id,
-          state: task.state
-        });
-      }
-      if (task.sessionId !== currentRequest.requester.id) {
-        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session is no longer bound to the exact Task", {
-          code: "DECISION_SESSION_MISMATCH",
-          requestId: currentRequest.id,
-          requesterSessionId: currentRequest.requester.id,
-          taskSessionId: task.sessionId
-        });
-      }
-      const session = await ctx.runtime.registry.read(currentRequest.requester.id);
-      if (!session || session.workspace !== exact.workspaceId || session.lastTaskId !== task.id) {
-        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session registry binding is stale", {
-          code: "DECISION_SESSION_BINDING_STALE",
-          requestId: currentRequest.id
-        });
-      }
+      const currentRequest = current.request;
+      assertDecisionAuthority(currentRequest, responder);
+      const response = parseDecisionResponseParam(p.response, currentRequest.options);
+      const task = current.task;
+      const exactDecisionWaitCode = `decision_request:${currentRequest.id}`;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const prepared = prepareDecisionResponse({
         request: coreDecisionRequest(currentRequest),
@@ -31899,6 +32480,111 @@ async function decisionRequestRespondRpc(ctx, p, caller) {
         },
         now
       });
+      if (currentRequest.status === "answered") {
+        const answered2 = await ctx.decisionRequests.answerExact({
+          workspaceId: exact.workspaceId,
+          taskPath: exact.taskPath,
+          requestId: currentRequest.id,
+          responder,
+          response
+        });
+        const input2 = await ctx.taskInputs.get(
+          prepared.taskInput.id,
+          exact.workspaceId,
+          exact.taskPath
+        );
+        if (!input2) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            "Answered Decision Request is missing its deterministic TaskInput",
+            {
+              code: "DECISION_RESPONSE_INPUT_MISSING",
+              requestId: currentRequest.id,
+              inputId: prepared.taskInput.id
+            }
+          );
+        }
+        assertAnsweredDecisionResponseInputMatches(input2, prepared.taskInput, task);
+        let nextTask2 = task;
+        if (task.state === "waiting" && task.wait?.reason === "user-input" && task.wait.code === exactDecisionWaitCode) {
+          const inputSessionId = input2.sessionId;
+          const session2 = inputSessionId ? await ctx.runtime.registry.read(inputSessionId) : null;
+          const canResume = Boolean(
+            inputSessionId && task.sessionId === inputSessionId && session2 && SessionRegistry.isOpen(session2.state) && session2.workspace === exact.workspaceId && session2.lastTaskId === task.id
+          );
+          if (canResume) {
+            ctx.events.emit(
+              "decisionRequest.resolved",
+              exact.workspaceId,
+              projectDecisionRequest(answered2),
+              "self"
+            );
+            ctx.host.markSelfWrite(exact.workspaceId);
+            nextTask2 = await taskResume(mount.env, exact.taskPath);
+            emitTaskState(ctx, exact.workspaceId, nextTask2, "decisionRequest.respond.recover");
+          }
+        }
+        let enqueue = nextTask2.state === "running" && (input2.status === "pending" || input2.status === "failed");
+        if (enqueue) {
+          const inputSessionId = input2.sessionId;
+          const session2 = inputSessionId ? await ctx.runtime.registry.read(inputSessionId) : null;
+          enqueue = Boolean(
+            inputSessionId && nextTask2.sessionId === inputSessionId && session2 && SessionRegistry.isOpen(session2.state) && session2.workspace === exact.workspaceId && session2.lastTaskId === nextTask2.id
+          );
+        }
+        return { answered: answered2, input: input2, task: nextTask2, enqueue };
+      }
+      if (TERMINAL_TASK_STATES.has(task.state)) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Cannot respond to a Decision Request for a terminal Task",
+          {
+            code: "DECISION_TASK_TERMINAL",
+            requestId: currentRequest.id,
+            taskId: task.id,
+            state: task.state
+          }
+        );
+      }
+      if (task.state !== "waiting" || task.wait?.reason !== "user-input") {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Pending Decision Request requires its exact Task to be waiting for user input",
+          {
+            code: "DECISION_TASK_NOT_WAITING_USER_INPUT",
+            requestId: currentRequest.id,
+            taskId: task.id,
+            state: task.state,
+            waitReason: task.wait?.reason
+          }
+        );
+      }
+      if (task.wait.code !== exactDecisionWaitCode) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Pending Decision Request does not own the Task's current user-input wait",
+          {
+            code: "DECISION_TASK_WAIT_IDENTITY_MISMATCH",
+            requestId: currentRequest.id,
+            waitCode: task.wait.code
+          }
+        );
+      }
+      if (task.sessionId !== currentRequest.requester.id) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session is no longer bound to the exact Task", {
+          code: "DECISION_SESSION_MISMATCH",
+          requestId: currentRequest.id,
+          requesterSessionId: currentRequest.requester.id,
+          taskSessionId: task.sessionId
+        });
+      }
+      const session = await ctx.runtime.registry.read(currentRequest.requester.id);
+      if (!session || !SessionRegistry.isOpen(session.state) || session.workspace !== exact.workspaceId || session.lastTaskId !== task.id) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session registry binding is stale", {
+          code: "DECISION_SESSION_BINDING_STALE",
+          requestId: currentRequest.id
+        });
+      }
       const existingInput = await ctx.taskInputs.get(
         prepared.taskInput.id,
         exact.workspaceId,
@@ -31922,28 +32608,28 @@ async function decisionRequestRespondRpc(ctx, p, caller) {
         );
       }
       let nextTask = task;
-      if (task.state === "waiting" && task.wait?.reason === "user-input") {
-        ctx.host.markSelfWrite(exact.workspaceId);
-        nextTask = await taskResume(mount.env, exact.taskPath);
-        emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond");
-      }
-      return { answered, input, task: nextTask };
+      ctx.host.markSelfWrite(exact.workspaceId);
+      nextTask = await taskResume(mount.env, exact.taskPath);
+      emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond");
+      return { answered, input, task: nextTask, enqueue: true };
     })
   );
-  ctx.events.emit(
-    "taskInput.pending",
-    exact.workspaceId,
-    projectTaskInput(result.input),
-    "self"
-  );
-  enqueueManagedTaskInputBackground(ctx, result.input);
+  if (result.enqueue) {
+    ctx.events.emit(
+      "taskInput.pending",
+      exact.workspaceId,
+      projectTaskInput(result.input),
+      "self"
+    );
+    enqueueManagedTaskInputBackground(ctx, result.input);
+  }
   return {
     request: projectDecisionRequest(result.answered),
     input: projectTaskInput(result.input),
     task: projectTask(result.task),
     state: result.task.state,
     accepted: true,
-    enqueued: true
+    enqueued: result.enqueue
   };
 }
 function coreDecisionRequest(item) {
@@ -32154,12 +32840,12 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
     }
   );
   if (!actorRaw) {
-    if (task.parentActor?.kind === "user" && task.reviewer?.kind === "user") {
+    if (task.parentActor?.kind === "user") {
       return { actor: "user", task };
     }
     throw new RpcError(
       -32001,
-      "taskInput.ack user path requires the exact persisted parent/reviewer to be user",
+      "taskInput.ack user path requires the exact persisted parentActor to be user",
       { inputId: item.id, workspaceId: item.workspaceId, taskPath: item.taskPath }
     );
   }
@@ -32173,7 +32859,7 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
   if (task.roleId && actorRaw === task.roleId) {
     return { actor: actorRaw, task };
   }
-  if (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw || task.reviewer?.kind === "role" && task.reviewer.id === actorRaw) {
+  if (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw) {
     return { actor: actorRaw, task };
   }
   if (item.sessionId && actorRaw === item.sessionId) {
@@ -32191,13 +32877,12 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
   }
   throw new RpcError(
     -32001,
-    "taskInput.ack actor must match the exact Task role, persisted parent/reviewer Role, or a service-verified Session binding",
+    "taskInput.ack actor must match the exact Task role, persisted parent Role, or a service-verified Session binding",
     {
       inputId: item.id,
       actor: actorRaw,
       expectedRoleId: task.roleId,
       parentActor: task.parentActor,
-      reviewer: task.reviewer,
       sessionId: item.sessionId,
       workspaceId: item.workspaceId,
       taskPath: item.taskPath
@@ -32369,13 +33054,11 @@ async function taskWorktreeReclaimReconcileRpc(ctx, p) {
 function requireTaskWorktreeReconcileActor(p, task) {
   const actor = requireString(p, "actor");
   if (actor === "user") return actor;
-  const authorized = [task.parentActor, task.reviewer].some(
-    (candidate) => candidate?.kind === "role" && candidate.id === actor
-  );
+  const authorized = task.parentActor?.kind === "role" && task.parentActor.id === actor;
   if (!authorized) {
     throw new RpcError(
       -32001,
-      "task.worktreeReclaim.reconcile requires user or the exact Task parent/reviewer Role",
+      "task.worktreeReclaim.reconcile requires user or the exact Task parent Role",
       { actor, taskId: task.id, taskPath: task.path }
     );
   }
@@ -34455,15 +35138,12 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       }
     }
     if (!currentHasAuthority) {
-      if (!current.parentActor || !current.reviewer) {
+      if (!current.parentActor) {
         throw new Error(
-          `Task ${current.id || current.path} missing parentActor/reviewer; cannot derive integrationAuthority (actor=parent/reviewer, mutator=service).`
+          `Task ${current.id || current.path} missing parentActor; cannot derive integrationAuthority (actor=parentActor, mutator=service).`
         );
       }
-      patch.integrationAuthority = deriveIntegrationAuthority({
-        parentActor: current.parentActor,
-        reviewer: current.reviewer
-      });
+      patch.integrationAuthority = deriveIntegrationAuthority({ parentActor: current.parentActor });
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -34537,7 +35217,6 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     ...bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : [],
     `acceptMode: ${task.acceptMode}`,
     ...task.parentActor ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`] : [],
-    ...task.reviewer ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`] : [],
     ...task.roleId ? [`roleId: ${task.roleId}`] : [],
     ...task.sessionId ? [`sessionId: ${task.sessionId}`] : [],
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
@@ -34574,10 +35253,15 @@ async function collectTaskBootstrapImageRefs(task) {
   return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 function projectTask(task) {
-  const derivedAuthority = task.parentActor && task.reviewer ? deriveIntegrationAuthority({
-    parentActor: task.parentActor,
-    reviewer: task.reviewer
-  }) : void 0;
+  if (!task.parentActor) {
+    throw new RpcError(
+      -32022,
+      `Task ${task.id || task.path} is missing canonical parentActor`,
+      { code: "TASK_PARENT_ACTOR_MISSING", taskPath: task.path }
+    );
+  }
+  const parentActor = task.parentActor;
+  const derivedAuthority = deriveIntegrationAuthority({ parentActor });
   const hasLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch || task.baseCommit || derivedAuthority
   );
@@ -34598,8 +35282,7 @@ function projectTask(task) {
     contextNodeIds: [...task.contextNodeIds],
     state: task.state,
     manifest: task.manifest,
-    parentActor: task.parentActor,
-    reviewer: task.reviewer,
+    parentActor,
     // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     acceptMode: task.acceptMode,
@@ -35788,7 +36471,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 6;
+var TENT_SERVICE_PROTOCOL_VERSION = 7;
 
 // src/service/tool-approval-store.ts
 import * as fs19 from "node:fs/promises";
