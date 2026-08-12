@@ -17,12 +17,7 @@ import {
   type CanvasV5LocalSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import { startWorkspaceProjectionBridge } from "../src/desktop/renderer-next/gateway/workspace-projection-bridge.js";
-import {
-  collaborationBadgeLabel,
-  collaborationProjectionState,
-  collaborationSummary,
-  type WorkbenchNodeView,
-} from "../src/desktop/renderer-next/shell/workbench-types.js";
+import type { WorkbenchNodeView } from "../src/desktop/renderer-next/shell/workbench-types.js";
 import { InspectorPanel } from "../src/desktop/renderer-next/components/InspectorPanel.js";
 import { OutlinePanel } from "../src/desktop/renderer-next/components/OutlinePanel.js";
 import { StatusBar } from "../src/desktop/renderer-next/components/StatusBar.js";
@@ -646,19 +641,6 @@ test("Outline keeps every authoritative Node even when Canvas has no placement",
   const nodes = workbenchNodesFromResources(
     { state: "ready", workspaceId: "ws-a", value: graph, fetchedAt: "now" },
     {
-      state: "ready",
-      workspaceId: "ws-a",
-      value: {
-        workspaceId: "ws-a",
-        items: ["cx-placed", "cx-unplaced"].map((nodeId) => ({
-          workspaceId: "ws-a",
-          nodeId,
-          activeTask: null,
-        })),
-      },
-      fetchedAt: "now",
-    },
-    {
       ...createEmptyCanvasDocument(),
       placements: [{ placementId: "pl-placed", entityRef: "cx-placed", kind: "node" }],
     }
@@ -731,7 +713,6 @@ test("Outline drag is enabled only when its Canvas owner and Node are ready", ()
     parentNodeId: null,
     hasChildren: false,
     projectionState: "ready" as const,
-    collaborationState: "ready" as const,
   } satisfies WorkbenchNodeView;
 
   const readOnly = renderToStaticMarkup(createElement(OutlinePanel, {
@@ -780,7 +761,6 @@ test("Outline uses one projection-presence indicator for count and pending sync"
     parentNodeId: null,
     hasChildren: false,
     projectionState: "ready" as const,
-    collaborationState: "ready" as const,
   } satisfies WorkbenchNodeView;
   const markup = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [node],
@@ -809,8 +789,6 @@ test("Focus renders externally controlled placement state without inventing a se
     parentNodeId: null,
     hasChildren: false,
     projectionState: "ready",
-    collaborationState: "ready",
-    activeTaskState: null,
   } satisfies WorkbenchNodeView;
   const unplaced = renderToStaticMarkup(createElement(InspectorPanel, {
     node,
@@ -846,8 +824,6 @@ test("Focus reports source status while sync remains a single Canvas command", (
     parentNodeId: null,
     hasChildren: false,
     projectionState: "ready",
-    collaborationState: "ready",
-    activeTaskState: null,
   } satisfies WorkbenchNodeView;
   const changed = renderToStaticMarkup(createElement(InspectorPanel, {
     node,
@@ -883,7 +859,6 @@ test("Focus reports source status while sync remains a single Canvas command", (
       archived: false,
       invalid: false,
       projectionState: "unresolved",
-      collaborationState: "unknown",
     },
     placementState: "placed",
     placementSourceState: {
@@ -921,7 +896,6 @@ test("placement creation fails closed while stale and reconnecting exposes one r
     parentNodeId: null,
     hasChildren: false,
     projectionState: "stale",
-    collaborationState: "stale",
   } satisfies WorkbenchNodeView;
   const focus = renderToStaticMarkup(createElement(InspectorPanel, {
     node,
@@ -983,7 +957,6 @@ test("stale graph keeps an independent dirty document visible while hiding graph
     hasChildren: false,
     projectionState: "stale",
     projectionMessage: "投影连接已断开",
-    collaborationState: "stale",
   } satisfies WorkbenchNodeView;
   const document = {
     workspaceId: "ws-a",
@@ -1162,64 +1135,6 @@ test("initial projection loading/error stays distinct from authoritative ready-e
   assert.match(readyEmpty, /投影已同步/);
 });
 
-test("non-ready collaboration never becomes a confirmed idle claim", () => {
-  const node = {
-    nodeId: "cx-a",
-    etag: "etag-a",
-    path: "A",
-    name: "A",
-    type: "goal",
-    tags: [],
-    mode: "editable",
-    archived: false,
-    invalid: false,
-    parentNodeId: null,
-    hasChildren: false,
-    projectionState: "ready",
-    activeTaskState: undefined,
-  } satisfies WorkbenchNodeView;
-
-  const loading = {
-    ...node,
-    collaborationState: collaborationProjectionState("loading"),
-  } satisfies WorkbenchNodeView;
-  assert.equal(collaborationBadgeLabel(loading), "正在刷新");
-  assert.doesNotMatch(collaborationSummary(loading), /空闲|没有进行中的任务/);
-  assert.doesNotMatch(
-    renderToStaticMarkup(
-      createElement(InspectorPanel, { node: loading, onCollapse: () => {} })
-    ),
-    /空闲|没有进行中的任务/
-  );
-
-  const failed = {
-    ...node,
-    collaborationState: collaborationProjectionState("error"),
-  } satisfies WorkbenchNodeView;
-  assert.equal(collaborationBadgeLabel(failed), "状态未知");
-  assert.doesNotMatch(collaborationSummary(failed), /空闲|没有进行中的任务/);
-  assert.doesNotMatch(
-    renderToStaticMarkup(
-      createElement(InspectorPanel, { node: failed, onCollapse: () => {} })
-    ),
-    /空闲|没有进行中的任务/
-  );
-
-  const idle = {
-    ...node,
-    collaborationState: collaborationProjectionState("ready"),
-    activeTaskState: null,
-  } satisfies WorkbenchNodeView;
-  assert.equal(collaborationBadgeLabel(idle), "空闲");
-  assert.match(collaborationSummary(idle), /没有进行中的任务/);
-  assert.match(
-    renderToStaticMarkup(
-      createElement(InspectorPanel, { node: idle, onCollapse: () => {} })
-    ),
-    /空闲/
-  );
-});
-
 test("desktop event payload is invalidation only and named RPC stays closed", async () => {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   let serviceEvent: ((event: { type: string; workspaceId?: string }) => void) | null = null;
@@ -1261,7 +1176,7 @@ test("desktop event payload is invalidation only and named RPC stays closed", as
   assert.equal(serviceEvent, null);
 });
 
-test("client-visible session.state crosses the desktop host into renderer invalidation", async () => {
+test("session state does not invalidate the product collaboration projection", async () => {
   const host = new DesktopServiceHost();
   const bridge: RendererDesktopBridge = {
     getState: async () => state(),
@@ -1294,8 +1209,7 @@ test("client-visible session.state crosses the desktop host into renderer invali
 
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(hints.length, 1);
-  assert.ok(hints[0]!.includes("node.collaborations"));
-  assert.ok(hints[0]!.includes("output.provenance"));
+  assert.deepEqual(hints[0], []);
 
   gateway.stopEventBridge();
   await host.disposeShellOnly();

@@ -57,7 +57,6 @@ export const DESKTOP_IPC = {
   listWorkspaces: "tent:list-workspaces",
   health: "tent:health",
   rpc: "tent:rpc",
-  listPendingInteractions: "tent:list-pending-interactions",
   document: "tent:document",
   collaboration: "tent:collaboration",
   openMain: "tent:open-main",

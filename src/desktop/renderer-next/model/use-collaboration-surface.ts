@@ -15,10 +15,21 @@ export function guardCollaborationViewIdentity(
     if (args.online) return view;
     return {
       ...view,
-      status: view.snapshot ? "stale" : args.nodeId ? "error" : "idle",
+      status: view.snapshot ? "stale" : "error",
       busyKey: null,
       canMutate: false,
-      ...(args.nodeId
+      issue: { kind: "transport" as const, message: "本地服务连接已中断" },
+    };
+  }
+  if (view.workspaceId === args.workspaceId && view.snapshot) {
+    return {
+      ...view,
+      nodeId: args.nodeId,
+      status: args.online ? "refreshing" : "stale",
+      snapshot: { ...view.snapshot, selectedNode: null },
+      busyKey: null,
+      canMutate: false,
+      ...(!args.online
         ? { issue: { kind: "transport" as const, message: "本地服务连接已中断" } }
         : {}),
     };
@@ -26,11 +37,13 @@ export function guardCollaborationViewIdentity(
   return {
     workspaceId: args.workspaceId,
     nodeId: args.nodeId,
-    status: args.nodeId ? (args.online ? "loading" : "error") : "idle",
+    status: args.online ? "loading" : "error",
     snapshot: null,
+    targets: [],
+    targetsReady: false,
     busyKey: null,
     canMutate: false,
-    ...(!args.online && args.nodeId
+    ...(!args.online
       ? { issue: { kind: "transport" as const, message: "本地服务连接已中断" } }
       : {}),
   };
@@ -79,8 +92,7 @@ export function useCollaborationSurface(args: {
       if (hint.event?.workspaceId && hint.event.workspaceId !== args.workspaceId) return;
       if (
         hint.keys.includes("*") ||
-        hint.keys.includes("task.list") ||
-        hint.keys.includes("pending.interactions") ||
+        hint.keys.includes("workspace.collaboration") ||
         hint.keys.includes("dispatch.targets")
       ) {
         void controller.invalidate();

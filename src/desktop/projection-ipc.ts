@@ -1,7 +1,6 @@
 export const DESKTOP_PROJECTION_METHODS = [
   "graph.projection",
-  "node.collaborations",
-  "node.collaboration",
+  "workspace.collaboration",
   "output.provenance",
 ] as const;
 

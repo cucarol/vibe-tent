@@ -19,7 +19,7 @@ export type RendererDesktopBridge = Pick<
   TentDesktopBridge,
   "getState" | "rpc" | "document" | "onStateChanged" | "onServiceEvent"
 > &
-  Partial<Pick<TentDesktopBridge, "collaboration" | "listPendingInteractions">>;
+  Partial<Pick<TentDesktopBridge, "collaboration">>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -92,9 +92,6 @@ export function createDesktopServiceGateway(
   let eventCounter = 0;
   return new ServiceGateway({
     projectionRpc: (method, params) => bridge.rpc(method, params),
-    inboxTransport: bridge.listPendingInteractions
-      ? (workspaceId) => bridge.listPendingInteractions!(workspaceId)
-      : undefined,
     documentTransport: (request) => bridge.document(request),
     ...(bridge.collaboration
       ? { collaborationTransport: (request) => bridge.collaboration!(request) }

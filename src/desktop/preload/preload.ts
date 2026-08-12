@@ -2,7 +2,6 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 import { DESKTOP_IPC } from "../types.js";
-import type { DesktopInboxSnapshot } from "../inbox-ipc.js";
 import type {
   DesktopDocumentRequest,
   DesktopDocumentResponse,
@@ -27,7 +26,6 @@ export type TentDesktopApi = {
     method: DesktopProjectionMethod,
     params?: Record<string, unknown>
   ) => Promise<unknown>;
-  listPendingInteractions: (workspaceId: string) => Promise<DesktopInboxSnapshot>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   collaboration: (
     request: DesktopCollaborationRequest
@@ -69,8 +67,6 @@ const api: TentDesktopApi = {
     }
     return ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params);
   },
-  listPendingInteractions: (workspaceId) =>
-    ipcRenderer.invoke(DESKTOP_IPC.listPendingInteractions, workspaceId),
   document: (request) => ipcRenderer.invoke(DESKTOP_IPC.document, request),
   collaboration: (request) => ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),

@@ -21,7 +21,7 @@ export type DesktopDecisionResponse =
   | { kind: "deny" };
 
 export type DesktopCollaborationRequest =
-  | { operation: "snapshot"; workspaceId: string; nodeId: string }
+  | { operation: "targets"; workspaceId: string }
   | {
       operation: "dispatch";
       workspaceId: string;
@@ -34,20 +34,19 @@ export type DesktopCollaborationRequest =
   | {
       operation: "acceptDelivery";
       workspaceId: string;
-      taskPath: string;
       deliveryId: string;
+      outputNodeIds: string[];
     }
   | {
       operation: "rejectDelivery";
       workspaceId: string;
-      taskPath: string;
       deliveryId: string;
       note: string;
+      resume: true;
     }
   | {
       operation: "respondDecision";
       workspaceId: string;
-      taskPath: string;
       requestId: string;
       response: DesktopDecisionResponse;
     };

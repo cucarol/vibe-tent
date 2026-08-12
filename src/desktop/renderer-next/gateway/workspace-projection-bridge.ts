@@ -8,8 +8,6 @@ type ProjectionInvalidationGateway = Pick<
 const PROJECTION_KEYS = new Set([
   "*",
   "graph.projection",
-  "node.collaboration",
-  "node.collaborations",
   "output.provenance",
   "service.health",
 ]);

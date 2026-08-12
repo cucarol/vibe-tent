@@ -2,15 +2,13 @@ import type {
   GraphLinkEdge,
   GraphProjection,
   GraphRelationEdge,
-  NodeCollaboration,
-  NodeCollaborationsResult,
   OutputProvenance,
 } from "../../../service/types.js";
-import {
-  normalizeNodeCollaboration,
-  normalizeNodeCollaborations,
-} from "../model/node-collaboration-view.js";
 import { normalizeOutputProvenance } from "../model/output-provenance-view.js";
+import {
+  normalizeWorkspaceCollaboration,
+  type WorkspaceCollaborationView,
+} from "../model/workspace-collaboration-view.js";
 
 export const PROJECTION_TIMEOUT_MS = 12_000;
 
@@ -19,13 +17,9 @@ export type WorkspaceProjectionMap = {
     params: { workspaceId: string };
     result: GraphProjection;
   };
-  "node.collaborations": {
-    params: { workspaceId: string; nodeIds: string[] };
-    result: NodeCollaborationsResult;
-  };
-  "node.collaboration": {
-    params: { workspaceId: string; nodeId: string };
-    result: NodeCollaboration;
+  "workspace.collaboration": {
+    params: { workspaceId: string; nodeId?: string };
+    result: WorkspaceCollaborationView;
   };
   "output.provenance": {
     params: { workspaceId: string; nodeId: string };
@@ -459,55 +453,22 @@ export function readGraphProjection(
   });
 }
 
-export function readNodeCollaborations(
+export function readWorkspaceCollaboration(
   rpc: WorkspaceProjectionRpc,
   workspaceId: string,
-  nodeIds: readonly string[],
+  nodeId: string | null,
   timeoutMs = PROJECTION_TIMEOUT_MS
-): Promise<ProjectionRead<NodeCollaborationsResult>> {
+): Promise<ProjectionRead<WorkspaceCollaborationView>> {
   const ws = workspaceId.trim();
-  const ids = nodeIds.map((id) => id.trim());
+  const id = nodeId?.trim() || null;
   if (!ws) return Promise.resolve(invalidRequest(ws, "workspaceId is required"));
-  if (ids.some((id) => !id)) {
-    return Promise.resolve(invalidRequest(ws, "nodeIds must be non-empty strings"));
-  }
   return readProjection({
     workspaceId: ws,
-    method: "node.collaborations",
-    params: { workspaceId: ws, nodeIds: ids },
+    method: "workspace.collaboration",
+    params: { workspaceId: ws, ...(id ? { nodeId: id } : {}) },
     rpc,
     timeoutMs,
-    normalize: (raw) => {
-      const normalized = normalizeNodeCollaborations(raw, ws, ids);
-      return normalized.ok
-        ? { ok: true, value: normalized.value }
-        : { ok: false, message: normalized.message };
-    },
-  });
-}
-
-export function readNodeCollaboration(
-  rpc: WorkspaceProjectionRpc,
-  workspaceId: string,
-  nodeId: string,
-  timeoutMs = PROJECTION_TIMEOUT_MS
-): Promise<ProjectionRead<NodeCollaboration>> {
-  const ws = workspaceId.trim();
-  const id = nodeId.trim();
-  if (!ws) return Promise.resolve(invalidRequest(ws, "workspaceId is required"));
-  if (!id) return Promise.resolve(invalidRequest(ws, "nodeId is required"));
-  return readProjection({
-    workspaceId: ws,
-    method: "node.collaboration",
-    params: { workspaceId: ws, nodeId: id },
-    rpc,
-    timeoutMs,
-    normalize: (raw) => {
-      const normalized = normalizeNodeCollaboration(raw, ws, id);
-      return normalized.ok
-        ? { ok: true, value: normalized.value }
-        : { ok: false, message: normalized.message };
-    },
+    normalize: (raw) => normalizeWorkspaceCollaboration(raw, ws, id),
   });
 }
 

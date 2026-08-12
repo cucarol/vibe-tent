@@ -66,11 +66,10 @@ test("desktop navigation keeps local entry in place and denies every Electron po
   assert.deepEqual(openWindow!({ url: "tent://node/cx-a" }), { action: "deny" });
 });
 
-test("desktop raw RPC surface is exactly the four read-only projections", async () => {
+test("desktop raw RPC surface is exactly the three read-only projections", async () => {
   assert.deepEqual(DESKTOP_PROJECTION_METHODS, [
     "graph.projection",
-    "node.collaborations",
-    "node.collaboration",
+    "workspace.collaboration",
     "output.provenance",
   ]);
   for (const method of DESKTOP_PROJECTION_METHODS) {

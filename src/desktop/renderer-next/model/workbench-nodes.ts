@@ -1,14 +1,9 @@
 import type {
   GraphProjection,
-  NodeCollaborationsResult,
 } from "../../../service/types.js";
 import type { ProjectionResource } from "../gateway/workspace-projections.js";
-import {
-  activeTaskState,
-  collaborationByNodeId,
-} from "./node-collaboration-view.js";
 import { graphPresentationState } from "./workspace-projection-view.js";
-import { collaborationProjectionState, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { captureCanvasNodeSnapshot } from "./canvas-node-snapshot.js";
 import type { CanvasSubtreeNodeSource } from "./canvas-subtree-projection.js";
@@ -79,7 +74,6 @@ export function parentByNodeId(
 
 export function workbenchNodesFromResources(
   graphResource: ProjectionResource<GraphProjection>,
-  collaborationResource: ProjectionResource<NodeCollaborationsResult>,
   _document: CanvasDocument,
   provenance: ReadonlyMap<string, ProvenanceView> = new Map()
 ): WorkbenchNodeView[] {
@@ -92,13 +86,6 @@ export function workbenchNodesFromResources(
           ? graphResource.previous ?? null
           : null;
   const graphState = graphPresentationState(graphResource);
-  const collabs =
-    collaborationResource.state === "ready"
-      ? collaborationByNodeId(collaborationResource.value)
-      : null;
-  const collaborationState = collaborationProjectionState(
-    collaborationResource.state
-  );
   const result: WorkbenchNodeView[] = [];
   if (graph) {
     const depths = depthByNodeId(graph);
@@ -123,11 +110,6 @@ export function workbenchNodesFromResources(
         parentNodeId: parents.get(node.nodeId) ?? null,
         hasChildren: parentsWithChildren.has(node.nodeId),
         depth: depths.get(node.nodeId) ?? 0,
-        activeTaskState:
-          graphState === "ready" && collaborationState === "ready" && collabs
-            ? activeTaskState(collabs.get(node.nodeId))
-            : undefined,
-        collaborationState,
         projectionState: graphState,
         projectionMessage:
           graphState === "stale"

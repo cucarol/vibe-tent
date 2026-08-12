@@ -2,8 +2,6 @@ import { useState, type Ref } from "react";
 import { Button, IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import {
-  collaborationBadgeLabel,
-  collaborationSummary,
   nodeTitle,
   nodeTypeLabel,
   projectionLabel,
@@ -77,9 +75,6 @@ export function InspectorPanel({
       ? node
       : null;
   const projectionReady = Boolean(authoritativeNode);
-  const collaborationRunning =
-    authoritativeNode?.collaborationState === "ready" &&
-    typeof authoritativeNode.activeTaskState === "string";
   const documentPanel = document && documentActions && onExpandedChange ? (
     <FocusDocumentPanel
       document={document}
@@ -113,15 +108,7 @@ export function InspectorPanel({
           <header className="tn-focus-identity">
             <div className="tn-focus-kicker">
               <span>{projectionReady ? nodeTypeLabel(displayNode.type) : "本地画布位置"}</span>
-              {authoritativeNode ? (
-                <StatusBadge
-                  tone={collaborationRunning ? "running" : "neutral"}
-                  data-task-state={authoritativeNode.activeTaskState ?? undefined}
-                  data-collaboration-state={authoritativeNode.collaborationState ?? "unknown"}
-                >
-                  {collaborationBadgeLabel(authoritativeNode)}
-                </StatusBadge>
-              ) : <StatusBadge tone="neutral">状态未知</StatusBadge>}
+              {!authoritativeNode ? <StatusBadge tone="neutral">状态未知</StatusBadge> : null}
             </div>
             <h1>{nodeTitle(displayNode)}</h1>
             <p>{projectionReady ? displayNode.path : "非权威缓存，仅用于找回画布位置"}</p>
@@ -221,14 +208,6 @@ export function InspectorPanel({
                   </p>
                 </section>
               ) : null}
-            </div>
-          ) : authoritativeNode ? (
-            <div className="tn-focus-sections">
-              <section>
-                <h2>当前协作</h2>
-                <p>{collaborationSummary(authoritativeNode)}</p>
-              </section>
-              <section><h2>协作尚未接入</h2><p>等待权威任务与收件箱投影。</p></section>
             </div>
           ) : null}
         </div>

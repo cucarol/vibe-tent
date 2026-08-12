@@ -65,7 +65,7 @@ export function Outline(props: OutlineProps) {
           <p>{subtitle}</p>
           <p>
             Tree projection will bind to ServiceGateway (docs.tree +
-            node.collaboration). Expand keys and current entity are local chrome
+            workspace.collaboration). Expand keys and current entity are local chrome
             state only — no RPC in this foundation.
           </p>
           <p data-testid="outline-current-entity">

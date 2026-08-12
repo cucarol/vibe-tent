@@ -8,7 +8,6 @@ import type {
   DesktopCollaborationRequest,
   DesktopCollaborationResponse,
 } from "../collaboration-ipc.js";
-import type { DesktopInboxSnapshot } from "../inbox-ipc.js";
 
 export type TentDesktopBridge = {
   getState: () => Promise<unknown>;
@@ -17,7 +16,6 @@ export type TentDesktopBridge = {
   mountWorkspace: (workspaceRoot: string) => Promise<unknown>;
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-  listPendingInteractions: (workspaceId: string) => Promise<DesktopInboxSnapshot>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   collaboration: (
     request: DesktopCollaborationRequest
@@ -49,7 +47,7 @@ export type TentDesktopBridge = {
     foregroundRoot?: string | null;
   }>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
-  /** Service SSE type only — re-fetch listPending / task.list; do not invent state. */
+  /** Service SSE type only — re-fetch named projections; do not invent state. */
   onServiceEvent: (
     handler: (ev: { type: string; workspaceId?: string }) => void
   ) => () => void;

@@ -39,8 +39,6 @@ function driftedNodes(): WorkbenchNodeView[] {
       parentNodeId: "cx-product",
       hasChildren: false,
       depth: 1,
-      activeTaskState: null,
-      collaborationState: "ready",
       projectionState: "ready",
     },
   ];
@@ -52,8 +50,6 @@ function nodesFor(mode: AuthorityMode, projection: ProjectionState): WorkbenchNo
   return nodes.map((node) => ({
     ...node,
     projectionState: projection,
-    collaborationState: projection === "stale" ? "stale" : projection === "error" ? "error" : "unknown",
-    activeTaskState: undefined,
     projectionMessage: projection === "stale"
       ? "权威投影正在恢复；本地画布保持可见。"
       : projection === "error"

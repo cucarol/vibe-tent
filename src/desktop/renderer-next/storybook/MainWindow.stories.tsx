@@ -2,11 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "../shell/AppShell.js";
 import { focusWorkbenchNode } from "../shell/workbench-selection.js";
-import type {
-  CollaborationProjectionState,
-  ProjectionState,
-  WorkbenchNodeView,
-} from "../shell/workbench-types.js";
+import type { ProjectionState, WorkbenchNodeView } from "../shell/workbench-types.js";
 import { fixtureCanvasDocument, fixtureNodes, FIXTURE_WORKSPACE_ID } from "./fixtures.js";
 import type {
   FocusDocumentActions,
@@ -17,6 +13,7 @@ import type {
   CollaborationSurfaceActions,
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
+import type { CollaborationActiveTask } from "../model/workspace-collaboration-view.js";
 
 type MainWindowPreviewProps = {
   state: ProjectionState;
@@ -40,49 +37,25 @@ const collaborationActions: CollaborationSurfaceActions = {
 
 function fixtureCollaboration(state: NonNullable<MainWindowPreviewProps["collaborationState"]>): CollaborationSurfaceView | undefined {
   if (state === "none") return undefined;
-  const task = state === "empty" || state === "loading" || state === "error" ? null : {
-    id: "tk-ui",
-    path: "temp/UI/tasks/ui.md",
+  const task: CollaborationActiveTask | null = state === "empty" || state === "loading" || state === "error" ? null : {
     state: state === "delivery" ? "delivered" : state === "decision" ? "waiting" : "running",
-    workNodeIds: ["cx-workbench"],
-    contextNodeIds: ["cx-product"],
-    acceptMode: state === "delivery" ? "agent-decide" as const : "review-required" as const,
-    assignee: { kind: "connection" as const, label: "Grok UI" },
-    sessionId: "ss-ui",
-    session: { id: "ss-ui", state: "live", alive: true, turnBusy: state === "active", connectionLabel: "Grok UI" },
-    updatedAt: "2026-08-04T12:20:00.000Z",
+    responsibility: { kind: "role" as const, roleId: "rl-ui", label: "界面" },
+    execution: { kind: "connection" as const, connectionId: "cn-grok", label: "Grok UI" },
+    readyDelivery: state === "delivery" ? { deliveryId: "dl-ui", summary: "已完成右侧协作闭环，并补齐状态与键盘验证。", createdAt: "2026-08-04T12:20:00.000Z" } : null,
+    pendingDecision: state === "decision" ? { requestId: "dr-ui", question: "审阅区在窄侧栏中应优先展示摘要还是验证证据？", options: [{ id: "summary", label: "优先摘要" }, { id: "evidence", label: "优先验证证据" }] } : null,
   };
   const snapshot = {
     workspaceId: FIXTURE_WORKSPACE_ID,
-    nodeId: "cx-workbench",
-    targets: [
-      { kind: "role" as const, id: "rl-ui", label: "界面" },
-      { kind: "connection" as const, id: "cn-grok", label: "Grok UI" },
-    ],
-    task,
-    delivery: state === "delivery" ? {
-      id: "dl-ui",
-      taskId: "tk-ui",
-      taskPath: "temp/UI/tasks/ui.md",
-      sourceNodeId: "cx-workbench",
-      summary: "已完成右侧协作闭环，并补齐状态与键盘验证。",
-      status: "ready" as const,
-      createdAt: "2026-08-04T12:20:00.000Z",
-    } : null,
-    decisions: state === "decision" ? [{
-      id: "dr-ui",
-      taskId: "tk-ui",
-      taskPath: "temp/UI/tasks/ui.md",
-      question: "审阅区在窄侧栏中应优先展示摘要还是验证证据？",
-      options: [{ id: "summary", label: "优先摘要" }, { id: "evidence", label: "优先验证证据" }],
-      createdAt: "2026-08-04T12:20:00.000Z",
-    }] : [],
+    selectedNode: { nodeId: "cx-workbench", activeTask: task },
+    inbox: { items: [], counts: { delivery: 0, decision: 0, total: 0 } },
   };
   return {
     workspaceId: FIXTURE_WORKSPACE_ID,
     nodeId: "cx-workbench",
     status: state === "loading" ? "loading" : state === "stale" ? "stale" : state === "error" ? "error" : "ready",
     snapshot: state === "loading" || state === "error" ? null : snapshot,
+    targets: [{ kind: "role", id: "rl-ui", label: "界面" }, { kind: "connection", id: "cn-grok", label: "Grok UI" }],
+    targetsReady: true,
     ...(state === "stale" || state === "error" ? { issue: { kind: "transport" as const, message: "本地服务暂时不可用" } } : {}),
     busyKey: null,
     canMutate: !["loading", "stale", "error"].includes(state),
@@ -95,29 +68,7 @@ function fixtureNodesForCollaboration(
 ): WorkbenchNodeView[] {
   const nodes = fixtureNodes(projectionState);
   if (collaborationState === "none") return nodes;
-  const selectedCollaborationState: CollaborationProjectionState = collaborationState === "loading"
-    ? "refreshing"
-    : collaborationState === "stale"
-      ? "stale"
-      : collaborationState === "error"
-        ? "error"
-        : "ready";
-  const activeTaskState = collaborationState === "active"
-    ? "running"
-    : collaborationState === "delivery"
-      ? "delivered"
-      : collaborationState === "decision"
-        ? "waiting"
-        : collaborationState === "empty"
-          ? null
-          : undefined;
-  return nodes.map((node) => node.nodeId === "cx-workbench"
-    ? {
-        ...node,
-        collaborationState: selectedCollaborationState,
-        activeTaskState,
-      }
-    : node);
+  return nodes;
 }
 
 function fixtureDocument(status: FocusDocumentStatus): FocusDocumentView {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
-import { Button, IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
+import { Button, IconButton, PaneHeader } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
-import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import { nodeTitle, nodeTypeLabel, projectionLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
 import {
   firstOutlineChild,
@@ -13,7 +13,7 @@ import {
   type OutlineRevealRequest,
 } from "../model/outline-reveal.js";
 import { InboxView, inboxModelCount } from "./InboxView.js";
-import type { InboxModel } from "../model/inbox.js";
+import type { CollaborationSurfaceView } from "../model/collaboration-surface-controller.js";
 
 export type OutlinePanelProps = {
   id?: string;
@@ -29,7 +29,7 @@ export type OutlinePanelProps = {
   reveal?: { nodeId: string; revision: number };
   visible?: boolean;
   onCollapse: () => void;
-  inboxModel?: InboxModel;
+  collaboration?: CollaborationSurfaceView;
 };
 
 const EMPTY_COPY: Record<
@@ -62,7 +62,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, inboxModel = { state: "idle" } }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, collaboration = { workspaceId: null, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false } }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -262,7 +262,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
     <aside id={id} className="tn-pane tn-outline-pane" aria-label="工作区导航" data-region="outline" data-outline-mode={mode}>
       <PaneHeader
         title={mode === "nodes" ? "节点" : "收件箱"}
-        meta={mode === "nodes" ? `${nodes.length}` : inboxModelCount(inboxModel) ?? undefined}
+        meta={mode === "nodes" ? `${nodes.length}` : inboxModelCount(collaboration) ?? undefined}
         actions={<>
           {onModeChange ? (
             <div className="tn-outline-modes" role="group" aria-label="左栏内容">
@@ -274,7 +274,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
         </>}
       />
       {mode === "inbox" ? (
-        <InboxView model={inboxModel} nodes={nodes} projection={projection} onSelectNode={onSelectNode} />
+        <InboxView view={collaboration} nodes={nodes} projection={projection} onSelectNode={onSelectNode} />
       ) : nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
           <strong>{emptyCopy.title}</strong>
@@ -354,7 +354,6 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                     {presence.count > 1 ? presence.count : <span aria-hidden="true">•</span>}
                   </span>
                 ) : null}
-                {selected && projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </div>
             );
           })}

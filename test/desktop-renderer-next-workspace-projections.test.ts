@@ -9,10 +9,7 @@ import {
   type ProjectionResource,
   type WorkspaceProjectionRpc,
 } from "../src/desktop/renderer-next/gateway/workspace-projections.js";
-import {
-  activeTaskState,
-  normalizeNodeCollaborations,
-} from "../src/desktop/renderer-next/model/node-collaboration-view.js";
+import { normalizeWorkspaceCollaboration } from "../src/desktop/renderer-next/model/workspace-collaboration-view.js";
 import { normalizeOutputProvenance } from "../src/desktop/renderer-next/model/output-provenance-view.js";
 import type { EventEnvelope, GraphProjection } from "../src/service/types.js";
 
@@ -73,36 +70,11 @@ function graph(): GraphProjection {
   };
 }
 
-function collabs() {
+function collaboration() {
   return {
     workspaceId,
-    items: [
-      {
-        workspaceId,
-        nodeId: "cx-source",
-        activeTask: {
-          task: {
-            id: "tk-1",
-            state: "running",
-            roleId: "rl-ui",
-            sessionId: "ss-1",
-            activeDeliveryId: "dl-1",
-          },
-          session: {
-            id: "ss-1",
-            state: "live",
-            alive: true,
-            turnBusy: false,
-          },
-          delivery: { id: "dl-1", status: "ready" },
-        },
-      },
-      {
-        workspaceId,
-        nodeId: "cx-output",
-        activeTask: null,
-      },
-    ],
+    selectedNode: null,
+    inbox: { items: [], counts: { delivery: 0, decision: 0, total: 0 } },
   };
 }
 
@@ -132,10 +104,8 @@ test("workspace gateway exposes only named typed reads with explicit workspaceId
     switch (method) {
       case "graph.projection":
         return graph();
-      case "node.collaborations":
-        return collabs();
-      case "node.collaboration":
-        return collabs().items[0];
+      case "workspace.collaboration":
+        return collaboration();
       case "output.provenance":
         return provenance();
     }
@@ -143,11 +113,7 @@ test("workspace gateway exposes only named typed reads with explicit workspaceId
   const gateway = new ServiceGateway({ projectionRpc: rpc, projectionTimeoutMs: 50 });
 
   const graphRead = await gateway.graphProjection(workspaceId);
-  const singleCollabRead = await gateway.nodeCollaboration(workspaceId, "cx-source");
-  const collabRead = await gateway.nodeCollaborations(workspaceId, [
-    "cx-source",
-    "cx-output",
-  ]);
+  const collabRead = await gateway.workspaceCollaboration(workspaceId, null);
   const provenanceRead = await gateway.outputProvenance(workspaceId, "cx-output");
 
   assert.equal(graphRead.ok, true);
@@ -161,19 +127,11 @@ test("workspace gateway exposes only named typed reads with explicit workspaceId
       unresolved: "cx-missing",
     });
   }
-  assert.equal(singleCollabRead.ok, true);
   assert.equal(collabRead.ok, true);
   assert.equal(provenanceRead.ok, true);
   assert.deepEqual(calls, [
     { method: "graph.projection", params: { workspaceId } },
-    {
-      method: "node.collaboration",
-      params: { workspaceId, nodeId: "cx-source" },
-    },
-    {
-      method: "node.collaborations",
-      params: { workspaceId, nodeIds: ["cx-source", "cx-output"] },
-    },
+    { method: "workspace.collaboration", params: { workspaceId } },
     {
       method: "output.provenance",
       params: { workspaceId, nodeId: "cx-output" },
@@ -248,29 +206,12 @@ test("stale resources retain diagnostic data but never expose it as authority", 
   assert.equal(firstFailure.state, "error");
 });
 
-test("collaboration parser accepts roleId and distinguishes unknown from idle", () => {
-  const normalized = normalizeNodeCollaborations(
-    collabs(),
-    workspaceId,
-    ["cx-source", "cx-output"]
-  );
+test("workspace collaboration parser accepts exact workspace Inbox with no selected Node", () => {
+  const normalized = normalizeWorkspaceCollaboration(collaboration(), workspaceId, null);
   assert.equal(normalized.ok, true);
   if (!normalized.ok) return;
-  assert.equal(normalized.value.items[0]?.activeTask?.task.roleId, "rl-ui");
-  assert.equal(activeTaskState(normalized.value.items[0]), "running");
-  assert.equal(activeTaskState(normalized.value.items[1]), null);
-  assert.equal(activeTaskState(undefined), undefined);
-
-  const foreignSession = collabs();
-  foreignSession.items[0]!.activeTask!.session!.id = "ss-foreign";
-  assert.equal(
-    normalizeNodeCollaborations(
-      foreignSession,
-      workspaceId,
-      ["cx-source", "cx-output"]
-    ).ok,
-    false
-  );
+  assert.equal(normalized.value.selectedNode, null);
+  assert.equal(normalized.value.inbox.counts.total, 0);
 });
 
 test("output provenance validates explicit joins and never infers a chain", () => {
@@ -296,10 +237,14 @@ test("Service events only invalidate graph/collaboration/provenance reads", () =
   });
   const node = invalidationFromEvent(event("node.changed"));
   assert.ok(node.keys.includes("graph.projection"));
-  assert.ok(node.keys.includes("node.collaborations"));
+  assert.ok(node.keys.includes("workspace.collaboration"));
   assert.ok(node.keys.includes("output.provenance"));
 
   const task = invalidationFromEvent(event("task.updated"));
-  assert.ok(task.keys.includes("node.collaborations"));
+  assert.ok(task.keys.includes("workspace.collaboration"));
   assert.ok(task.keys.includes("output.provenance"));
+
+  for (const type of ["session.state", "toolApproval.created", "taskInput.created", "proposal.created"]) {
+    assert.deepEqual(invalidationFromEvent(event(type)).keys, [], type);
+  }
 });

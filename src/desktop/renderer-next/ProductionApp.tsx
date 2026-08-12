@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   GraphProjection,
-  NodeCollaborationsResult,
 } from "../../service/types.js";
 import { AppShell } from "./shell/AppShell.js";
 import {
@@ -47,7 +46,6 @@ import {
 import { useFocusDocument } from "./model/use-focus-document.js";
 import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
 import { materializeMissingCanvasNodeSnapshots } from "./model/canvas-node-snapshot.js";
-import { useInboxController } from "./model/use-inbox-controller.js";
 import { createCanvasSyncCommand } from "./gateway/canvas-sync-command.js";
 
 function MountedWorkspace(props: {
@@ -67,7 +65,6 @@ function MountedWorkspace(props: {
     onRetryConnection,
   } = props;
   const gateway = useMemo(() => createDesktopServiceGateway(bridge), [bridge]);
-  const inboxModel = useInboxController(gateway, workspace.workspaceId);
   const persistence = useMemo(
     () => new CanvasV5LocalPersistence(window.localStorage, workspace.workspaceId),
     [workspace.workspaceId]
@@ -96,9 +93,7 @@ function MountedWorkspace(props: {
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
   const mountedWorkspaceIdRef = useRef<string | null>(workspace.workspaceId);
-  const collaborationRef = useRef<ProjectionResource<NodeCollaborationsResult>>({ state: "idle" });
   const [graphResource, setGraphResource] = useState(graphRef.current);
-  const [collaborationResource, setCollaborationResource] = useState(collaborationRef.current);
   const [provenance, setProvenance] = useState<ReadonlyMap<string, ProvenanceView>>(new Map());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() =>
     snapshot.document.focusedPlacementId
@@ -234,26 +229,6 @@ function MountedWorkspace(props: {
       scheduleSnapshot({ document });
     }
 
-    const nodeIds = graphRead.value.nodes.map((node) => node.nodeId);
-    collaborationRef.current = beginProjectionLoad(
-      collaborationRef.current,
-      workspace.workspaceId
-    );
-    setCollaborationResource(collaborationRef.current);
-    const collaborationRead = await gateway.nodeCollaborations(
-      workspace.workspaceId,
-      nodeIds
-    );
-    if (generation !== requestGeneration.current) return;
-    collaborationRef.current = settleProjection(
-      collaborationRef.current,
-      collaborationRead
-    );
-    setCollaborationResource(collaborationRef.current);
-    if (!collaborationRead.ok && collaborationRead.issue.kind === "transport") {
-      onConnectionChange("offline");
-    }
-
   }, [gateway, onConnectionChange, publishSelectedNode, scheduleSnapshot, workspace.workspaceId]);
 
   useEffect(() => {
@@ -312,14 +287,8 @@ function MountedWorkspace(props: {
     workspace.workspaceId,
     connection
   );
-  const presentedCollaborationResource = projectionForConnection(
-    collaborationResource,
-    workspace.workspaceId,
-    connection
-  );
   const nodes = workbenchNodesFromResources(
     presentedGraphResource,
-    presentedCollaborationResource,
     snapshot.document,
     provenance
   );
@@ -453,7 +422,6 @@ function MountedWorkspace(props: {
       focusDocumentActions={focusedDocument.actions}
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}
-      inboxModel={inboxModel}
       onCanvasSync={commitCanvasSync}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {

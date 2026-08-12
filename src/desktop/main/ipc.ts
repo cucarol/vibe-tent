@@ -18,7 +18,6 @@ import {
   invokeDesktopProjectionRpc,
 } from "../projection-ipc.js";
 import { recoverDesktopState } from "./workspace-recovery.js";
-import { handleDesktopInboxRequest } from "../inbox-ipc.js";
 
 export type IpcContext = {
   host: DesktopServiceHost;
@@ -70,12 +69,6 @@ export function registerDesktopIpc(ctx: IpcContext): void {
     async (_e: unknown, method: unknown, params?: Record<string, unknown>) => {
       return invokeDesktopProjectionRpc(() => ctx.host.client, method, params);
     }
-  );
-
-  ipcMain.handle(
-    DESKTOP_IPC.listPendingInteractions,
-    async (_e: unknown, workspaceId: unknown) =>
-      handleDesktopInboxRequest(() => ctx.host.client, workspaceId)
   );
 
   ipcMain.handle(

@@ -12,18 +12,16 @@ import type { UiIntent } from "../types/intent.js";
 import {
   PROJECTION_TIMEOUT_MS,
   readGraphProjection,
-  readNodeCollaboration,
-  readNodeCollaborations,
   readOutputProvenance,
+  readWorkspaceCollaboration,
   type ProjectionRead,
   type WorkspaceProjectionRpc,
 } from "./workspace-projections.js";
 import type {
   GraphProjection,
-  NodeCollaboration,
-  NodeCollaborationsResult,
   OutputProvenance,
 } from "../../../service/types.js";
+import type { WorkspaceCollaborationView } from "../model/workspace-collaboration-view.js";
 import {
   readFocusBacklinks,
   readFocusDocument,
@@ -37,21 +35,16 @@ import {
 import {
   acceptDelivery,
   dispatchTask,
-  readCollaborationSnapshot,
+  readDispatchTargets,
   rejectDelivery,
   respondDecision,
   type CollaborationMutation,
   type CollaborationRead,
-  type CollaborationSnapshot,
   type CollaborationTransport,
+  type DispatchTargets,
   type DispatchTaskRequest,
 } from "./collaboration-protocol.js";
 import type { DesktopDecisionResponse } from "../../collaboration-ipc.js";
-import {
-  readDesktopInbox,
-  type InboxTransport,
-} from "./inbox-protocol.js";
-import type { DesktopInboxSnapshot } from "../../inbox-ipc.js";
 
 export type ProjectionKey = string;
 
@@ -73,8 +66,6 @@ export type ServiceGatewayHandlers = {
   documentTimeoutMs?: number;
   /** Typed user-facing Task/Delivery/Decision boundary. */
   collaborationTransport?: CollaborationTransport;
-  /** Named, read-only Desktop Inbox transport; never falls back to generic RPC. */
-  inboxTransport?: InboxTransport;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
   /** Subscribe to Service events; return unsubscribe. */
@@ -97,40 +88,38 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
         "docs.get",
         "docs.focus",
         "graph.projection",
-        "node.collaboration",
-        "node.collaborations",
+        "workspace.collaboration",
         "output.provenance",
       ],
       event,
       reason: type,
     };
   }
-  if (type.startsWith("task.") || type.startsWith("delivery.") || type.startsWith("session.")) {
+  if (type.startsWith("task.") || type.startsWith("delivery.")) {
     return {
       keys: [
         "task.list",
-        "node.collaboration",
-        "node.collaborations",
+        "workspace.collaboration",
         "output.provenance",
         "session.list",
-        ...(type.startsWith("delivery.") || type.startsWith("session.") || type === "task.state"
-          ? ["pending.interactions"]
-          : []),
       ],
       event,
       reason: type,
     };
   }
   if (type === "registry.roles.updated" || type === "connection.changed") {
-    return { keys: ["dispatch.targets"], event, reason: type };
+    return { keys: ["dispatch.targets", "workspace.collaboration"], event, reason: type };
+  }
+  if (type.startsWith("decisionRequest.")) {
+    return { keys: ["workspace.collaboration"], event, reason: type };
   }
   if (
+    type.startsWith("session.") ||
     type.startsWith("toolApproval.") ||
-    type.startsWith("decisionRequest.") ||
     type.startsWith("taskInput.") ||
     type.startsWith("proposal.")
   ) {
-    return { keys: ["pending.interactions"], event, reason: type };
+    return { keys: [], event, reason: type };
   }
   if (
     type.startsWith("workspace.") ||
@@ -138,7 +127,7 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
     type === "service.disconnected"
   ) {
     return {
-      keys: ["workspace.list", "service.health", ...(type === "service.disconnected" ? ["pending.interactions"] : [])],
+      keys: ["workspace.list", "service.health", "workspace.collaboration"],
       event,
       reason: type,
     };
@@ -153,10 +142,6 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
 export class ServiceGateway {
   private unsub: (() => void) | null = null;
   private readonly listeners = new Set<(hint: InvalidationHint) => void>();
-  private readonly inboxFlights = new Map<
-    string,
-    Promise<ProjectionRead<DesktopInboxSnapshot>>
-  >();
 
   constructor(private readonly handlers: ServiceGatewayHandlers = {}) {}
 
@@ -200,29 +185,14 @@ export class ServiceGateway {
     );
   }
 
-  nodeCollaborations(
+  workspaceCollaboration(
     workspaceId: string,
-    nodeIds: readonly string[]
-  ): Promise<ProjectionRead<NodeCollaborationsResult>> {
+    nodeId: string | null
+  ): Promise<ProjectionRead<WorkspaceCollaborationView>> {
     if (!this.handlers.projectionRpc) {
       return Promise.resolve(this.missingProjectionTransport(workspaceId));
     }
-    return readNodeCollaborations(
-      this.handlers.projectionRpc,
-      workspaceId,
-      nodeIds,
-      this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
-    );
-  }
-
-  nodeCollaboration(
-    workspaceId: string,
-    nodeId: string
-  ): Promise<ProjectionRead<NodeCollaboration>> {
-    if (!this.handlers.projectionRpc) {
-      return Promise.resolve(this.missingProjectionTransport(workspaceId));
-    }
-    return readNodeCollaboration(
+    return readWorkspaceCollaboration(
       this.handlers.projectionRpc,
       workspaceId,
       nodeId,
@@ -245,25 +215,6 @@ export class ServiceGateway {
     );
   }
 
-  /** One read flight per exact workspace; different workspaces never share it. */
-  pendingInteractions(
-    workspaceId: string
-  ): Promise<ProjectionRead<DesktopInboxSnapshot>> {
-    const ws = workspaceId.trim();
-    const existing = this.inboxFlights.get(ws);
-    if (existing) return existing;
-    const flight = readDesktopInbox(
-      this.handlers.inboxTransport,
-      ws,
-      this.handlers.projectionTimeoutMs ?? 12_000
-    );
-    this.inboxFlights.set(ws, flight);
-    const clear = () => {
-      if (this.inboxFlights.get(ws) === flight) this.inboxFlights.delete(ws);
-    };
-    void flight.then(clear, clear);
-    return flight;
-  }
 
   focusDocument(
     workspaceId: string,
@@ -314,20 +265,6 @@ export class ServiceGateway {
     );
   }
 
-  collaborationSnapshot(
-    workspaceId: string,
-    nodeId: string
-  ): Promise<CollaborationRead<CollaborationSnapshot>> {
-    if (!this.handlers.collaborationTransport) {
-      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
-    }
-    return readCollaborationSnapshot(
-      this.handlers.collaborationTransport,
-      workspaceId,
-      nodeId
-    );
-  }
-
   dispatchTask(
     input: DispatchTaskRequest
   ): Promise<CollaborationRead<CollaborationMutation>> {
@@ -337,10 +274,17 @@ export class ServiceGateway {
     return dispatchTask(this.handlers.collaborationTransport, input);
   }
 
+  dispatchTargets(workspaceId: string): Promise<CollaborationRead<DispatchTargets>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
+    }
+    return readDispatchTargets(this.handlers.collaborationTransport, workspaceId);
+  }
+
   acceptDelivery(
     workspaceId: string,
-    taskPath: string,
-    deliveryId: string
+    deliveryId: string,
+    outputNodeIds: readonly string[] = []
   ): Promise<CollaborationRead<CollaborationMutation>> {
     if (!this.handlers.collaborationTransport) {
       return Promise.resolve(this.missingCollaborationTransport(workspaceId));
@@ -348,14 +292,13 @@ export class ServiceGateway {
     return acceptDelivery(
       this.handlers.collaborationTransport,
       workspaceId,
-      taskPath,
-      deliveryId
+      deliveryId,
+      [...outputNodeIds]
     );
   }
 
   rejectDelivery(
     workspaceId: string,
-    taskPath: string,
     deliveryId: string,
     note: string
   ): Promise<CollaborationRead<CollaborationMutation>> {
@@ -365,7 +308,6 @@ export class ServiceGateway {
     return rejectDelivery(
       this.handlers.collaborationTransport,
       workspaceId,
-      taskPath,
       deliveryId,
       note
     );
@@ -373,7 +315,6 @@ export class ServiceGateway {
 
   respondDecision(
     workspaceId: string,
-    taskPath: string,
     requestId: string,
     response: DesktopDecisionResponse
   ): Promise<CollaborationRead<CollaborationMutation>> {
@@ -383,7 +324,6 @@ export class ServiceGateway {
     return respondDecision(
       this.handlers.collaborationTransport,
       workspaceId,
-      taskPath,
       requestId,
       response
     );

@@ -184,7 +184,7 @@ test("Outline ordinary rows stay dense while selected rows retain type and full-
   assert.match(outline, /role="treeitem"/);
   assert.match(outline, /title=\{nodeTitle\(node\)\}/);
   assert.match(outline, /selected \? <span className="tn-outline-meta">/);
-  assert.match(outline, /selected && projectionReady && node\.activeTaskState/);
+  assert.doesNotMatch(outline, /activeTaskState|data-task-state/);
   assert.match(css, /\.tn-outline-tree\s*\{[^}]*box-sizing: border-box;[^}]*min-width: 0;[^}]*overflow-x: hidden;[^}]*overflow-y: auto;/s);
   assert.match(css, /\.tn-outline-node\s*\{[^}]*box-sizing: border-box;[^}]*min-width: 0;/s);
   assert.match(css, /\.tn-outline-node\s*\{[^}]*min-height: 32px;/s);

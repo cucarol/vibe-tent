@@ -372,8 +372,7 @@ test("ServiceGateway treats events as invalidation only", async () => {
 
   const hint = gateway.handleServiceEvent(ev("task.state"));
   assert.ok(hint.keys.includes("task.list"));
-  assert.ok(hint.keys.includes("node.collaboration"));
-  assert.ok(hint.keys.includes("node.collaborations"));
+  assert.ok(hint.keys.includes("workspace.collaboration"));
   // Payload is notification-only; the gateway owns no opaque projection bags.
   assert.ok(hints.includes("task.state"));
 
