@@ -35761,6 +35761,7 @@ var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   2049,
   3659,
   4045,
+  4190,
   5060,
   5061,
   6e3,
@@ -35770,6 +35771,7 @@ var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   6667,
   6668,
   6669,
+  6679,
   6697,
   10080
 ]);
@@ -35784,6 +35786,23 @@ var RequestBodyTooLargeError = class extends Error {
 };
 function isFetchBlockedPort(port) {
   return FETCH_BLOCKED_PORTS.has(port);
+}
+async function listenOnFetchCompatiblePort(server, host, preferredPort = 0) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await listen(server, preferredPort, host);
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      await closeServer(server);
+      throw new Error("Failed to bind Local Tent Service HTTP server");
+    }
+    const port = addr.port;
+    if (!isFetchBlockedPort(port)) return port;
+    await closeServer(server);
+    if (preferredPort !== 0) {
+      throw new Error(`Local Tent Service port ${port} is blocked by Fetch clients`);
+    }
+  }
+  throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
 }
 async function createServiceHttpServer(options) {
   const host = options.host ?? "127.0.0.1";
@@ -35814,25 +35833,7 @@ async function createServiceHttpServer(options) {
   server.requestTimeout = 6e4;
   server.headersTimeout = 1e4;
   server.keepAliveTimeout = 5e3;
-  let port = 0;
-  for (let attempt = 0; attempt < 20; attempt++) {
-    await listen(server, preferredPort, host);
-    const addr = server.address();
-    if (!addr || typeof addr === "string") {
-      await closeServer(server);
-      throw new Error("Failed to bind Local Tent Service HTTP server");
-    }
-    port = addr.port;
-    if (!isFetchBlockedPort(port)) break;
-    await closeServer(server);
-    if (preferredPort !== 0) {
-      throw new Error(`Local Tent Service port ${port} is blocked by Fetch clients`);
-    }
-    port = 0;
-  }
-  if (!port) {
-    throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
-  }
+  const port = await listenOnFetchCompatiblePort(server, host, preferredPort);
   let closePromise = null;
   return {
     server,
