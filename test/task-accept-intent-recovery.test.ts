@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FsAdapter } from "../src/core/adapter.js";
-import { loadDelivery, writeDelivery } from "../src/core/delivery.js";
+import {
+  deliveryAcceptCandidateDigest,
+  loadDelivery,
+  writeDelivery,
+} from "../src/core/delivery.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { createNode, dispatch } from "../src/core/ops.js";
 import { readOutputDeliveryId } from "../src/core/output.js";
@@ -393,6 +397,10 @@ test("corrupt or mismatched accept intent fails closed with zero authority mutat
       version: 1,
       taskId: (await loadTaskEnvelope(f.baseFs, f.taskPath)).id,
       deliveryId: f.deliveryId,
+      deliveryPath: f.deliveryPath,
+      candidateDigest: deliveryAcceptCandidateDigest(
+        await loadDelivery(f.baseFs, f.deliveryPath)
+      ),
       actor: "user",
       commits: [],
       outputNodeIds: [f.outputIds[1]!, f.outputIds[0]!],
@@ -412,35 +420,40 @@ test("corrupt or mismatched accept intent fails closed with zero authority mutat
   }
 });
 
-test("accept intent refuses Delivery commit drift before any authority write", async () => {
-  const f = await fixture();
-  const crashEnv = lifecycleEnv(f.root, new CrashFs(f.root, {
-    operation: "writeFile",
-    path: (path) => path === acceptIntentPath(f.taskPath),
-    timing: "after",
-  }));
-  await assert.rejects(() => taskAccept(crashEnv as never, f.taskPath, f.options));
+test("accept intent refuses Delivery candidate drift before any recovery write", async () => {
+  for (const field of ["commits", "summary"] as const) {
+    const f = await fixture();
+    const crashEnv = lifecycleEnv(f.root, new CrashFs(f.root, {
+      operation: "writeFile",
+      path: (path) => path === acceptIntentPath(f.taskPath),
+      timing: "after",
+    }));
+    await assert.rejects(() => taskAccept(crashEnv as never, f.taskPath, f.options));
 
-  const corrupted = await loadDelivery(f.baseFs, f.deliveryPath);
-  corrupted.commits = ["a".repeat(40)];
-  await writeDelivery(f.baseFs, corrupted);
-  const taskBefore = await f.baseFs.readFile(f.taskPath);
-  const deliveryBefore = await f.baseFs.readFile(f.deliveryPath);
-  const outputBefore = await Promise.all(f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path))));
+    const corrupted = await loadDelivery(f.baseFs, f.deliveryPath);
+    if (field === "commits") corrupted.commits = ["a".repeat(40)];
+    else corrupted.summary = "semantic drift after intent";
+    await writeDelivery(f.baseFs, corrupted);
+    const taskBefore = await f.baseFs.readFile(f.taskPath);
+    const deliveryBefore = await f.baseFs.readFile(f.deliveryPath);
+    const outputBefore = await Promise.all(
+      f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path)))
+    );
 
-  await assert.rejects(
-    () => taskWait(f.env as never, f.taskPath, { reason: "external", summary: "must not mutate" }),
-    (error: unknown) =>
-      error instanceof Error &&
-      "code" in error &&
-      (error as { code?: string }).code === "DELIVERY_CHANGED"
-  );
-  assert.equal(await f.baseFs.readFile(f.taskPath), taskBefore);
-  assert.equal(await f.baseFs.readFile(f.deliveryPath), deliveryBefore);
-  assert.deepEqual(
-    await Promise.all(f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path)))),
-    outputBefore
-  );
+    await assert.rejects(
+      () => taskWait(f.env as never, f.taskPath, { reason: "external", summary: "must not mutate" }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code?: string }).code === "DELIVERY_CHANGED"
+    );
+    assert.equal(await f.baseFs.readFile(f.taskPath), taskBefore);
+    assert.equal(await f.baseFs.readFile(f.deliveryPath), deliveryBefore);
+    assert.deepEqual(
+      await Promise.all(f.outputPaths.map((path) => f.baseFs.readFile(nodeNotePath(path)))),
+      outputBefore
+    );
+  }
 });
 
 for (const drift of [

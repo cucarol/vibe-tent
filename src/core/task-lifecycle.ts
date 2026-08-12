@@ -10,6 +10,7 @@ import {
 } from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
+  deliveryAcceptCandidateDigest,
   deliveryReviewSemanticsDigest,
   loadDelivery,
   peekDeliveryTaskId,
@@ -656,6 +657,8 @@ export async function finalizeTaskAccept(
       version: 1,
       taskId: requireCanonicalTaskId(task),
       deliveryId: delivery.id,
+      deliveryPath: delivery.path,
+      candidateDigest: deliveryAcceptCandidateDigest(delivery),
       actor,
       commits: [...delivery.commits],
       outputNodeIds,
@@ -1102,6 +1105,8 @@ type TaskAcceptIntent = {
   version: 1;
   taskId: string;
   deliveryId: string;
+  deliveryPath: string;
+  candidateDigest: string;
   actor: string;
   commits: string[];
   outputNodeIds: string[];
@@ -1149,8 +1154,10 @@ async function loadTaskAcceptIntent(
   const keys = Object.keys(value).sort();
   const expectedKeys = [
     "actor",
+    "candidateDigest",
     "commits",
     "deliveryId",
+    "deliveryPath",
     "outputNodeIds",
     "taskId",
     "type",
@@ -1175,6 +1182,11 @@ async function loadTaskAcceptIntent(
     !isTaskId(value.taskId) ||
     typeof value.deliveryId !== "string" ||
     !isDeliveryId(value.deliveryId) ||
+    typeof value.deliveryPath !== "string" ||
+    !value.deliveryPath.trim() ||
+    value.deliveryPath !== value.deliveryPath.trim() ||
+    typeof value.candidateDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.candidateDigest) ||
     typeof value.actor !== "string" ||
     !value.actor.trim() ||
     value.actor !== value.actor.trim() ||
@@ -1336,6 +1348,8 @@ function assertTaskAcceptIntentCanConverge(
         delivery.review.note === undefined;
   if (
     delivery.sourceNodeId !== primaryNodeId(task) ||
+    delivery.path !== intent.deliveryPath ||
+    deliveryAcceptCandidateDigest(delivery) !== intent.candidateDigest ||
     !exactStringListEqual(delivery.commits, intent.commits) ||
     !taskStateMatches ||
     !deliveryMatches

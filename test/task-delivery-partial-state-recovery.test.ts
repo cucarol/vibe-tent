@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FsAdapter } from "../src/core/adapter.js";
-import { createDelivery, loadDeliveries, writeDelivery, type DeliveryRecord } from "../src/core/delivery.js";
+import {
+  createDelivery,
+  loadDeliveries,
+  loadDelivery,
+  writeDelivery,
+  type DeliveryRecord,
+} from "../src/core/delivery.js";
 import { dispatch } from "../src/core/ops.js";
 import {
   finalizeTaskAccept,
@@ -833,6 +839,21 @@ test("exact deliveryId lookup never reads or peeks unrelated Role Delivery files
   });
   assert.equal(prepared.deliveryId, delivered.delivery.id);
   assert.equal(unrelatedReads, 0);
+});
+
+test("full Delivery load does not require the optional bounded inventory primitive", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const delivered = await taskDeliver(env as never, taskPath, { summary: "full load only" });
+  const withoutBoundedRead = new Proxy(base, {
+    get(target, property) {
+      if (property === "readBinaryBounded") return undefined;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as FsAdapter;
+  const loaded = await loadDelivery(withoutBoundedRead, delivered.delivery.path);
+  assert.equal(loaded.id, delivered.delivery.id);
+  assert.equal(loaded.summary, "full load only");
 });
 
 test("task.accept prepare digest rejects complete Delivery semantic drift before authority writes", async () => {

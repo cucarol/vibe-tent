@@ -142,8 +142,8 @@ export async function createDeliveryUnlocked(
 export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<DeliveryRecord> {
   const path = normalizeDeliveryPath(inputPath);
   if (!(await fs.exists(path))) throw new Error(`Delivery not found: ${path}.`);
-  const identity = await peekDeliveryIdentity(fs, path);
   const raw = await fs.readFile(path);
+  const identity = parseDeliveryIdentityFromRaw(raw);
   const { data, body } = parseFrontmatter(raw);
   if (
     !identity ||
@@ -229,7 +229,7 @@ export async function peekDeliveryIdentity(
   // Non-fatal decoding is intentional: an exact byte prefix may end halfway
   // through a later multibyte frontmatter/body value after the ASCII identity.
   const raw = new TextDecoder("utf-8").decode(bounded.bytes);
-  return parseCanonicalDeliveryIdentityPrefix(raw);
+  return parseDeliveryIdentityFromRaw(raw);
 }
 
 /**
@@ -237,12 +237,19 @@ export async function peekDeliveryIdentity(
  * Canonical scalar identity fields may be reordered, but must all occur once
  * in the opening bounded frontmatter and agree with the complete parse.
  */
-function parseCanonicalDeliveryIdentityPrefix(
+export function parseDeliveryIdentityFromRaw(
   raw: string
 ): { id: string; taskId: string } | undefined {
-  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return undefined;
+  // Encode only a bounded character prefix, then cut to the exact byte limit.
+  // This preserves the inventory hard bound without allocating a second copy
+  // of a potentially multi-megabyte report in the full loader.
+  const prefixBytes = new TextEncoder().encode(raw.slice(0, DELIVERY_IDENTITY_PREFIX_MAX_BYTES));
+  const prefix = new TextDecoder("utf-8").decode(
+    prefixBytes.subarray(0, DELIVERY_IDENTITY_PREFIX_MAX_BYTES)
+  );
+  if (!prefix.startsWith("---\n") && !prefix.startsWith("---\r\n")) return undefined;
   const values = new Map<string, string>();
-  for (const line of raw.split(/\r?\n/).slice(1)) {
+  for (const line of prefix.split(/\r?\n/).slice(1)) {
     if (line === "---") break;
     const match = line.match(/^(type|id|taskId):\s*["']?([^"']+?)["']?\s*$/);
     if (!match) continue;
@@ -275,6 +282,27 @@ export function deliveryReviewSemanticsDigest(record: DeliveryRecord): string {
     review: record.review ? { ...record.review } : null,
     createdAt: record.createdAt ?? null,
     updatedAt: record.updatedAt ?? null,
+  });
+}
+
+/**
+ * Ready-candidate facts that manual acceptance must preserve through its WAL.
+ * status/integrationMode/review/updatedAt are intentionally excluded because
+ * the accept operation itself advances exactly those projections.
+ */
+export function deliveryAcceptCandidateDigest(record: DeliveryRecord): string {
+  return canonicalSha256({
+    version: 1,
+    id: record.id,
+    taskId: record.taskId,
+    sourceNodeId: record.sourceNodeId,
+    summarySha256: sha256Hex(record.summary),
+    commits: [...record.commits],
+    targetHead: record.targetHead ?? null,
+    checks: record.checks.map((check) => ({ ...check })),
+    artifactRefs: normalizeArtifactRefs(record.artifactRefs),
+    taskLastOutcome: record.taskLastOutcome ?? null,
+    createdAt: record.createdAt ?? null,
   });
 }
 
