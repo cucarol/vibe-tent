@@ -24,7 +24,6 @@ import { loadTent } from "../core/tree.js";
 import type { OpsEnv } from "../core/ops-context.js";
 
 import { findNodesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
-import { parseOutputPointer } from "../core/output.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
@@ -298,8 +297,7 @@ async function main() {
         break;
       }
       for (const node of nodes) {
-        const pointer = outputPointer(node.fm, node.body);
-        console.log(`${node.id}\t${node.path}\t${node.type}${pointer ? `\t${pointer}` : ""}`);
+        console.log(`${node.id}\t${node.path}\t${node.type}`);
       }
       break;
     }
@@ -339,11 +337,6 @@ function printNode(node: import("../core/types.js").Node, depth: number) {
   const invalid = node.invalid ? ` invalid:${node.invalidReason || "invalid"}` : "";
   console.log(`${ind}${node.name} [${type} ${id}]${mode}${invalid}`);
   for (const child of node.children) printNode(child, depth + 1);
-}
-
-function outputPointer(fm: import("../core/types.js").NodeFrontmatter, body: string): string {
-  const { workspace, ref } = parseOutputPointer(fm, body);
-  return [workspace ? `workspace=${workspace}` : "", ref ? `ref=${ref}` : ""].filter(Boolean).join(" ");
 }
 
 function fail(msg: string) {

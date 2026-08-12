@@ -1,8 +1,9 @@
-// Output Node helpers: legacy workspace/ref pointer parse + V0.2 provenance (deliveryId).
+// Output Node helpers: V0.2 provenance through one exact Delivery id.
 // Authoritative link is Output frontmatter `deliveryId` only — no taskId/sourceNodeId denorm,
-// no generic relation substitute (Canvas P0 / cx-f2kxd4).
+// artifactRefs copy, or generic relation substitute (Canvas P0 / cx-f2kxd4).
 
 import type { FsAdapter } from "./adapter.js";
+import type { ArtifactRef } from "./artifact.js";
 import { loadDeliveries, type DeliveryRecord } from "./delivery.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { loadTaskEnvelopes, type TaskEnvelope } from "./task.js";
@@ -10,11 +11,6 @@ import { isDeliveryId } from "./task-model.js";
 import { nodeNotePath, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import { splitType } from "./typeRegistry.js";
-
-export interface OutputPointer {
-  workspace?: string;
-  ref?: string;
-}
 
 /** Reserved Output provenance field — only formal accept/bind may write. */
 export const OUTPUT_PROVENANCE_FIELD = "deliveryId" as const;
@@ -47,7 +43,13 @@ export class OutputProvenanceError extends Error {
 
 /** Live join half of Output → Delivery → Task → sourceNode (ids only; never path inference). */
 export type OutputProvenanceLive = {
-  delivery: { id: string; status: string; taskId: string; sourceNodeId: string } | null;
+  delivery: {
+    id: string;
+    status: string;
+    taskId: string;
+    sourceNodeId: string;
+    artifactRefs: ArtifactRef[];
+  } | null;
   task: { id: string; state: string; path?: string } | null;
   sourceNode: { nodeId: string; path?: string; type?: string; archived?: boolean } | null;
 };
@@ -75,28 +77,6 @@ export type OutputProvenance = {
   sourceNode: OutputProvenanceLive["sourceNode"];
   incomplete: OutputProvenanceIncompleteReason[];
 };
-
-/** 解析 output 框里的真实产出指针。frontmatter.workspace 优先,正文兼容旧字段。 */
-export function parseOutputPointer(fm: Record<string, unknown>, body: string): OutputPointer {
-  const result: OutputPointer = {};
-  const fmWorkspace = fieldString(fm.workspace);
-  if (fmWorkspace) result.workspace = fmWorkspace;
-  const fmRef = fieldString(fm.ref);
-  if (fmRef) result.ref = fmRef;
-
-  for (const rawLine of body.split(/\r?\n/)) {
-    const line = normalizeLabelLine(rawLine);
-    if (!result.workspace) {
-      const workspace = matchField(line, ["workspace", "workspace 路径", "repo", "pointer", "路径"]);
-      if (workspace) result.workspace = workspace;
-    }
-    if (!result.ref) {
-      const ref = matchField(line, ["git ref", "git-ref", "当前 ref", "commit", "ref"]);
-      if (ref) result.ref = ref;
-    }
-  }
-  return result;
-}
 
 /** True when primary type base is `output` (including `output-asset`, …). */
 export function isOutputPrimaryType(type: string | undefined | null): boolean {
@@ -428,6 +408,7 @@ export function projectOutputProvenance(
     status: delivery.status,
     taskId: delivery.taskId,
     sourceNodeId: delivery.sourceNodeId,
+    artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
   };
 
   const task = indexes.tasksById.get(delivery.taskId);
@@ -540,30 +521,4 @@ function outputKeyOrder(existing: string[]): string[] {
     ...preferred,
     ...existing.filter((key) => !preferred.includes(key)),
   ];
-}
-
-function fieldString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? cleanValue(value) : undefined;
-}
-
-function normalizeLabelLine(line: string): string {
-  return line
-    .trim()
-    .replace(/^[-*]\s+/, "")
-    .replace(/\*\*/g, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .trim();
-}
-
-function matchField(line: string, fields: string[]): string | undefined {
-  for (const field of fields) {
-    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = new RegExp(`^${escaped}\\s*[:：]\\s*(.+)$`, "i").exec(line);
-    if (match) return cleanValue(match[1]);
-  }
-  return undefined;
-}
-
-function cleanValue(value: string): string {
-  return value.trim().replace(/^`|`$/g, "").trim();
 }

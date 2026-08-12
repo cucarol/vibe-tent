@@ -249,6 +249,10 @@ persisted as one atomic filesystem write; once the accept decision is durably
 committed, process or transport failure does not roll it back. Integration is
 fail-loud, never pushes, and does not write generic status back to Nodes.
 
+Delivery `artifactRefs[]` is the sole artifact-reference authority. An Output
+Node persists only its exact `deliveryId`; `output.provenance` projects the
+Delivery's normalized artifact refs without copying them into Output frontmatter.
+
 If a caller loses or abandons an in-flight request after Service persisted its
 accept intent, an exact retry first converges that same committed operation.
 Separately, if acceptance completed and only its successful response was lost,

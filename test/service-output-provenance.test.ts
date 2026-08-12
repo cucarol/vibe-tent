@@ -127,7 +127,8 @@ async function readyDeliveryTask(
   workspaceId: string,
   workspace: string,
   nodeId: string,
-  role = "executor"
+  role = "executor",
+  artifactRefs: Array<{ kind: "path" | "directory" | "commit" | "url"; target: string; label?: string }> = []
 ): Promise<{ taskPath: string; deliveryId: string }> {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
@@ -157,6 +158,7 @@ async function readyDeliveryTask(
 
   const delivered = await client.taskDeliver(workspaceId, taskPath, {
     summary: "work product for provenance",
+    artifactRefs,
   });
   const deliveryId = (delivered as { delivery: { id: string } }).delivery.id;
   return { taskPath, deliveryId };
@@ -177,7 +179,19 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "result", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(
+      svc,
+      workspaceId,
+      ws,
+      source.nodeId,
+      "executor",
+      [
+        { kind: "commit", target: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+        { kind: "path", target: ".\\dist\\result.json", label: " Result " },
+        { kind: "directory", target: "dist/" },
+        { kind: "url", target: "https://example.test/artifact" },
+      ]
+    );
 
     // Unbound before accept
     const unbound = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
@@ -216,7 +230,7 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     assert.deepEqual(acc.boundOutputIds, [output.nodeId]);
     assert.deepEqual(acc.changedOutputIds, [output.nodeId]);
 
-    // Disk FM has deliveryId only (no taskId/sourceNodeId denorm)
+    // Disk FM has deliveryId only (no taskId/sourceNodeId/artifactRefs denorm).
     const systemRoot = path.join(ws, ".tent");
     const fsa = new NodeFs(systemRoot);
     const noteRaw = await fsa.readFile(nodeNotePath(output.path));
@@ -224,6 +238,8 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     assert.equal(data.deliveryId, deliveryId);
     assert.equal(data.taskId, undefined);
     assert.equal(data.sourceNodeId, undefined);
+    assert.equal(data.artifactRefs, undefined);
+    assert.equal(data.artifactRefsJson, undefined);
 
     const bound = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!bound.error, JSON.stringify(bound.error));
@@ -232,6 +248,12 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     assert.equal(b.deliveryId, deliveryId);
     assert.equal(b.delivery?.id, deliveryId);
     assert.equal(b.delivery?.status, "accepted");
+    assert.deepEqual(b.delivery?.artifactRefs, [
+      { kind: "commit", target: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { kind: "directory", target: "dist" },
+      { kind: "path", target: "dist/result.json", label: "Result" },
+      { kind: "url", target: "https://example.test/artifact" },
+    ]);
     assert.ok(b.task?.id);
     assert.equal(b.task?.state, "accepted");
     assert.equal(b.sourceNode?.nodeId, source.nodeId);

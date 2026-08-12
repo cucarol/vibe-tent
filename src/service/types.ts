@@ -186,8 +186,8 @@ export type WorkspaceCollaborationProjection = {
 
 /**
  * V0.2 Output provenance read model (`output.provenance`).
- * Authority is Output frontmatter `deliveryId` only — no taskId/sourceNodeId denorm.
- * Live Delivery → Task → sourceNode joins by id; missing heat → incomplete, never inferred.
+ * Authority is Output frontmatter `deliveryId` only — no taskId/sourceNodeId/artifactRefs denorm.
+ * Delivery artifact refs are projected through the live id join; missing heat → incomplete.
  */
 export type OutputProvenanceIncompleteReason =
   | "delivery_missing"
@@ -206,6 +206,7 @@ export type OutputProvenance = {
     status: string;
     taskId: string;
     sourceNodeId: string;
+    artifactRefs: import("../core/artifact.js").ArtifactRef[];
   } | null;
   task: {
     id: string;

@@ -6209,7 +6209,9 @@ function projectOutputProvenanceWire(
     path: core.path,
     bound: core.bound,
     deliveryId: core.deliveryId,
-    delivery: core.delivery,
+    delivery: core.delivery
+      ? { ...core.delivery, artifactRefs: core.delivery.artifactRefs.map((ref) => ({ ...ref })) }
+      : null,
     task: core.task,
     sourceNode: core.sourceNode,
     incomplete: core.incomplete,

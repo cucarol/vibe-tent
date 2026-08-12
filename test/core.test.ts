@@ -559,19 +559,25 @@ test("Tent 动作不初始化 Tent Git", async () => {
   assert.equal(await new NodeFs(dir).exists(".git"), false);
 });
 
-test("parseOutputPointer:frontmatter workspace 优先,正文兼容中文字段", async () => {
-  const { parseOutputPointer } = await import("../src/core/output.js");
-  assert.deepEqual(
-    parseOutputPointer(
-      { workspace: "C:/repo/from-fm" },
-      "- **workspace 路径**:`C:\\repo\\from-body`\n- **当前 ref**:`2cab7e6`(tag `v0.1`)\n",
-    ),
-    { workspace: "C:/repo/from-fm", ref: "2cab7e6(tag v0.1)" },
+test("tent find reports canonical Node facts and ignores retired Output pointer text", async () => {
+  const fixtureRoot = await makeTent();
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-find-workspace-"));
+  const systemRoot = path.join(workspace, ".tent");
+  await fs.rename(fixtureRoot, systemRoot);
+  const fsa = new NodeFs(systemRoot);
+  const notePath = "output/alpha仓库指针/alpha仓库指针.md";
+  const raw = await fsa.readFile(notePath);
+  await fsa.writeFile(
+    notePath,
+    raw
+      .replace("type: output", "type: output\ntags: [artifact-find]\nworkspace: C:/legacy")
+      .replace(/\n$/, "\nworkspace: C:/body\nref: deadbeef\n")
   );
-  assert.deepEqual(
-    parseOutputPointer({}, "workspace: C:/repo/body\nref: a1b2c3d\n"),
-    { workspace: "C:/repo/body", ref: "a1b2c3d" },
-  );
+
+  const result = await cli(workspace, "find", "artifact-find");
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "cx-o1\toutput/alpha仓库指针\toutput");
+  assert.doesNotMatch(result.stdout, /workspace=|ref=|deadbeef|C:\/legacy/);
 });
 
 test("placeNode 换序:before/after/inside 重排 order", async () => {
