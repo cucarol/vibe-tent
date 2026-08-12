@@ -67,18 +67,18 @@ or [task-cli.md](references/task-cli.md).
 
 ## Finish with an honest final report
 
-A natural, non-empty managed ACP final report is deliverable by default after
-acceptance and settle gates. Service first preserves every non-empty final
-report as a durable draft; preserve useful prose and add no parsing wrapper.
+A natural, non-empty managed ACP final report is deliverable after required
+settle gates. Service preserves it first; write useful prose with no
+outcome wrapper.
 
 Optional leading controls park instead of deliver:
 
 - `outcome: blocked` — an external state change is required;
 - `outcome: needs-input` — a specific decision or answer is required.
 
-`outcome: delivered` remains accepted but is redundant. Missing, unknown, or
-malformed control text never discards an otherwise valid report. Empty output
-never invents success. Use DecisionRequest for a real authority question.
+Only `blocked` and `needs-input` park. Invalid control text never discards a
+valid report; empty output never invents success. Use DecisionRequest for a real
+authority question.
 
 ## Deliver to the exact parent
 
@@ -92,9 +92,11 @@ never invents success. Use DecisionRequest for a real authority question.
 - Use persisted `parentActor`. Downstream work cannot change frozen
   `acceptMode` or self-review; a durable Role follows it through `tent-role`.
 
-Before Delivery, settle TaskInputs/DecisionRequests, turn and Session state, worktree,
-commits, and checks. Ensure confirmed decisions are present in the report and,
-when acting as the authorized Role, promoted to the relevant Node.
+Before Delivery, settle interactions, execution, lane, and checks.
+Task and Delivery report are the default durable record. Promote only decisions,
+facts, and accepted results that must survive across Tasks or Sessions into an
+existing relevant writable Node. If none exists, report to the parent or user;
+never create a process-only Node for this Task.
 
 ## Recovery and cleanup
 

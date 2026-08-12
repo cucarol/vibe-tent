@@ -28,9 +28,12 @@ binding, compatibility result, or persisted state.
 
 ## Maintain Node-first context
 
-- Node is durable product context; Task is one attempt. Promote confirmed
-  decisions, facts, open questions, provenance, and accepted results into the
-  nearest relevant Node instead of relying on chat history.
+- The Task and its Delivery report are the default durable record of one work
+  attempt. Do not duplicate ordinary execution history into Nodes.
+- Promote only decisions, facts, and accepted results that must survive across
+  Tasks or Sessions, and only into an existing relevant writable Node. If no
+  such Node exists, report that boundary to the parent or user; never create a
+  process-only Node merely to archive the current Task.
 - Put the concrete work request in the Task prompt and durable facts in the
   referenced Nodes; do not duplicate them into parallel Context Card fields.
 - Task work Nodes are its occupied write context; context Nodes are shared

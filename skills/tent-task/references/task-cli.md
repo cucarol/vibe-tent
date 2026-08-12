@@ -79,7 +79,7 @@ inferring a Task path or retrying with an alias.
 
 A commit-bearing ready Delivery records reported commits from the exact lane range plus a target-head snapshot. The commit list may be empty or a relevant subset; every listed SHA must belong to the lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against the current target instead of overriding or rewriting persisted facts.
 
-Managed ACP first preserves every non-empty final report as a durable draft, then publishes natural report content as Delivery after the turn and lane settle. A valid leading `outcome: blocked|needs-input` parks without Delivery but does not discard its preserved body; `outcome: delivered` is accepted but optional. Missing or malformed outcome text never discards the report, and an empty report never invents success.
+Managed ACP first preserves every non-empty final report as a durable draft, then publishes natural report content as Delivery after the turn and lane settle. Natural final prose needs no outcome wrapper. A valid leading `outcome: blocked|needs-input` parks without Delivery but does not discard its preserved body; only those two controls park. Missing or malformed outcome text never discards the report, and an empty report never invents success.
 
 ```bash
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>
@@ -139,12 +139,15 @@ busy-loop inventing answers.
 
 ## Confirmed decisions
 
-During design, review, or planning, treat explicit user confirmation as durable project context:
+The Task and Delivery report are the default durable record. During design,
+review, or planning:
 
-- Include the conclusion in the Delivery report.
-- Persist it into the nearest relevant writable Node only when this executor is also the authorized Role.
-- Otherwise return it to the parent reviewer for placement.
-- Before Delivery, check that confirmed decisions do not exist only in chat.
+- Promote only decisions, facts, and accepted results that must survive across
+  Tasks or Sessions.
+- Write them only into an existing relevant writable Node when this executor is
+  the authorized Role.
+- If none exists, report that boundary to the parent or user; never create a
+  process-only Node merely to archive this Task.
 
 For temporary managed ACP recovery boundaries, read [session-boundaries.md](session-boundaries.md).
 
