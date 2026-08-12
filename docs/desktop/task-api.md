@@ -297,12 +297,30 @@ Useful projections include:
 
 ```text
 task.list | task.get
+workspace.collaboration
 node.collaboration | node.collaborations
 session.list | session.get
 delivery.list | delivery.get
 taskInput.listPending
 interaction.listPending
 ```
+
+`workspace.collaboration(workspaceId,nodeId)` is the product read boundary. It
+joins existing Task, Delivery, DecisionRequest, Role, Connection, and Node
+identity facts without persisting a second source. `selectedNode` is exactly
+`{nodeId,activeTask}`; graph remains the only Node title/type/mode authority.
+The active Task separates immutable parent responsibility (`user|role`) from
+execution (`role|connection|null`) and may expose only its exact ready Delivery
+summary and actionable user Decision. Its Inbox includes user-responsibility
+ready Deliveries and actionable user-targeted Decisions only, in stable order.
+No Task path, Session/runtime/provider fact, commit, or target head crosses this
+wire.
+
+During the source sequence, legacy `node.collaboration(s)` and
+`interaction.listPending` reads remain for the existing Desktop. UI batch J
+must move review/decision actions to the exact ids in this projection without
+exposing `taskPath`; the final protocol-7 release then removes those legacy
+reads rather than retaining a compatibility path.
 
 Events such as `node.changed`, `task.state`, `session.state`, `delivery.updated`,
 `taskInput.*`, and `decisionRequest.*` only invalidate cached views. Consumers re-query

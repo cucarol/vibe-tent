@@ -67,6 +67,10 @@ context as the old Session.
 
 ## Review downstream Delivery
 
+- Use `workspace.collaboration` for the selected Node and user-actionable Inbox
+  read. Treat graph as Node identity/content authority and derive actionability
+  only from exact projected responsibility and Delivery/Decision ids. Never
+  infer review authority from execution, Session state, or a badge/count.
 - Trust persisted `parentActor` as the sole reviewer authority. Downstream executors use
   review-to-parent, never self-accept or elevate Role-to-user policy.
 - Inspect the real diff, commit ancestry, target-head snapshot, checks, Task

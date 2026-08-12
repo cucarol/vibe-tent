@@ -15,6 +15,7 @@ import type {
   RelationMutationResult,
   RelationTargetWire,
   SessionProjection,
+  WorkspaceCollaborationProjection,
 } from "./types.js";
 import {
   AUTH_TOKEN_HEADER,
@@ -874,6 +875,14 @@ export class ServiceClient {
   }
   taskGet(workspaceId: string, taskPath: string) {
     return this.call("task.get", { workspaceId, taskPath });
+  }
+
+  /** Selected Node collaboration + user-actionable Inbox in one authoritative read. */
+  workspaceCollaboration(workspaceId: string, nodeId: string) {
+    return this.call<WorkspaceCollaborationProjection>("workspace.collaboration", {
+      workspaceId,
+      nodeId,
+    });
   }
 
   /**

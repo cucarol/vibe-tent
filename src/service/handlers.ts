@@ -259,6 +259,7 @@ import {
   type TaskInputStore,
 } from "./task-input-store.js";
 import type { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
+import { buildWorkspaceCollaborationProjection } from "./workspace-collaboration.js";
 import type { LaunchSecretStore } from "./launch-secret-store.js";
 import {
   isClientMethod,
@@ -296,6 +297,7 @@ import {
   type SessionProjection,
   type TaskProjection,
   type TypeRegistryEntryProjection,
+  type WorkspaceCollaborationProjection,
 } from "./types.js";
 import {
   projectAgentConnection,
@@ -430,6 +432,8 @@ export async function dispatchMethod(
         return { workspaces: ctx.host.list() };
       case "workspace.setForeground":
         return workspaceSetForeground(ctx, p);
+      case "workspace.collaboration":
+        return workspaceCollaborationRpc(ctx, p);
       case "workspace.settings":
         return workspaceSettingsRpc(ctx, p);
       case "workspace.settings.update":
@@ -7922,6 +7926,63 @@ async function taskGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const taskPath = requireString(p, "taskPath");
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
   return { workspaceId, task: projectTask(task) };
+}
+
+/**
+ * Product-facing collaboration read. This is a join over existing authority
+ * stores only: it writes nothing, caches nothing, and never projects Session or
+ * filesystem routing details.
+ */
+async function workspaceCollaborationRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<WorkspaceCollaborationProjection> {
+  assertAllowedParams(p, new Set(["workspaceId", "nodeId"]), "workspace.collaboration");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const nodeId = requireString(p, "nodeId");
+  const mount = ctx.host.require(workspaceId);
+
+  let tent: LoadedTent;
+  let tasks: TaskEnvelope[];
+  let deliveries: Awaited<ReturnType<typeof loadDeliveries>>;
+  let decisions: Awaited<ReturnType<typeof ctx.decisionRequests.listPending>>;
+  let roles: Awaited<ReturnType<typeof loadRolesRegistry>>;
+  try {
+    [tent, tasks, deliveries, decisions, roles] = await Promise.all([
+      loadTent(mount.env.fs),
+      loadTaskEnvelopes(mount.env.fs),
+      loadDeliveries(mount.env.fs),
+      ctx.decisionRequests.listPending(workspaceId),
+      loadRolesRegistry(mount.env.fs),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RpcError(
+      -32000,
+      `workspace.collaboration failed to load authoritative facts: ${message}`,
+      { workspaceId, nodeId }
+    );
+  }
+
+  const node = requireCanonicalNode(tent, nodeId);
+  if (node.invalid) {
+    throw new RpcError(
+      -32004,
+      `Node is invalid and has no collaboration projection: ${node.path}`,
+      { nodeId: node.id, path: node.path, detail: node.invalidReason }
+    );
+  }
+
+  return buildWorkspaceCollaborationProjection({
+    workspaceId,
+    nodeId: node.id,
+    tasks,
+    deliveries,
+    pendingDecisions: decisions,
+    roles: roles.roles,
+    readSession: (sessionId) => ctx.runtime.registry.read(sessionId),
+    getConnection: (connectionId) => ctx.connectionCatalog.get(connectionId),
+  });
 }
 
 async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {

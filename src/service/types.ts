@@ -1,6 +1,6 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
-import type { AcceptMode } from "../core/task-model.js";
+import type { AcceptMode, TaskState } from "../core/task-model.js";
 export type { ArtifactRef } from "../core/artifact.js";
 
 /** Common wire wrapper for all service fan-out events. */
@@ -113,6 +113,75 @@ export type NodeCollaboration = {
 export type NodeCollaborationsResult = {
   workspaceId: string;
   items: NodeCollaboration[];
+};
+
+export type WorkspaceCollaborationResponsibility =
+  | { kind: "user" }
+  | { kind: "role"; roleId: string; displayName: string };
+
+/** Task assignee only; never provider transport or Session runtime state. */
+export type WorkspaceCollaborationExecution =
+  | { kind: "role"; roleId: string; displayName: string }
+  | { kind: "connection"; connectionId: string; displayName: string };
+
+export type WorkspaceCollaborationDecision = {
+  requestId: string;
+  question: string;
+  options: Array<{ id: string; label: string }>;
+};
+
+export type WorkspaceCollaborationActiveTask = {
+  taskId: string;
+  state: TaskState;
+  responsibility: WorkspaceCollaborationResponsibility;
+  execution: WorkspaceCollaborationExecution | null;
+  readyDelivery: {
+    deliveryId: string;
+    summary: string;
+    createdAt: string;
+  } | null;
+  pendingDecision: WorkspaceCollaborationDecision | null;
+};
+
+export type WorkspaceCollaborationSelectedNode = {
+  nodeId: string;
+  activeTask: WorkspaceCollaborationActiveTask | null;
+};
+
+export type WorkspaceUserInboxDelivery = {
+  kind: "delivery";
+  deliveryId: string;
+  taskId: string;
+  sourceNodeId: string;
+  summary: string;
+  createdAt: string;
+};
+
+export type WorkspaceUserInboxDecision = {
+  kind: "decision";
+  requestId: string;
+  taskId: string;
+  nodeIds: string[];
+  question: string;
+  options: Array<{ id: string; label: string }>;
+  createdAt: string;
+};
+
+export type WorkspaceUserInboxItem =
+  | WorkspaceUserInboxDelivery
+  | WorkspaceUserInboxDecision;
+
+/**
+ * One authoritative product projection for selected Node collaboration and the
+ * local user's actionable Inbox. No Session/task-path/provider transport fields.
+ */
+export type WorkspaceCollaborationProjection = {
+  workspaceId: string;
+  selectedNode: WorkspaceCollaborationSelectedNode;
+  inbox: {
+    items: WorkspaceUserInboxItem[];
+    counts: { delivery: number; decision: number; total: number };
+  };
 };
 
 /**
@@ -643,6 +712,8 @@ export const CLIENT_METHODS = [
   "workspace.unmount",
   "workspace.list",
   "workspace.setForeground",
+  /** Selected Node collaboration + user-actionable Inbox; read-only product join. */
+  "workspace.collaboration",
   /**
    * Workspace collaboration settings (system-root settings.json).
    * settings is a read projection; settings.update is user-only MutationBus.

@@ -274,9 +274,26 @@ The Service persists interaction types separately:
 - tool approval where a provider requires it;
 - Delivery review.
 
-`interaction.listPending` is a read-only aggregate projection. Resolution must
-return to the owning domain command; there is no generic "resolve pending"
-mutation.
+`workspace.collaboration` is the product-facing read projection for one
+selected Node and the local user's actionable Inbox. The selected Node carries
+only its id plus an exact active-Task collaboration view; Node name, type, mode,
+and hierarchy remain graph authority. Responsibility derives from the Task's
+exact `parentActor`; execution derives separately from its Role assignee or
+machine Connection. The projection never exposes Task paths, Session identity
+or liveness, provider transport, credentials, commits, or target heads.
+
+The user Inbox contains only exact ready Deliveries whose responsibility is the
+user and pending user-targeted DecisionRequests whose Task is currently
+`waiting(user-input)`. Role review stays with that Role. TaskInput remains
+internal at-most-once authority and is not an Inbox item. Items are ordered
+deterministically, stale historical inventory is omitted, and malformed current
+actionable bindings fail closed. Resolution always uses the owning exact
+Delivery/Decision command; the projection adds no mutation, cache, entity, or
+generic "resolve pending" operation.
+
+`interaction.listPending` remains a lower-level read during source sequencing.
+The protocol-7 Desktop cut removes its user-Inbox use together with the retired
+`node.collaboration(s)` reads after consumers move to `workspace.collaboration`.
 
 Annotations belong to Node text. They become Agent work only when the user
 explicitly converts or sends them as Task context/input.

@@ -50,6 +50,8 @@ or [task-cli.md](references/task-cli.md).
 
 ## Handle Task communication
 
+- `workspace.collaboration` is read-only; act through exact Delivery/Decision
+  ids, never a TaskInput Inbox.
 - A2U: use `tent task request-decision` for a required authority decision, then
   wait through the supported lifecycle. The frozen target responds through
   `tent task decision`; never supply an actor selector.

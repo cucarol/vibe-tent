@@ -130,10 +130,16 @@ validation rules.
 
 ## 9. Collaboration projection
 
-`node.collaboration` and batch projection expose active Tasks and their safe
-Session/Delivery pointers for a Node. They are read models only. UI badges,
-working sets, and pending review counts come from these projections rather than
-being copied into Node files.
+`workspace.collaboration` exposes one selected Node id, its active Task
+collaboration, and the user's actionable Inbox. Graph remains the sole source
+for Node name, type, mode, and hierarchy. Parent responsibility, Role or
+Connection execution, ready Delivery summary, and pending user Decision are
+joined from their existing authorities; no collaboration field is copied into
+Node files. Session identity/liveness and filesystem Task paths are not product
+projection fields.
+
+Legacy `node.collaboration(s)` remains only until Desktop batch J consumes the
+new projection; protocol 7 removes that read surface rather than aliasing it.
 
 ## 10. Events
 
