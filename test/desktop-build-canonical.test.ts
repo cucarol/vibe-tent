@@ -66,7 +66,7 @@ async function buildFixture(
   const result = await esbuild.build({
     ...contract.canonicalBuildOptions(root),
     preserveSymlinks,
-    entryPoints: ["src/entry.ts"],
+    entryPoints: [path.join(root, "src", "entry.ts")],
     outfile: path.join(outRoot, "main.cjs"),
     bundle: true,
     platform: "node",
@@ -76,6 +76,22 @@ async function buildFixture(
     logLevel: "silent",
   });
   return result;
+}
+
+async function unlinkFixtureJunction(junctionPath: string): Promise<void> {
+  const attempts = process.platform === "win32" ? 4 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await fs.unlink(junctionPath);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      const retryable = process.platform === "win32" && (code === "EBUSY" || code === "EPERM");
+      if (!retryable || attempt + 1 === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
+  }
 }
 
 test("desktop esbuild inputs are canonical across physical and junction node_modules", async () => {
@@ -135,7 +151,7 @@ test("desktop esbuild inputs are canonical across physical and junction node_mod
       /non-canonical esbuild input/
     );
   } finally {
-    await fs.unlink(junctionModules).catch(() => undefined);
+    await unlinkFixtureJunction(junctionModules);
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });

@@ -15,6 +15,7 @@ import {
 } from "../src/core/context-card.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
+import { listenOnFetchCompatiblePort } from "../src/service/http-server.js";
 import { ServiceRpcClient, ServiceRpcError } from "../src/desktop/client/rpc-client.js";
 import {
   tryAttach,
@@ -463,10 +464,8 @@ test("drop target receives full text/plain context card payload", async () => {
     res.writeHead(404);
     res.end();
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const addr = server.address();
-  assert.ok(addr && typeof addr === "object");
-  const res = await fetch(`http://127.0.0.1:${addr.port}/drop`, {
+  const port = await listenOnFetchCompatiblePort(server, "127.0.0.1");
+  const res = await fetch(`http://127.0.0.1:${port}/drop`, {
     method: "POST",
     headers: { "content-type": "text/plain" },
     body: payload,

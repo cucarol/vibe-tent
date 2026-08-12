@@ -163,8 +163,10 @@ async function oversizedRpcHeaders(
 }
 
 test("Local Service never advertises Fetch-blocked ports", async () => {
+  assert.equal(isFetchBlockedPort(4190), true);
   assert.equal(isFetchBlockedPort(6000), true);
   assert.equal(isFetchBlockedPort(6667), true);
+  assert.equal(isFetchBlockedPort(6679), true);
   assert.equal(isFetchBlockedPort(4174), false);
   await withService(async (svc) => {
     assert.equal(isFetchBlockedPort(svc.port), false);

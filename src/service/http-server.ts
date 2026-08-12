@@ -76,8 +76,8 @@ const FETCH_BLOCKED_PORTS = new Set([
   79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123,
   135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530,
   531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719,
-  1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667,
-  6668, 6669, 6697, 10080,
+  1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666,
+  6667, 6668, 6669, 6679, 6697, 10080,
 ]);
 
 // A 25 MiB binary attachment expands to ~33.4 MiB as base64. Keep bounded
@@ -94,6 +94,28 @@ class RequestBodyTooLargeError extends Error {
 
 export function isFetchBlockedPort(port: number): boolean {
   return FETCH_BLOCKED_PORTS.has(port);
+}
+
+export async function listenOnFetchCompatiblePort(
+  server: http.Server,
+  host: string,
+  preferredPort = 0
+): Promise<number> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await listen(server, preferredPort, host);
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      await closeServer(server);
+      throw new Error("Failed to bind Local Tent Service HTTP server");
+    }
+    const port = addr.port;
+    if (!isFetchBlockedPort(port)) return port;
+    await closeServer(server);
+    if (preferredPort !== 0) {
+      throw new Error(`Local Tent Service port ${port} is blocked by Fetch clients`);
+    }
+  }
+  throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
 }
 
 /** Local Service is never a LAN/WAN server; accept literal loopback IPs only. */
@@ -128,25 +150,7 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
 
-  let port = 0;
-  for (let attempt = 0; attempt < 20; attempt++) {
-    await listen(server, preferredPort, host);
-    const addr = server.address();
-    if (!addr || typeof addr === "string") {
-      await closeServer(server);
-      throw new Error("Failed to bind Local Tent Service HTTP server");
-    }
-    port = addr.port;
-    if (!isFetchBlockedPort(port)) break;
-    await closeServer(server);
-    if (preferredPort !== 0) {
-      throw new Error(`Local Tent Service port ${port} is blocked by Fetch clients`);
-    }
-    port = 0;
-  }
-  if (!port) {
-    throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
-  }
+  const port = await listenOnFetchCompatiblePort(server, host, preferredPort);
   let closePromise: Promise<void> | null = null;
   return {
     server,
