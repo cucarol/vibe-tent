@@ -193,7 +193,7 @@ test("tryAttachService: forged public health cannot authenticate an endpoint", a
       publicHealthCalls += 1;
       return jsonResponse(200, {
         status: "ok",
-        protocolVersion: 6,
+        protocolVersion: 7,
         instanceId: endpoint.instanceId,
         pid: endpoint.pid,
         startedAt: endpoint.startedAt,
@@ -252,7 +252,7 @@ test("tryAttachService: hanging authenticated candidates are aborted without hid
       id: request.id,
       result: {
         status: "ok",
-        protocolVersion: 6,
+        protocolVersion: 7,
         instanceId: healthy.instanceId,
         pid: healthy.pid,
         startedAt: healthy.startedAt,

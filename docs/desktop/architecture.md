@@ -37,7 +37,7 @@ configuration, not an identity, Role, ACL, or durable worker record.
 ```text
 Desktop / CLI
               |
-              | authenticated local RPC, protocolVersion=6
+              | authenticated local RPC, protocolVersion=7
               v
         Local Service process
           |             |

@@ -77,7 +77,7 @@ test("compact Canvas cards expose only a one-or-two-line title while sync and at
 
 function state(workspaceId = "ws-a") {
   return {
-    health: { status: "ok", protocolVersion: 6 },
+    health: { status: "ok", protocolVersion: 7 },
     foregroundWorkspaceId: workspaceId,
     workspaces: [
       {
@@ -100,16 +100,18 @@ const noDocumentActions: FocusDocumentActions = {
   async retry() {},
 };
 
-test("production bootstrap requires protocol 6 and exact foreground identity", () => {
+test("production bootstrap requires protocol 7 and exact foreground identity", () => {
   const normalized = normalizeDesktopBootstrap(state());
-  assert.equal(normalized.protocolVersion, 6);
+  assert.equal(normalized.protocolVersion, 7);
   assert.equal(normalized.foregroundWorkspace?.workspaceId, "ws-a");
 
-  assert.throws(() =>
-    normalizeDesktopBootstrap({
-      ...state(),
-      health: { status: "ok", protocolVersion: 5 },
-    })
+  assert.throws(
+    () =>
+      normalizeDesktopBootstrap({
+        ...state(),
+        health: { status: "ok", protocolVersion: 6 },
+      }),
+    /桌面服务未连接到协议 7/
   );
   assert.throws(() =>
     normalizeDesktopBootstrap({ ...state(), foregroundWorkspaceId: "ws-missing" })
@@ -117,7 +119,7 @@ test("production bootstrap requires protocol 6 and exact foreground identity", (
   assert.throws(() => normalizeDesktopBootstrap({ ...state(), tasks: [] }));
 
   const unmounted = normalizeDesktopBootstrap({
-    health: { status: "ok", protocolVersion: 6 },
+    health: { status: "ok", protocolVersion: 7 },
     foregroundWorkspaceId: null,
     workspaces: [],
   });

@@ -1008,7 +1008,7 @@ async function exercisePortableLaunch(portable, temp, defaultGuard) {
       return matches.length > 0 ? matches : null;
     }, "portable owned app process", 30_000);
     const health = await authenticatedServiceHealth(endpoint);
-    assert.equal(health.protocolVersion, 6);
+    assert.equal(health.protocolVersion, 7);
     assert.equal(health.pid, endpoint.pid);
     assert.notEqual(endpoint.pid, defaultGuard.endpoint?.pid, "portable smoke must not reuse the default Service");
     evidence = {
@@ -1239,7 +1239,7 @@ async function exercisePackagedElectron() {
     const { window } = run;
     await window.locator('[data-shell="renderer-next"][data-connection="online"]').waitFor({ timeout: 30_000 });
     const health = await window.evaluate(() => window.tentDesktop.health());
-    assert.equal(health?.protocolVersion, 6);
+    assert.equal(health?.protocolVersion, 7);
     assert.equal(health.pid, servicePid);
     await window.evaluate((workspaceRoot) => window.tentDesktop.mountWorkspace(workspaceRoot), workspace);
     const desktopPrefs = await window.evaluate(() => window.tentDesktop.getPrefs());
@@ -1348,7 +1348,7 @@ async function exercisePackagedElectron() {
     }
     await run.window.locator('[data-shell="renderer-next"][data-connection="online"]').waitFor({ timeout: 30_000 });
     const recoveredHealth = await run.window.evaluate(() => window.tentDesktop.health());
-    assert.equal(recoveredHealth.protocolVersion, 6);
+    assert.equal(recoveredHealth.protocolVersion, 7);
     assert.equal(recoveredHealth.pid, recoveredEndpoint.pid);
     assert.notEqual(recoveredHealth.pid, servicePid);
     const recoveredWorkspaces = await waitFor(async () => {
