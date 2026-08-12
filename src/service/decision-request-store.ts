@@ -225,6 +225,17 @@ export class DecisionRequestStore {
     return cloneRecord(item);
   }
 
+  /** Public-id lookup; taskPath remains internal authority carried by the row. */
+  async getExactById(
+    workspaceId: string,
+    requestId: string
+  ): Promise<DecisionRequestRecord | undefined> {
+    await this.requireHealthy();
+    const item = this.items.get(requestId);
+    if (!item || item.workspaceId !== workspaceId) return undefined;
+    return cloneRecord(item);
+  }
+
   async getPendingForTask(
     workspaceId: string,
     taskPath: string

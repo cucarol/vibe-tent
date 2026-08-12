@@ -130,8 +130,9 @@ validation rules.
 
 ## 9. Collaboration projection
 
-`workspace.collaboration` exposes one selected Node id, its active Task
-collaboration, and the user's actionable Inbox. Graph remains the sole source
+`workspace.collaboration` exposes the user's actionable Inbox with an optional
+selected Node collaboration. When no Node is selected, `selectedNode` is null;
+the Inbox remains readable. Graph remains the sole source
 for Node name, type, mode, and hierarchy. Parent responsibility, Role or
 Connection execution, ready Delivery summary, and pending user Decision are
 joined from their existing authorities; no collaboration field is copied into

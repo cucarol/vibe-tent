@@ -104,7 +104,7 @@ test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias kn
     },
     decisionRequestRespond: async (...args: unknown[]) => {
       calls.push({ method: "respond", args });
-      return { request: { id: args[2], status: "answered" }, state: "running" };
+      return { request: { id: args[1], status: "answered" }, state: "running" };
     },
   };
 
@@ -137,7 +137,7 @@ test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias kn
 
   const denied = await runTaskCommand(
     "decision",
-    ["respond", "temp/role/tasks/task.md", "dr-0000000000", "--deny"],
+    ["respond", "dr-0000000000", "--deny"],
     { client: client as never, cwd }
   );
   assert.equal(denied.exitCode, 0, denied.stderr);
@@ -145,7 +145,6 @@ test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias kn
     method: "respond",
     args: [
       "ws-decision",
-      "temp/role/tasks/task.md",
       "dr-0000000000",
       { kind: "deny" },
     ],
@@ -155,7 +154,6 @@ test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias kn
     "decision",
     [
       "respond",
-      "temp/role/tasks/task.md",
       "dr-0000000000",
       "--deny",
       "--actor",
@@ -480,7 +478,7 @@ test("task accept rejects --commits before workspace or client access", async ()
   assert.doesNotMatch(acceptUsage!, /--commits/);
 });
 
-test("task accept/reject require the exact --delivery-id before client access", async () => {
+test("task accept/reject reject retired taskPath and --delivery-id forms before client access", async () => {
   const accessed: string[] = [];
   const client = new Proxy(
     {},
@@ -495,17 +493,60 @@ test("task accept/reject require the exact --delivery-id before client access", 
   );
   for (const [sub, args] of [
     ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user"]],
-    ["reject", ["temp/规划/tasks/task-example.md", "--actor", "user", "--note", "no"]],
-    ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user", "--expected-delivery-id", "dl-old"]],
+    ["reject", ["temp/规划/tasks/task-example.md", "dl-current", "--actor", "user", "--note", "no"]],
+    ["accept", ["dl-current", "--delivery-id", "dl-old", "--actor", "user"]],
   ] as const) {
     const result = await runTaskCommand(sub, [...args], {
       client: client as never,
       cwd: "C:\\path-that-must-not-be-read",
     });
     assert.notEqual(result.exitCode, 0);
-    assert.match(result.stderr, /delivery-id|Unknown option/);
+    assert.match(result.stderr, /Usage|Unknown option/);
   }
   assert.deepEqual(accessed, []);
+});
+
+test("task accept/reject forward exact positional Delivery identity", async () => {
+  const cwd = await makeFakeTentCwd();
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const client = {
+    listWorkspaces: async () => ({ workspaces: [] }),
+    mount: async (workspaceRoot: string) => ({
+      workspaceId: "ws-review",
+      workspaceRoot,
+      systemRoot: path.join(workspaceRoot, ".tent"),
+    }),
+    taskAccept: async (...args: unknown[]) => {
+      calls.push({ method: "accept", args });
+      return { state: "accepted" };
+    },
+    taskReject: async (...args: unknown[]) => {
+      calls.push({ method: "reject", args });
+      return { state: "running", delivery: { status: "rejected" } };
+    },
+  };
+  const accepted = await runTaskCommand(
+    "accept",
+    ["dl-current", "--actor", "user", "--outputs", "cx-one,cx-two"],
+    { client: client as never, cwd }
+  );
+  assert.equal(accepted.exitCode, 0, accepted.stderr);
+  const rejected = await runTaskCommand(
+    "reject",
+    ["dl-next", "--actor", "user", "--note", "retry", "--resume"],
+    { client: client as never, cwd }
+  );
+  assert.equal(rejected.exitCode, 0, rejected.stderr);
+  assert.deepEqual(calls, [
+    {
+      method: "accept",
+      args: ["ws-review", "dl-current", "user", { outputNodeIds: ["cx-one", "cx-two"] }],
+    },
+    {
+      method: "reject",
+      args: ["ws-review", "dl-next", "user", { note: "retry", resume: true }],
+    },
+  ]);
 });
 
 test("missing --target / --work-node / --prompt and invalid target fail loud", async () => {

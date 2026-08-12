@@ -2,6 +2,7 @@
 // Role claim/deliver MUST go through this path — no direct Core mutation.
 
 import type { ServiceClient } from "../service/client.js";
+import { isDeliveryId } from "../core/task-model.js";
 import { attachOrBootstrapService, type CliAttachOptions } from "./service-attach.js";
 import { ensureMountedWorkspace } from "./workspace-context.js";
 
@@ -56,12 +57,14 @@ export async function runTaskCommand(
     if (sub === "accept" || sub === "reject") {
       const allowed =
         sub === "accept"
-          ? new Set(["delivery-id", "actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
-          : new Set(["delivery-id", "actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS]);
+          ? new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
+          : new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS]);
       const unknown = findUnknownFlag(flags, allowed);
       if (unknown) return failUsage(`Unknown option --${unknown} for task ${sub}`);
-      if (!flags["delivery-id"]) {
-        return failUsage(`tent task ${sub} requires --delivery-id <deliveryId>`);
+      if (positionals.length !== 1 || !isDeliveryId(positionals[0]!)) {
+        return failUsage(
+          `Usage: tent task ${sub} <deliveryId> --actor <user|role> [--workspace <path>] [--json]`
+        );
       }
     }
     const workspaceFlag = flags.workspace || globals.workspace;
@@ -339,19 +342,22 @@ export async function runTaskCommand(
         return okPrint(result, json, (r) => formatTaskDispatch(r));
       }
       case "accept": {
-        const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const unknown = findUnknownFlag(
+          flags,
+          new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task accept`);
+        const deliveryId = positionals[0];
+        if (!deliveryId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
+            "Usage: tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
-        const deliveryId = flags["delivery-id"];
-        if (!deliveryId) return failUsage("tent task accept requires --delivery-id <deliveryId>");
         const outputNodeIds =
           parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
-        const result = await client.taskAccept(workspaceId, taskPath, deliveryId, actor, {
+        const result = await client.taskAccept(workspaceId, deliveryId, actor, {
           outputNodeIds,
         });
         return okPrint(result, json, (r) => {
@@ -373,19 +379,22 @@ export async function runTaskCommand(
         });
       }
       case "reject": {
-        const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const unknown = findUnknownFlag(
+          flags,
+          new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task reject`);
+        const deliveryId = positionals[0];
+        if (!deliveryId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
+            "Usage: tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task reject requires --actor <user|role>");
-        const deliveryId = flags["delivery-id"];
-        if (!deliveryId) return failUsage("tent task reject requires --delivery-id <deliveryId>");
         const resume =
           flags.resume === "true" ? true : flags["no-resume"] === "true" ? false : undefined;
-        const result = await client.taskReject(workspaceId, taskPath, deliveryId, actor, {
+        const result = await client.taskReject(workspaceId, deliveryId, actor, {
           note: flags.note,
           resume,
         });
@@ -516,11 +525,10 @@ export async function runTaskCommand(
             new Set(["option", "text", "deny", ...TASK_COMMON_FLAGS])
           );
           if (unknown) return failUsage(`Unknown option --${unknown} for task decision respond`);
-          const taskPath = positionals[1];
-          const requestId = positionals[2];
-          if (!taskPath || !requestId || positionals.length !== 3) {
+          const requestId = positionals[1];
+          if (!requestId || positionals.length !== 2) {
             return failUsage(
-              "Usage: tent task decision respond <taskPath> <requestId> (--option <id> | --text <text>|- | --deny) [--workspace <path>] [--json]"
+              "Usage: tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny) [--workspace <path>] [--json]"
             );
           }
           let text = flags.text;
@@ -540,7 +548,6 @@ export async function runTaskCommand(
               : { kind: "deny" as const };
           const result = await client.decisionRequestRespond(
             workspaceId,
-            taskPath,
             requestId,
             response
           );
@@ -1135,8 +1142,8 @@ Commands:
       # --context-node   repeatable shared read-only context Nodes
       # parentActor derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
-  tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
+  tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
+  tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]

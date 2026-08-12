@@ -177,7 +177,7 @@ export type WorkspaceUserInboxItem =
  */
 export type WorkspaceCollaborationProjection = {
   workspaceId: string;
-  selectedNode: WorkspaceCollaborationSelectedNode;
+  selectedNode: WorkspaceCollaborationSelectedNode | null;
   inbox: {
     items: WorkspaceUserInboxItem[];
     counts: { delivery: number; decision: number; total: number };

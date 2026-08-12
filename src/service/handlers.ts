@@ -55,6 +55,7 @@ import {
 } from "../core/task.js";
 import {
   allowsNonReviewAcceptMode,
+  isDeliveryId,
   isTaskId,
   parseTaskActorRef,
   parseTaskOutcomeReport,
@@ -76,7 +77,13 @@ import {
   appendCallerBootstrapSection,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
-import { roleTempRoot, systemRootFromWorkspace, TEMP_DIR } from "../core/paths.js";
+import {
+  ROLES_TEMP_DIR,
+  roleTempRoot,
+  SESSIONS_TEMP_DIR,
+  systemRootFromWorkspace,
+  TEMP_DIR,
+} from "../core/paths.js";
 import {
   decodeBase64Strict,
   MAX_ATTACHMENT_BYTES,
@@ -87,7 +94,12 @@ import {
   type BootstrapImageRef,
 } from "../adapters/acp/image-prompt.js";
 import { cloneAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
-import { loadDeliveries } from "../core/delivery.js";
+import {
+  loadDeliveries,
+  loadDelivery,
+  peekDeliveryIdentity,
+  type DeliveryRecord,
+} from "../core/delivery.js";
 import {
   OutputProvenanceError,
   resolveOutputProvenance,
@@ -4473,6 +4485,7 @@ async function taskRequestDecisionRpc(
     const task = await taskWait(mount.env, taskPath, {
       reason: "user-input",
       summary: `Decision Request pending: ${question.slice(0, 200)}`,
+      code: `decision_request:${request.id}`,
     });
     let stored: DecisionRequestRecord;
     try {
@@ -5869,6 +5882,138 @@ async function resolveReviewCallerActor(
   return derivedActor;
 }
 
+/**
+ * Public review mutations resolve only from the exact durable Delivery id.
+ * Accepted/rejected terminal Tasks remain eligible so response-loss retries
+ * still reach Core's existing idempotent/conflict logic.
+ */
+async function loadExactWorkspaceDeliveriesById(
+  ctx: HandlerContext,
+  workspaceId: string,
+  deliveryId: string
+): Promise<DeliveryRecord[]> {
+  const mount = ctx.host.require(workspaceId);
+  const fs = mount.env.fs;
+  if (!(await fs.exists(TEMP_DIR))) return [];
+  const matches: DeliveryRecord[] = [];
+  for (const namespace of [ROLES_TEMP_DIR, SESSIONS_TEMP_DIR] as const) {
+    const ownerRoot = `${TEMP_DIR}/${namespace}`;
+    if (!(await fs.exists(ownerRoot))) continue;
+    for (const owner of await fs.listDir(ownerRoot)) {
+      if (!owner.isDir) continue;
+      const deliveriesDir = `${ownerRoot}/${owner.name}/deliveries`;
+      if (!(await fs.exists(deliveriesDir))) continue;
+      for (const entry of await fs.listDir(deliveriesDir)) {
+        if (entry.isDir || !entry.name.toLowerCase().endsWith(".md")) continue;
+        const candidate = `${deliveriesDir}/${entry.name}`;
+        const canonicalTarget = entry.name === `${deliveryId}.md`;
+        const identity = await peekDeliveryIdentity(fs, candidate).catch((error) => {
+          // A non-canonical unrelated file is stale inventory, not review
+          // authority. The canonical target must still fail loud below.
+          if (!canonicalTarget) return undefined;
+          throw error;
+        });
+        if (!canonicalTarget && identity?.id !== deliveryId) continue;
+        const delivery = await loadDelivery(fs, candidate);
+        if (entry.name !== `${delivery.id}.md`) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `Review Delivery filename and record identity differ: ${candidate}`,
+            {
+              code: "REVIEW_DELIVERY_IDENTITY_MISMATCH",
+              requestedDeliveryId: deliveryId,
+              recordId: delivery.id,
+              filename: entry.name,
+              path: delivery.path,
+            }
+          );
+        }
+        if (delivery.id !== deliveryId) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `Review Delivery filename and record identity differ: ${candidate}`,
+            {
+              code: "REVIEW_DELIVERY_IDENTITY_MISMATCH",
+              requestedDeliveryId: deliveryId,
+              recordId: delivery.id,
+              filename: entry.name,
+              path: delivery.path,
+            }
+          );
+        }
+        matches.push(delivery);
+      }
+    }
+  }
+  return matches.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function requireUniqueTaskForReviewDelivery(
+  ctx: HandlerContext,
+  workspaceId: string,
+  deliveryId: string
+): Promise<{ task: TaskEnvelope & { id: string }; delivery: DeliveryRecord }> {
+  const mount = ctx.host.require(workspaceId);
+  const deliveries = await loadExactWorkspaceDeliveriesById(ctx, workspaceId, deliveryId);
+  if (deliveries.length !== 1) {
+    throw reviewDeliveryTaskLookupError(deliveryId, 0, deliveries.length);
+  }
+  const delivery = deliveries[0]!;
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const taskIdMatches = tasks.filter(
+    (task): task is TaskEnvelope & { id: string } =>
+      task.id === delivery.taskId
+  );
+  const activeMatches = tasks.filter(
+    (task): task is TaskEnvelope & { id: string } =>
+      typeof task.id === "string" && task.activeDeliveryId === deliveryId
+  );
+  if (
+    taskIdMatches.length !== 1 ||
+    activeMatches.length !== 1 ||
+    taskIdMatches[0]!.path !== activeMatches[0]!.path
+  ) {
+    throw reviewDeliveryTaskLookupError(
+      deliveryId,
+      Math.max(taskIdMatches.length, activeMatches.length),
+      deliveries.length
+    );
+  }
+  return { task: taskIdMatches[0]!, delivery };
+}
+
+function reviewDeliveryTaskLookupError(
+  deliveryId: string,
+  taskMatches: number,
+  deliveryMatches = 1
+): RpcError {
+  return new RpcError(
+    taskMatches === 0 && deliveryMatches === 0 ? -32004 : RPC_LIFECYCLE,
+    `Review Delivery must identify exactly one durable Delivery and canonical Task: ${deliveryId}`,
+    {
+      code: "REVIEW_DELIVERY_TASK_NOT_UNIQUE",
+      deliveryId,
+      deliveryMatches,
+      taskMatches,
+    }
+  );
+}
+
+function assertReviewDeliveryIdentityUnchanged(
+  initial: { task: TaskEnvelope & { id: string }; delivery: DeliveryRecord },
+  current: { task: TaskEnvelope & { id: string }; delivery: DeliveryRecord }
+): void {
+  if (
+    current.task.path !== initial.task.path ||
+    current.task.id !== initial.task.id ||
+    current.delivery.path !== initial.delivery.path ||
+    current.delivery.id !== initial.delivery.id ||
+    current.delivery.taskId !== initial.delivery.taskId
+  ) {
+    throw reviewDeliveryTaskLookupError(initial.delivery.id, 0, 0);
+  }
+}
+
 async function taskAcceptRpc(
   ctx: HandlerContext,
   p: Record<string, unknown>,
@@ -5876,13 +6021,17 @@ async function taskAcceptRpc(
 ) {
   assertAllowedParams(
     p,
-    new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
+    new Set(["workspaceId", "deliveryId", "actor", "outputNodeIds"]),
     "task.accept"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const taskPath = requireString(p, "taskPath");
   const deliveryId = requireString(p, "deliveryId");
+  if (!isDeliveryId(deliveryId)) {
+    throw new RpcError(-32602, `Invalid Delivery id: ${deliveryId}`);
+  }
+  const initialReview = await requireUniqueTaskForReviewDelivery(ctx, workspaceId, deliveryId);
+  const taskPath = initialReview.task.path;
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
@@ -5901,6 +6050,12 @@ async function taskAcceptRpc(
     try {
       prepared = await ctx.mutations.run(workspaceId, async () => {
         ctx.host.markSelfWrite(workspaceId);
+        const exactReview = await requireUniqueTaskForReviewDelivery(
+          ctx,
+          workspaceId,
+          deliveryId
+        );
+        assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
         const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
         // Review-time target HEAD lives on the ready Delivery; missing → TARGET_MOVED at integrate.
         expectedTargetHead = await loadReadyDeliveryTargetHead(
@@ -5928,6 +6083,12 @@ async function taskAcceptRpc(
     try {
       return await ctx.mutations.run(workspaceId, async () => {
         ctx.host.markSelfWrite(workspaceId);
+        const exactReview = await requireUniqueTaskForReviewDelivery(
+          ctx,
+          workspaceId,
+          deliveryId
+        );
+        assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
         return finalizeTaskAccept(mount.env, taskPath, acceptOptions, prepared);
       });
     } catch (err) {
@@ -6067,13 +6228,17 @@ async function taskRejectRpc(
 ) {
   assertAllowedParams(
     p,
-    new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
+    new Set(["workspaceId", "deliveryId", "actor", "note", "resume"]),
     "task.reject"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const taskPath = requireString(p, "taskPath");
   const deliveryId = requireString(p, "deliveryId");
+  if (!isDeliveryId(deliveryId)) {
+    throw new RpcError(-32602, `Invalid Delivery id: ${deliveryId}`);
+  }
+  const initialReview = await requireUniqueTaskForReviewDelivery(ctx, workspaceId, deliveryId);
+  const taskPath = initialReview.task.path;
   const actor = requireString(p, "actor");
   // Delivery record may use trimmed note; U2A review-feedback preserves exact text.
   const noteForDelivery = optionalString(p, "note");
@@ -6092,6 +6257,12 @@ async function taskRejectRpc(
     );
     return ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
+      const exactReview = await requireUniqueTaskForReviewDelivery(
+        ctx,
+        workspaceId,
+        deliveryId
+      );
+      assertReviewDeliveryIdentityUnchanged(initialReview, exactReview);
       const rejected = await taskReject(mount.env, taskPath, {
         actor: reviewerActor,
         deliveryId,
@@ -7939,17 +8110,17 @@ async function workspaceCollaborationRpc(
 ): Promise<WorkspaceCollaborationProjection> {
   assertAllowedParams(p, new Set(["workspaceId", "nodeId"]), "workspace.collaboration");
   const workspaceId = requireWorkspaceId(ctx, p);
-  const nodeId = requireString(p, "nodeId");
+  const nodeId = optionalString(p, "nodeId");
   const mount = ctx.host.require(workspaceId);
 
-  let tent: LoadedTent;
+  let tent: LoadedTent | undefined;
   let tasks: TaskEnvelope[];
   let deliveries: Awaited<ReturnType<typeof loadDeliveries>>;
   let decisions: Awaited<ReturnType<typeof ctx.decisionRequests.listPending>>;
   let roles: Awaited<ReturnType<typeof loadRolesRegistry>>;
   try {
     [tent, tasks, deliveries, decisions, roles] = await Promise.all([
-      loadTent(mount.env.fs),
+      nodeId ? loadTent(mount.env.fs) : Promise.resolve(undefined),
       loadTaskEnvelopes(mount.env.fs),
       loadDeliveries(mount.env.fs),
       ctx.decisionRequests.listPending(workspaceId),
@@ -7964,18 +8135,22 @@ async function workspaceCollaborationRpc(
     );
   }
 
-  const node = requireCanonicalNode(tent, nodeId);
-  if (node.invalid) {
-    throw new RpcError(
-      -32004,
-      `Node is invalid and has no collaboration projection: ${node.path}`,
-      { nodeId: node.id, path: node.path, detail: node.invalidReason }
-    );
+  let canonicalNodeId: string | undefined;
+  if (nodeId) {
+    const node = requireCanonicalNode(tent!, nodeId);
+    if (node.invalid) {
+      throw new RpcError(
+        -32004,
+        `Node is invalid and has no collaboration projection: ${node.path}`,
+        { nodeId: node.id, path: node.path, detail: node.invalidReason }
+      );
+    }
+    canonicalNodeId = node.id;
   }
 
   return buildWorkspaceCollaborationProjection({
     workspaceId,
-    nodeId: node.id,
+    ...(canonicalNodeId ? { nodeId: canonicalNodeId } : {}),
     tasks,
     deliveries,
     pendingDecisions: decisions,
@@ -9318,6 +9493,51 @@ async function requireExactDecisionRequest(
   return { workspaceId, taskPath, request };
 }
 
+/**
+ * Public Decision response resolves the exact Task from the durable request id.
+ * The Decision row owns its internal taskPath; strict Task inventory proves that
+ * the canonical taskId maps to exactly that one path before any mutation.
+ */
+async function requireDecisionRequestById(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<{
+  workspaceId: string;
+  taskPath: string;
+  request: DecisionRequestRecord;
+  task: TaskEnvelope & { id: string };
+}> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const requestId = requireString(p, "requestId");
+  const request = await ctx.decisionRequests.getExactById(workspaceId, requestId);
+  if (!request) {
+    throw new RpcError(-32004, `Decision Request not found: ${requestId}`);
+  }
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const matches = tasks.filter(
+    (task): task is TaskEnvelope & { id: string } => task.id === request.taskId
+  );
+  if (matches.length !== 1 || matches[0]!.path !== request.taskPath) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Decision Request must identify exactly one canonical Task: ${requestId}`,
+      {
+        code: "DECISION_REQUEST_TASK_NOT_UNIQUE",
+        requestId,
+        taskId: request.taskId,
+        matches: matches.length,
+      }
+    );
+  }
+  return {
+    workspaceId,
+    taskPath: request.taskPath,
+    request,
+    task: matches[0]!,
+  };
+}
+
 async function decisionRequestGet(
   ctx: HandlerContext,
   p: Record<string, unknown>,
@@ -9352,6 +9572,50 @@ function parseDecisionResponseParam(
   }
 }
 
+function assertAnsweredDecisionResponseInputMatches(
+  existing: TaskInputRecord,
+  expected: TaskInputRecord,
+  currentTask: TaskEnvelope
+): void {
+  for (const field of [
+    "id",
+    "workspaceId",
+    "taskPath",
+    "taskId",
+    "role",
+    "kind",
+    "text",
+  ] as const) {
+    if (existing[field] !== expected[field]) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Answered Decision Request TaskInput conflicts on immutable field ${field}`,
+        {
+          code: "DECISION_RESPONSE_INPUT_MISMATCH",
+          inputId: expected.id,
+          field,
+        }
+      );
+    }
+  }
+  if (
+    (existing.status === "pending" ||
+      existing.status === "processing" ||
+      existing.status === "failed") &&
+    existing.sessionId !== currentTask.sessionId
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Answered Decision Request TaskInput conflicts on current Session binding",
+      {
+        code: "DECISION_RESPONSE_INPUT_MISMATCH",
+        inputId: expected.id,
+        field: "sessionId",
+      }
+    );
+  }
+}
+
 /**
  * Persist deterministic TaskInput before answering the request, then resume and
  * schedule the existing exact-Task FIFO. A retry reuses the same ti-* row.
@@ -9363,60 +9627,33 @@ async function decisionRequestRespondRpc(
 ) {
   assertAllowedParams(
     p,
-    new Set(["workspaceId", "taskPath", "requestId", "response"]),
+    new Set(["workspaceId", "requestId", "response"]),
     "decisionRequest.respond"
   );
-  const exact = await requireExactDecisionRequest(ctx, p);
+  const exact = await requireDecisionRequestById(ctx, p);
   const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
   assertDecisionAuthority(exact.request, responder);
-  const response = parseDecisionResponseParam(p.response, exact.request.options);
+  parseDecisionResponseParam(p.response, exact.request.options);
   const mount = ctx.host.require(exact.workspaceId);
 
   const result = await runTaskLifecycle(exact.workspaceId, exact.taskPath, () =>
     ctx.mutations.run(exact.workspaceId, async () => {
-      const currentRequest = await ctx.decisionRequests.getExact(
-        exact.workspaceId,
-        exact.taskPath,
-        exact.request.id
-      );
-      if (!currentRequest) {
-        throw new RpcError(-32004, `Decision Request not found: ${exact.request.id}`);
-      }
-      assertDecisionAuthority(currentRequest, responder);
-      const task = await loadTaskEnvelope(mount.env.fs, exact.taskPath);
-      if (!task.id || task.id !== currentRequest.taskId) {
+      const current = await requireDecisionRequestById(ctx, p);
+      if (
+        current.taskPath !== exact.taskPath ||
+        current.request.id !== exact.request.id ||
+        current.request.taskId !== exact.request.taskId
+      ) {
         throw new RpcError(RPC_LIFECYCLE, "Decision Request Task identity changed", {
           code: "DECISION_TASK_MISMATCH",
-          requestId: currentRequest.id,
+          requestId: exact.request.id,
         });
       }
-      if (TERMINAL_TASK_STATES.has(task.state)) {
-        throw new RpcError(RPC_LIFECYCLE, "Cannot respond to a Decision Request for a terminal Task", {
-          code: "DECISION_TASK_TERMINAL",
-          requestId: currentRequest.id,
-          taskId: task.id,
-          state: task.state,
-        });
-      }
-      if (task.sessionId !== currentRequest.requester.id) {
-        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session is no longer bound to the exact Task", {
-          code: "DECISION_SESSION_MISMATCH",
-          requestId: currentRequest.id,
-          requesterSessionId: currentRequest.requester.id,
-          taskSessionId: task.sessionId,
-        });
-      }
-      const session = await ctx.runtime.registry.read(currentRequest.requester.id);
-      if (
-        !session ||
-        session.workspace !== exact.workspaceId ||
-        session.lastTaskId !== task.id
-      ) {
-        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session registry binding is stale", {
-          code: "DECISION_SESSION_BINDING_STALE",
-          requestId: currentRequest.id,
-        });
-      }
+      const currentRequest = current.request;
+      assertDecisionAuthority(currentRequest, responder);
+      const response = parseDecisionResponseParam(p.response, currentRequest.options);
+      const task = current.task;
+      const exactDecisionWaitCode = `decision_request:${currentRequest.id}`;
       const now = new Date().toISOString();
       const prepared = prepareDecisionResponse({
         request: coreDecisionRequest(currentRequest),
@@ -9431,6 +9668,138 @@ async function decisionRequestRespondRpc(
         },
         now,
       });
+
+      // A durable answered row is the idempotency authority. Its exact retry
+      // must remain readable after the Task becomes terminal or changes its
+      // executing Session; those later facts cannot invalidate the response.
+      if (currentRequest.status === "answered") {
+        const answered = await ctx.decisionRequests.answerExact({
+          workspaceId: exact.workspaceId,
+          taskPath: exact.taskPath,
+          requestId: currentRequest.id,
+          responder,
+          response,
+        });
+        const input = await ctx.taskInputs.get(
+          prepared.taskInput.id,
+          exact.workspaceId,
+          exact.taskPath
+        );
+        if (!input) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            "Answered Decision Request is missing its deterministic TaskInput",
+            {
+              code: "DECISION_RESPONSE_INPUT_MISSING",
+              requestId: currentRequest.id,
+              inputId: prepared.taskInput.id,
+            }
+          );
+        }
+        // Formal start/replace may rebind an open row to a new Session after
+        // the Decision was answered. Session is execution state, not response
+        // identity; every other immutable response field must still match.
+        assertAnsweredDecisionResponseInputMatches(input, prepared.taskInput, task);
+        let nextTask: TaskEnvelope = task;
+        if (
+          task.state === "waiting" &&
+          task.wait?.reason === "user-input" &&
+          task.wait.code === exactDecisionWaitCode
+        ) {
+          const inputSessionId = input.sessionId;
+          const session = inputSessionId
+            ? await ctx.runtime.registry.read(inputSessionId)
+            : null;
+          const canResume = Boolean(
+            inputSessionId &&
+              task.sessionId === inputSessionId &&
+              session &&
+              SessionRegistry.isOpen(session.state) &&
+              session.workspace === exact.workspaceId &&
+              session.lastTaskId === task.id
+          );
+          if (canResume) {
+            ctx.host.markSelfWrite(exact.workspaceId);
+            nextTask = await taskResume(mount.env, exact.taskPath);
+            emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond.recover");
+          }
+        }
+        let enqueue =
+          nextTask.state === "running" &&
+          (input.status === "pending" || input.status === "failed");
+        if (enqueue) {
+          const inputSessionId = input.sessionId;
+          const session = inputSessionId
+            ? await ctx.runtime.registry.read(inputSessionId)
+            : null;
+          enqueue = Boolean(
+            inputSessionId &&
+              nextTask.sessionId === inputSessionId &&
+              session &&
+              SessionRegistry.isOpen(session.state) &&
+              session.workspace === exact.workspaceId &&
+              session.lastTaskId === nextTask.id
+          );
+        }
+        return { answered, input, task: nextTask, enqueue };
+      }
+
+      if (TERMINAL_TASK_STATES.has(task.state)) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Cannot respond to a Decision Request for a terminal Task",
+          {
+            code: "DECISION_TASK_TERMINAL",
+            requestId: currentRequest.id,
+            taskId: task.id,
+            state: task.state,
+          }
+        );
+      }
+      if (task.state !== "waiting" || task.wait?.reason !== "user-input") {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Pending Decision Request requires its exact Task to be waiting for user input",
+          {
+            code: "DECISION_TASK_NOT_WAITING_USER_INPUT",
+            requestId: currentRequest.id,
+            taskId: task.id,
+            state: task.state,
+            waitReason: task.wait?.reason,
+          }
+        );
+      }
+      if (task.wait.code !== exactDecisionWaitCode) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "Pending Decision Request does not own the Task's current user-input wait",
+          {
+            code: "DECISION_TASK_WAIT_IDENTITY_MISMATCH",
+            requestId: currentRequest.id,
+            waitCode: task.wait.code,
+          }
+        );
+      }
+      if (task.sessionId !== currentRequest.requester.id) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session is no longer bound to the exact Task", {
+          code: "DECISION_SESSION_MISMATCH",
+          requestId: currentRequest.id,
+          requesterSessionId: currentRequest.requester.id,
+          taskSessionId: task.sessionId,
+        });
+      }
+      const session = await ctx.runtime.registry.read(currentRequest.requester.id);
+      if (
+        !session ||
+        !SessionRegistry.isOpen(session.state) ||
+        session.workspace !== exact.workspaceId ||
+        session.lastTaskId !== task.id
+      ) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session registry binding is stale", {
+          code: "DECISION_SESSION_BINDING_STALE",
+          requestId: currentRequest.id,
+        });
+      }
       const existingInput = await ctx.taskInputs.get(
         prepared.taskInput.id,
         exact.workspaceId,
@@ -9455,30 +9824,30 @@ async function decisionRequestRespondRpc(
           "self"
         );
       }
-      let nextTask = task;
-      if (task.state === "waiting" && task.wait?.reason === "user-input") {
-        ctx.host.markSelfWrite(exact.workspaceId);
-        nextTask = await taskResume(mount.env, exact.taskPath);
-        emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond");
-      }
-      return { answered, input, task: nextTask };
+      let nextTask: TaskEnvelope = task;
+      ctx.host.markSelfWrite(exact.workspaceId);
+      nextTask = await taskResume(mount.env, exact.taskPath);
+      emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond");
+      return { answered, input, task: nextTask, enqueue: true };
     })
   );
 
-  ctx.events.emit(
-    "taskInput.pending",
-    exact.workspaceId,
-    projectTaskInput(result.input),
-    "self"
-  );
-  enqueueManagedTaskInputBackground(ctx, result.input);
+  if (result.enqueue) {
+    ctx.events.emit(
+      "taskInput.pending",
+      exact.workspaceId,
+      projectTaskInput(result.input),
+      "self"
+    );
+    enqueueManagedTaskInputBackground(ctx, result.input);
+  }
   return {
     request: projectDecisionRequest(result.answered),
     input: projectTaskInput(result.input),
     task: projectTask(result.task),
     state: result.task.state,
     accepted: true,
-    enqueued: true,
+    enqueued: result.enqueue,
   };
 }
 

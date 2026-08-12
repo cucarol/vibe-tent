@@ -272,7 +272,7 @@ export function isTaskId(id: string): boolean {
 }
 
 export function isDeliveryId(id: string): boolean {
-  return id.startsWith("dl-") && id.length > 3;
+  return /^dl-[a-z0-9]+$/.test(id);
 }
 
 /** Pure transition table (task-api §2.2). */

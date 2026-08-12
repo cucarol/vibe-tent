@@ -648,7 +648,6 @@ test("task discovery and retention see nested Session Tasks", async () => {
     });
     await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: (delivered.result as { delivery: { id: string } }).delivery.id,
       actor: "user",
     });
@@ -703,7 +702,6 @@ test("Connection Task projects exact Session and Delivery remains Task-scoped", 
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
     });

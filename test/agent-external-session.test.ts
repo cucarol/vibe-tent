@@ -315,7 +315,6 @@ test("external Role reject-resume keeps the exact live Session and Task running"
 
     const rejected = (await root.taskReject(
       workspaceId,
-      dispatched.taskPath,
       delivered.delivery.id,
       "user",
       { note: "revise externally", resume: true }
@@ -388,7 +387,6 @@ test("external session.leave defensively parks every exact active Task and new c
     })) as { delivery: { id: string } };
     const rejected = (await root.taskReject(
       workspaceId,
-      first.taskPath,
       firstDelivery.delivery.id,
       "user",
       { note: "preserve this exact review feedback", resume: true }
@@ -757,7 +755,6 @@ test("external Role reject-resume racing session.leave never projects closed Ses
     try {
       const rejectPromise = root.taskReject(
         workspaceId,
-        dispatched.taskPath,
         delivered.delivery.id,
         "user",
         { note: exactReviewText, resume: true }
@@ -864,7 +861,6 @@ test("external Role reject-resume failure is parked without managed-Session diag
 
     const rejected = await root.tryCall("task.reject", {
       workspaceId,
-      taskPath: dispatched.taskPath,
       deliveryId: delivered.delivery.id,
       actor: "user",
       note: "resume after external host left",

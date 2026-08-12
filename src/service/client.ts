@@ -816,14 +816,12 @@ export class ServiceClient {
   }
   taskAccept(
     workspaceId: string,
-    taskPath: string,
     deliveryId: string,
     actor: string,
     opts?: { outputNodeIds?: string[] }
   ) {
     return this.call("task.accept", {
       workspaceId,
-      taskPath,
       deliveryId,
       actor,
       ...(opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}),
@@ -831,12 +829,11 @@ export class ServiceClient {
   }
   taskReject(
     workspaceId: string,
-    taskPath: string,
     deliveryId: string,
     actor: string,
     opts?: { note?: string; resume?: boolean }
   ) {
-    return this.call("task.reject", { workspaceId, taskPath, deliveryId, actor, ...opts });
+    return this.call("task.reject", { workspaceId, deliveryId, actor, ...opts });
   }
   taskInterrupt(workspaceId: string, taskPath: string) {
     return this.call("task.interrupt", { workspaceId, taskPath });
@@ -877,11 +874,11 @@ export class ServiceClient {
     return this.call("task.get", { workspaceId, taskPath });
   }
 
-  /** Selected Node collaboration + user-actionable Inbox in one authoritative read. */
-  workspaceCollaboration(workspaceId: string, nodeId: string) {
+  /** Optional selected Node collaboration + user-actionable Inbox in one authoritative read. */
+  workspaceCollaboration(workspaceId: string, nodeId?: string) {
     return this.call<WorkspaceCollaborationProjection>("workspace.collaboration", {
       workspaceId,
-      nodeId,
+      ...(nodeId ? { nodeId } : {}),
     });
   }
 
@@ -1063,7 +1060,6 @@ export class ServiceClient {
   /** Respond through authenticated transport authority; caller actor text is forbidden. */
   decisionRequestRespond(
     workspaceId: string,
-    taskPath: string,
     requestId: string,
     response:
       | { kind: "option"; optionId: string }
@@ -1072,7 +1068,6 @@ export class ServiceClient {
   ) {
     return this.call("decisionRequest.respond", {
       workspaceId,
-      taskPath,
       requestId,
       response,
     });

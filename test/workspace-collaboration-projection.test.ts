@@ -263,8 +263,12 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
     assert.equal(result.inbox.items[1]!.kind, "decision");
     assert.equal((result.inbox.items[1] as { requestId: string }).requestId, decision.id);
 
+    const inboxOnly = await client.workspaceCollaboration(workspaceId);
+    assert.equal(inboxOnly.selectedNode, null);
+    assert.deepEqual(inboxOnly.inbox, result.inbox);
+
     const decisionProjection = await client.workspaceCollaboration(workspaceId, decisionNode);
-    assert.deepEqual(decisionProjection.selectedNode.activeTask?.pendingDecision, {
+    assert.deepEqual(decisionProjection.selectedNode?.activeTask?.pendingDecision, {
       requestId: decision.id,
       question: "Choose one?",
       options: [{ id: "yes", label: "Yes" }],
@@ -295,9 +299,9 @@ test("workspace.collaboration distinguishes user responsibility from Connection 
     assert.ok(dispatched.taskPath);
 
     const result = await client.workspaceCollaboration(workspaceId, nodeId);
-    assert.equal(result.selectedNode.activeTask?.state, "running");
-    assert.deepEqual(result.selectedNode.activeTask?.responsibility, { kind: "user" });
-    assert.deepEqual(result.selectedNode.activeTask?.execution, {
+    assert.equal(result.selectedNode?.activeTask?.state, "running");
+    assert.deepEqual(result.selectedNode?.activeTask?.responsibility, { kind: "user" });
+    assert.deepEqual(result.selectedNode?.activeTask?.execution, {
       kind: "connection",
       connectionId: "fake-k",
       displayName: "Machine K",
@@ -334,9 +338,9 @@ test("workspace.collaboration keeps ordinary external Session execution private"
     });
 
     const result = await client.workspaceCollaboration(workspaceId, nodeId);
-    assert.equal(result.selectedNode.activeTask?.taskId, task.id);
-    assert.deepEqual(result.selectedNode.activeTask?.responsibility, { kind: "user" });
-    assert.equal(result.selectedNode.activeTask?.execution, null);
+    assert.equal(result.selectedNode?.activeTask?.taskId, task.id);
+    assert.deepEqual(result.selectedNode?.activeTask?.responsibility, { kind: "user" });
+    assert.equal(result.selectedNode?.activeTask?.execution, null);
   });
 });
 

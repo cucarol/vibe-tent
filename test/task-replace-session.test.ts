@@ -1041,7 +1041,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
 
     const acceptPromise = rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId,
       actor: "user",
     }).then((res) => {

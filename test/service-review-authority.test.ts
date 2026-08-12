@@ -4,10 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
-import { loadDeliveries } from "../src/core/delivery.js";
+import {
+  loadDeliveries,
+  sessionDeliveryPath,
+  writeDelivery,
+} from "../src/core/delivery.js";
 import { dispatch } from "../src/core/ops.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { taskClaim, taskDeliver } from "../src/core/task-lifecycle.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { makeSessionId } from "../src/runtime/index.js";
@@ -126,7 +130,6 @@ async function assertReviewRejectedWithoutMutation(
   const before = await snapshotReviewRows(svc, fixture);
   const result = await client.tryCall(`task.${action}`, {
     workspaceId: fixture.workspaceId,
-    taskPath: fixture.taskPath,
     deliveryId: fixture.deliveryId,
     actor,
     ...(action === "reject" ? { resume: false } : {}),
@@ -166,9 +169,26 @@ test("review RPC authority: local user is derived and Session callers cannot imp
     const workspaceId = mounted.workspaceId;
 
     const local = await makeReadyFixture(svc, workspaceId, { kind: "user", id: "user" }, "local");
+    const legacyBefore = await snapshotReviewRows(svc, local);
+    for (const method of ["task.accept", "task.reject"] as const) {
+      for (const retired of [
+        { taskPath: local.taskPath },
+        { taskId: "tk-retired" },
+      ]) {
+        const legacy = await root.tryCall(method, {
+          workspaceId,
+          deliveryId: local.deliveryId,
+          actor: "user",
+          ...(method === "task.reject" ? { resume: false } : {}),
+          ...retired,
+        });
+        assert.equal(legacy.ok, false);
+        if (!legacy.ok) assert.equal(legacy.error.code, -32602);
+        assert.deepEqual(await snapshotReviewRows(svc, local), legacyBefore);
+      }
+    }
     const accepted = await root.tryCall("task.accept", {
       workspaceId,
-      taskPath: local.taskPath,
       deliveryId: local.deliveryId,
       actor: "user",
     });
@@ -268,7 +288,6 @@ test("review RPC authority: only the exact external Role Session may accept or r
     );
     const accepted = await exact.tryCall("task.accept", {
       workspaceId,
-      taskPath: acceptedFixture.taskPath,
       deliveryId: acceptedFixture.deliveryId,
       actor: "rl-reviewer",
     });
@@ -282,11 +301,192 @@ test("review RPC authority: only the exact external Role Session may accept or r
     );
     const rejected = await exact.tryCall("task.reject", {
       workspaceId,
-      taskPath: rejectedFixture.taskPath,
       deliveryId: rejectedFixture.deliveryId,
       actor: "rl-reviewer",
       resume: false,
     });
     assert.equal(rejected.ok, true, JSON.stringify(rejected));
+  });
+});
+
+test("review RPC fails closed when one Delivery id binds multiple canonical Tasks", async () => {
+  await withService(async (svc, workspace) => {
+    const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const { workspaceId } = (await root.mount(workspace)) as { workspaceId: string };
+    const first = await makeReadyFixture(
+      svc,
+      workspaceId,
+      { kind: "user", id: "user" },
+      "duplicate-first"
+    );
+    const second = await makeReadyFixture(
+      svc,
+      workspaceId,
+      { kind: "user", id: "user" },
+      "duplicate-second"
+    );
+    const mount = svc.hostApi.require(workspaceId);
+    await patchTaskEnvelope(mount.env.fs, second.taskPath, {
+      activeDeliveryId: first.deliveryId,
+    });
+    const beforeFirst = await snapshotReviewRows(svc, first);
+    const beforeSecondTask = await mount.env.fs.readFile(second.taskPath);
+    const response = await root.tryCall("task.reject", {
+      workspaceId,
+      deliveryId: first.deliveryId,
+      actor: "user",
+      resume: false,
+    });
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(
+        (response.error.data as { code?: string } | undefined)?.code,
+        "REVIEW_DELIVERY_TASK_NOT_UNIQUE"
+      );
+    }
+    assert.deepEqual(await snapshotReviewRows(svc, first), beforeFirst);
+    assert.equal(await mount.env.fs.readFile(second.taskPath), beforeSecondTask);
+  });
+});
+
+test("review RPC requires one exact Delivery record and one canonical Task identity", async () => {
+  await withService(async (svc, workspace) => {
+    const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const { workspaceId } = (await root.mount(workspace)) as { workspaceId: string };
+    const fixture = await makeReadyFixture(
+      svc,
+      workspaceId,
+      { kind: "user", id: "user" },
+      "strict-delivery"
+    );
+    const mount = svc.hostApi.require(workspaceId);
+    const task = await loadTaskEnvelope(mount.env.fs, fixture.taskPath);
+    const delivery = (await loadDeliveries(mount.env.fs, { taskId: task.id })).find(
+      (row) => row.id === fixture.deliveryId
+    );
+    assert.ok(delivery);
+    const before = await snapshotReviewRows(svc, fixture);
+
+    const uppercaseRequest = await root.tryCall("task.accept", {
+      workspaceId,
+      deliveryId: fixture.deliveryId.toUpperCase(),
+      actor: "user",
+    });
+    assert.equal(uppercaseRequest.ok, false);
+    if (!uppercaseRequest.ok) assert.equal(uppercaseRequest.error.code, -32602);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+
+    const duplicatePath = sessionDeliveryPath("ss-review-duplicate", fixture.deliveryId);
+    await writeDelivery(mount.env.fs, { ...delivery, path: duplicatePath });
+    const duplicate = await root.tryCall("task.accept", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+    });
+    assert.equal(duplicate.ok, false);
+    if (!duplicate.ok) {
+      assert.equal(
+        (duplicate.error.data as { deliveryMatches?: number } | undefined)?.deliveryMatches,
+        2
+      );
+    }
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(duplicatePath);
+
+    const duplicateTaskPath = fixture.taskPath.replace(/\.md$/, "-duplicate-id.md");
+    const duplicateTaskRaw = (await mount.env.fs.readFile(fixture.taskPath)).replace(
+      `activeDeliveryId: ${fixture.deliveryId}`,
+      "activeDeliveryId: dl-unrelated"
+    );
+    await mount.env.fs.writeFile(duplicateTaskPath, duplicateTaskRaw);
+    const duplicateTask = await root.tryCall("task.reject", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+      resume: false,
+    });
+    assert.equal(duplicateTask.ok, false);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(duplicateTaskPath);
+
+    const duplicateAlias = sessionDeliveryPath("ss-review-alias", "dl-alias");
+    await writeDelivery(mount.env.fs, { ...delivery, path: duplicateAlias });
+    const aliasRejected = await root.tryCall("task.accept", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+    });
+    assert.equal(aliasRejected.ok, false);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(duplicateAlias);
+
+    const canonicalMismatch = sessionDeliveryPath("ss-review-mismatch", fixture.deliveryId);
+    await writeDelivery(mount.env.fs, {
+      ...delivery,
+      path: canonicalMismatch,
+      id: "dl-other",
+    });
+    const mismatchRejected = await root.tryCall("task.accept", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+    });
+    assert.equal(mismatchRejected.ok, false);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(canonicalMismatch);
+
+    const uppercaseExtension = sessionDeliveryPath(
+      "ss-review-uppercase-extension",
+      fixture.deliveryId
+    ).replace(/\.md$/, ".MD");
+    await writeDelivery(mount.env.fs, { ...delivery, path: uppercaseExtension });
+    const uppercaseExtensionRejected = await root.tryCall("task.accept", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+    });
+    assert.equal(uppercaseExtensionRejected.ok, false);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(uppercaseExtension);
+
+    const exactDeliveryRaw = await mount.env.fs.readFile(delivery.path);
+    const taskBeforeMalformedTarget = await mount.env.fs.readFile(fixture.taskPath);
+    await mount.env.fs.writeFile(delivery.path, "malformed exact target\n");
+    const malformedTarget = await root.tryCall("task.reject", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+      resume: false,
+    });
+    assert.equal(malformedTarget.ok, false);
+    assert.equal(await mount.env.fs.readFile(fixture.taskPath), taskBeforeMalformedTarget);
+    await mount.env.fs.writeFile(delivery.path, exactDeliveryRaw);
+
+    const unrelatedMalformed = sessionDeliveryPath("ss-review-unrelated", "dl-unrelated");
+    await mount.env.fs.writeFile(unrelatedMalformed, "not a Delivery\n");
+    const unrelatedLarge = sessionDeliveryPath("ss-review-unrelated", "dl-large");
+    await writeDelivery(mount.env.fs, {
+      ...delivery,
+      path: unrelatedLarge,
+      id: "dl-large",
+      summary: "x".repeat(4 * 1024 * 1024),
+    });
+    const originalReadFile = mount.env.fs.readFile.bind(mount.env.fs);
+    mount.env.fs.readFile = async (inputPath) => {
+      if (inputPath === unrelatedMalformed || inputPath === unrelatedLarge) {
+        throw new Error(`unrelated Delivery body must stay unread: ${inputPath}`);
+      }
+      return originalReadFile(inputPath);
+    };
+    try {
+      const accepted = await root.tryCall("task.accept", {
+        workspaceId,
+        deliveryId: fixture.deliveryId,
+        actor: "user",
+      });
+      assert.equal(accepted.ok, true, JSON.stringify(accepted));
+    } finally {
+      mount.env.fs.readFile = originalReadFile;
+    }
   });
 });

@@ -23,6 +23,12 @@ import { setBeforeTaskAcceptFinalizeForTests } from "../src/service/handlers.js"
 import { rpcCall } from "../src/service/http-server.js";
 import { RPC_LIFECYCLE } from "../src/service/types.js";
 import { taskReject } from "../src/core/task-lifecycle.js";
+import { loadTaskEnvelope } from "../src/core/task.js";
+import {
+  loadDeliveries,
+  sessionDeliveryPath,
+  writeDelivery,
+} from "../src/core/delivery.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
 async function makeWorkspace(name = "git-integrity"): Promise<string> {
@@ -259,7 +265,6 @@ test("task.accept retry finalizes an exact fast-forward already integrated befor
     try {
       const first = await rpc(svc, "task.accept", {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId,
         actor: "user",
       });
@@ -273,13 +278,73 @@ test("task.accept retry finalizes an exact fast-forward already integrated befor
 
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId,
       actor: "user",
     });
     assert.ok(!retry.error, JSON.stringify(retry.error));
     assert.equal((retry.result as { state: string }).state, "accepted");
     assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+  });
+});
+
+test("task.accept finalize rejects a Delivery-id collision introduced during Git integration", async () => {
+  const ws = await makeWorkspace("accept-finalize-delivery-collision");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "finalize-collision",
+      prompt: "revalidate exact Delivery after integration",
+    });
+    const commit = await taskCommitOnLane(
+      task.worktree,
+      "finalize-collision.txt",
+      "collision\n",
+      "finalize collision"
+    );
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready before exact Delivery collision",
+      commits: [commit],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+    const mount = svc.ctx.host.require(task.workspaceId);
+    const taskEnvelope = await loadTaskEnvelope(mount.env.fs, task.taskPath);
+    const exact = (await loadDeliveries(mount.env.fs, { taskId: taskEnvelope.id })).find(
+      (row) => row.id === deliveryId
+    );
+    assert.ok(exact);
+    const collisionPath = sessionDeliveryPath("ss-finalize-collision", deliveryId);
+
+    setBeforeTaskAcceptFinalizeForTests(async () => {
+      await writeDelivery(mount.env.fs, { ...exact, path: collisionPath });
+    });
+    try {
+      const accepted = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        deliveryId,
+        actor: "user",
+      });
+      assert.equal(
+        (accepted.error?.data as { code?: string } | undefined)?.code,
+        "REVIEW_DELIVERY_TASK_NOT_UNIQUE"
+      );
+    } finally {
+      setBeforeTaskAcceptFinalizeForTests(null);
+    }
+
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+    await mount.env.fs.remove(collisionPath);
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      deliveryId,
+      actor: "user",
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.equal((retry.result as { state: string }).state, "accepted");
   });
 });
 
@@ -310,7 +375,6 @@ test("task.accept retry finalizes only an exact ordered cherry-pick integration 
     try {
       const firstAccept = await rpc(svc, "task.accept", {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId,
         actor: "user",
       });
@@ -328,7 +392,6 @@ test("task.accept retry finalizes only an exact ordered cherry-pick integration 
 
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId,
       actor: "user",
     });
@@ -362,7 +425,6 @@ test("task.accept retry rejects a partial ordered integration", async () => {
     const partialTip = (await git(ws, "rev-parse", "main")).trim();
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId,
       actor: "user",
     });
@@ -398,7 +460,6 @@ test("task.accept retry rejects a foreign advance after exact integration", asyn
     try {
       const first = await rpc(svc, "task.accept", {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId,
         actor: "user",
       });
@@ -414,7 +475,6 @@ test("task.accept retry rejects a foreign advance after exact integration", asyn
 
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId,
       actor: "user",
     });
@@ -463,7 +523,6 @@ test("task.accept retry rejects a foreign patch with a forged exact cherry-pick 
 
     const retry = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId,
       actor: "user",
     });
@@ -543,13 +602,11 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
     const [resA, resB] = await Promise.all([
       rpc(svc, "task.accept", {
         workspaceId,
-        taskPath: taskA.taskPath,
         deliveryId: deliveryIdOf(deliveredA),
         actor: "user",
       }),
       rpc(svc, "task.accept", {
         workspaceId,
-        taskPath: taskB.taskPath,
         deliveryId: deliveryIdOf(deliveredB),
         actor: "user",
       }),
@@ -634,7 +691,6 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
 
     const missingDeliveryId = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       actor: "user",
     });
     assert.equal(missingDeliveryId.error?.code, -32602);
@@ -645,7 +701,6 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
     for (const commits of [[], ["bbbbbbb"]]) {
       const rejected = await rpc(svc, "task.accept", {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId: deliveryIdOf(delivered),
         actor: "user",
         commits,
@@ -659,7 +714,6 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId: deliveryIdOf(delivered),
       actor: "user",
     });
@@ -696,7 +750,6 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
 
     const missingDeliveryId = await rpc(svc, "task.reject", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       actor: "user",
       note: "must not be applied",
       resume: false,
@@ -712,7 +765,6 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
     ]) {
       const rejected = await rpc(svc, "task.reject", {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId: deliveryIdOf(delivered),
         actor: "user",
         note: "must not be applied",
@@ -727,7 +779,6 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId: deliveryIdOf(delivered),
       actor: "user",
       note: "valid terminal reject",
@@ -805,15 +856,14 @@ test("review mutations reject a replaced Delivery before Git or durable writes",
     for (const method of ["task.accept", "task.reject"] as const) {
       const stale = await rpc(svc, method, {
         workspaceId: task.workspaceId,
-        taskPath: task.taskPath,
         deliveryId: deliveryA.id,
         actor: "user",
         ...(method === "task.reject" ? { note: "stale card", resume: false } : {}),
       });
-      assert.equal(stale.error?.code, RPC_LIFECYCLE, JSON.stringify(stale.error));
+      assert.equal(stale.error?.code, -32004, JSON.stringify(stale.error));
       assert.equal(
         (stale.error?.data as { code?: string } | undefined)?.code,
-        "DELIVERY_CHANGED"
+        "REVIEW_DELIVERY_TASK_NOT_UNIQUE"
       );
       assert.equal(integrateCalls, 0, "stale accept must fail before the Git integrator");
       assert.deepEqual(await fs.readFile(taskFile), beforeTask);
@@ -824,7 +874,6 @@ test("review mutations reject a replaced Delivery before Git or durable writes",
 
     const alias = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
-      taskPath: task.taskPath,
       deliveryId: deliveryB.id,
       expectedDeliveryId: deliveryB.id,
       actor: "user",
@@ -939,13 +988,11 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
     const [resA, resB] = await Promise.all([
       rpc(svc, "task.accept", {
         workspaceId: workspaceIdA,
-        taskPath: taskA.taskPath,
         deliveryId: deliveryIdOf(deliveredA),
         actor: "user",
       }),
       rpc(svc, "task.accept", {
         workspaceId: workspaceIdB,
-        taskPath: taskB.taskPath,
         deliveryId: deliveryIdOf(deliveredB),
         actor: "user",
       }),
@@ -1075,13 +1122,11 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
 
     const acceptA = rpc(svc, "task.accept", {
       workspaceId: workspaceIdA,
-      taskPath: taskA.taskPath,
       deliveryId: deliveryIds.get(taskA.taskPath),
       actor: "user",
     });
     const acceptB = rpc(svc, "task.accept", {
       workspaceId: workspaceIdB,
-      taskPath: taskB.taskPath,
       deliveryId: deliveryIds.get(taskB.taskPath),
       actor: "user",
     });

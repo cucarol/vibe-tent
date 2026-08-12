@@ -121,12 +121,13 @@ authority is derived from authenticated transport rather than caller-provided te
 derived from persisted `parentActor` acts on the exact ready Delivery shown for the Task:
 
 ```text
-tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> ...
-tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note ...] [--resume|--no-resume] ...
+tent task accept <deliveryId> --actor <user|role> ...
+tent task reject <deliveryId> --actor <user|role> [--note ...] [--resume|--no-resume] ...
 ```
 
-The Delivery id is required and prevents a stale review card from accepting or
-rejecting a newer Delivery for the same Task. `DELIVERY_CHANGED` requires the
+The positional Delivery id is required; Service resolves the exact canonical
+Task and never accepts a Task path/id on the review wire. This prevents a stale
+review card from accepting or rejecting a newer Delivery. `DELIVERY_CHANGED` requires the
 client to refresh before retrying. Commit-bearing Delivery validates every
 reported SHA against the Task lane and snapshots the target head.
 `TARGET_MOVED` requires reject/resume and a new Delivery; clients never rewrite

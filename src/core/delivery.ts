@@ -200,7 +200,14 @@ export async function peekDeliveryTaskId(
   fs: FsAdapter,
   inputPath: string
 ): Promise<string | undefined> {
-  const path = normalizeDeliveryPath(inputPath);
+  return (await peekDeliveryIdentity(fs, inputPath))?.taskId;
+}
+
+export async function peekDeliveryIdentity(
+  fs: FsAdapter,
+  inputPath: string
+): Promise<{ id: string; taskId: string } | undefined> {
+  const path = normalizeDeliveryIdentityPath(inputPath);
   if (!fs.readBinaryBounded) {
     throw new Error("Delivery identity discovery requires bounded prefix reads.");
   }
@@ -218,9 +225,19 @@ export async function peekDeliveryTaskId(
   // opening frontmatter's first fields, never from report body examples; the
   // closing fence and potentially large checks/artifact fields need not fit.
   const identity = raw.match(
-    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/i
+    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/
   );
-  return identity?.[2];
+  return identity ? { id: identity[1]!, taskId: identity[2]! } : undefined;
+}
+
+function normalizeDeliveryIdentityPath(input: string): string {
+  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/(roles|sessions)\/[^/]+\/deliveries\/dl-[^/]+\.md$/i.test(path)) {
+    throw new Error(
+      "Delivery identity must point under a Role/Session deliveries directory."
+    );
+  }
+  return path;
 }
 
 export async function loadDeliveries(

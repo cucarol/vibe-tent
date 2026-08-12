@@ -23,8 +23,8 @@ User / dispatcher write path and review (not the executor’s self-inbox):
 ```text
 tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
 tent task decision list|get|respond|escalate […]
-tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> …
-tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note …] [--resume|--no-resume] …
+tent task accept <deliveryId> --actor <user|role> …
+tent task reject <deliveryId> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task interrupt <taskPath> …
 tent task cancel <taskPath> …
 tent task dispatch --target role:<roleId>|connection:<connectionId> \
@@ -59,9 +59,9 @@ Dispatch forms (downstream assignment only):
 
 Executors never self-accept. Review authority is the exact persisted `parentActor`. Downstream Tasks always use review-to-parent and cannot elevate the durable Role's user-facing Delivery policy.
 
-`--delivery-id` is the exact current ready Delivery shown to the reviewer. A
+The positional `deliveryId` is the exact current ready Delivery shown to the reviewer. A
 `DELIVERY_CHANGED` error means the review view is stale; refresh it rather than
-inferring a Delivery from `taskPath` or retrying with an alias.
+inferring a Task path or retrying with an alias.
 
 ## taskPath
 
@@ -127,9 +127,9 @@ Creates a DecisionRequest targeted to the frozen parent user or Role and moves
 the Task to `waiting(user-input)`. The target responds via Desktop or:
 
 ```bash
-tent task decision respond <taskPath> <requestId> --option <id>
-tent task decision respond <taskPath> <requestId> --text <text>|-
-tent task decision respond <taskPath> <requestId> --deny
+tent task decision respond <requestId> --option <id>
+tent task decision respond <requestId> --text <text>|-
+tent task decision respond <requestId> --deny
 tent task decision escalate <taskPath> <requestId>
 ```
 

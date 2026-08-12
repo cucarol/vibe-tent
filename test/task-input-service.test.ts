@@ -362,7 +362,6 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
 
     await client.decisionRequestRespond(
       workspaceId,
-      taskPath,
       requested.request.id,
       { kind: "custom", text: "go" }
     );
@@ -1080,10 +1079,10 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
 
     const exactNote = "  please fix the edge case and re-run tests  ";
     const t0 = Date.now();
+    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      taskPath,
-      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      terminalDeliveryId,
       "user",
       {
         resume: true,
@@ -1262,10 +1261,10 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     assert.equal(beforeReject.task.sessionId, priorSessionId);
 
     const exactNote = "  native-resume: fix and re-run  ";
+    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      taskPath,
-      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      terminalDeliveryId,
       "user",
       {
         resume: true,
@@ -1458,7 +1457,6 @@ test("reject-resume restore failure parks session_unavailable and startSession r
         () =>
           client.taskReject(
             workspaceId,
-            taskPath,
             deliveryId,
             "user",
             { resume: true, note: "RECOVER_AFTER_FAILURE" }
@@ -1547,7 +1545,6 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     const t0 = Date.now();
     const rejected = (await client.taskReject(
       workspaceId,
-      taskPath,
       await exactReadyDeliveryId(client, workspaceId, taskPath),
       "user",
       {
@@ -1686,7 +1683,6 @@ test("reject-resume: background completion projects processing → delivered", a
     try {
       rejected = (await client.taskReject(
         workspaceId,
-        taskPath,
         await exactReadyDeliveryId(client, workspaceId, taskPath),
         "user",
         {
@@ -1792,7 +1788,6 @@ test("reject-resume: background completion projects processing → delivered", a
     try {
       uncertainRejected = (await client.taskReject(
         workspaceId,
-        taskPath,
         await exactReadyDeliveryId(client, workspaceId, taskPath),
         "user",
         { resume: true, note: "BG_UNCERTAIN_NOTE" }
@@ -2115,7 +2110,6 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
     const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
     const first = (await client.taskReject(
       workspaceId,
-      taskPath,
       deliveryId,
       "user",
       {
@@ -2134,7 +2128,6 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
     // It must converge to the same deterministic TaskInput, never add another.
     const retry = (await client.taskReject(
       workspaceId,
-      taskPath,
       deliveryId,
       "user",
       {
@@ -2151,7 +2144,6 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
       async () =>
         client.taskReject(
           workspaceId,
-          taskPath,
           deliveryId,
           "user",
           {
@@ -2287,7 +2279,6 @@ test("reject-resume: omitted note uses authoritative default and startSession re
 
     const recovered = (await client.taskReject(
       workspaceId,
-      taskPath,
       deliveryId,
       "user",
       { resume: true }
@@ -2351,10 +2342,10 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       summary: "will reject terminal",
     });
 
+    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      taskPath,
-      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      terminalDeliveryId,
       "user",
       {
         resume: false,
@@ -2370,6 +2361,36 @@ test("reject --no-resume: terminal reject without review-feedback or session res
     assert.ok(!rejected.input, "terminal reject must not create review-feedback");
     assert.ok(!rejected.session);
     assert.ok(rejected.accepted === undefined);
+
+    const retry = (await client.taskReject(
+      workspaceId,
+      terminalDeliveryId,
+      "user",
+      { resume: false, note: "no rework" }
+    )) as { state: string; delivery: { id: string; status: string } };
+    assert.equal(retry.state, "rejected");
+    assert.equal(retry.delivery.id, terminalDeliveryId);
+    assert.equal(retry.delivery.status, "rejected");
+
+    const authorityBeforeConflict = JSON.stringify({
+      task: await client.taskGet(workspaceId, taskPath),
+      delivery: await client.deliveryGet(workspaceId, terminalDeliveryId),
+    });
+    await assert.rejects(
+      () =>
+        client.taskReject(workspaceId, terminalDeliveryId, "user", {
+          resume: false,
+          note: "different terminal request",
+        }),
+      /reject|conflict|state|note/i
+    );
+    assert.equal(
+      JSON.stringify({
+        task: await client.taskGet(workspaceId, taskPath),
+        delivery: await client.deliveryGet(workspaceId, terminalDeliveryId),
+      }),
+      authorityBeforeConflict
+    );
 
     const pending = (await client.taskInputListPending(
       workspaceId,

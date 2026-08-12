@@ -443,7 +443,6 @@ test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient"
     // Self-accept forbidden
     const selfAccept = await client.tryCall("task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivered.delivery.id,
       actor: "executor",
     });
@@ -451,7 +450,6 @@ test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient"
 
     const accepted = (await client.taskAccept(
       workspaceId,
-      taskPath,
       delivered.delivery.id,
       "user"
     )) as {
@@ -572,7 +570,6 @@ test("B5: agent-decide integrate vs request-review", async () => {
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       note: "needs more tests",
@@ -2621,7 +2618,6 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
@@ -2876,7 +2872,6 @@ test("P0-2: task.accept releases MutationBus during blocked Git integrate", asyn
     );
     const acceptPromise = rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
@@ -2964,7 +2959,6 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
     );
     const acceptPromise = rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     }).then(
@@ -2983,7 +2977,6 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
     order.push("docs-done");
     const rejectPromise = rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       note: "should wait then refuse",
@@ -3138,7 +3131,6 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
@@ -3519,7 +3511,6 @@ test("P0 fix: managed auto-deliver collects exact Task-lane commit; manual accep
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
@@ -3853,7 +3844,6 @@ test("reject-resume fail-closes a non-resumable Connection Task without false-ru
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
@@ -3919,7 +3909,6 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
@@ -3990,7 +3979,6 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
 
       const rejected = await rpc(svc, "task.reject", {
         workspaceId,
-        taskPath,
         deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
         actor: "user",
         resume: true,
@@ -4105,7 +4093,6 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
@@ -4796,7 +4783,6 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
@@ -4889,7 +4875,6 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,

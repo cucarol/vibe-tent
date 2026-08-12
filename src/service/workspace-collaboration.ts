@@ -24,7 +24,7 @@ type ConnectionIdentity = {
 
 export type WorkspaceCollaborationInput = {
   workspaceId: string;
-  nodeId: string;
+  nodeId?: string;
   tasks: readonly TaskEnvelope[];
   deliveries: readonly DeliveryRecord[];
   pendingDecisions: readonly DecisionRequestRecord[];
@@ -60,41 +60,44 @@ export async function buildWorkspaceCollaborationProjection(
   }
   inboxItems.sort(compareWorkspaceUserInboxItem);
 
-  const occupations = listDirectActiveTasksForNode(input.nodeId, input.tasks);
-  if (occupations.length > 1) {
-    throw consistencyError("Node has multiple active Task occupations", {
-      nodeId: input.nodeId,
-      taskIds: occupations.map((task) => task.id ?? null),
-    });
-  }
-  const selectedTask = occupations[0];
-  if (selectedTask?.id) {
-    const sameId = tasksById.get(selectedTask.id) ?? [];
-    if (sameId.length !== 1) {
-      throw consistencyError("Selected Task identity is ambiguous", {
+  let selectedNode: WorkspaceCollaborationProjection["selectedNode"] = null;
+  if (input.nodeId) {
+    const occupations = listDirectActiveTasksForNode(input.nodeId, input.tasks);
+    if (occupations.length > 1) {
+      throw consistencyError("Node has multiple active Task occupations", {
         nodeId: input.nodeId,
-        taskId: selectedTask.id,
+        taskIds: occupations.map((task) => task.id ?? null),
       });
     }
+    const selectedTask = occupations[0];
+    if (selectedTask?.id) {
+      const sameId = tasksById.get(selectedTask.id) ?? [];
+      if (sameId.length !== 1) {
+        throw consistencyError("Selected Task identity is ambiguous", {
+          nodeId: input.nodeId,
+          taskId: selectedTask.id,
+        });
+      }
+    }
+    const activeTask = selectedTask
+      ? await projectActiveTask({
+          ...input,
+          task: selectedTask,
+          deliveriesById,
+          readyDeliveries: selectedTask.id
+            ? readyDeliveriesByTaskId.get(selectedTask.id) ?? []
+            : [],
+          decisionByTaskId: decisionsByTaskId,
+        })
+      : null;
+    selectedNode = { nodeId: input.nodeId, activeTask };
   }
-
-  const activeTask = selectedTask
-    ? await projectActiveTask({
-        ...input,
-        task: selectedTask,
-        deliveriesById,
-        readyDeliveries: selectedTask.id
-          ? readyDeliveriesByTaskId.get(selectedTask.id) ?? []
-          : [],
-        decisionByTaskId: decisionsByTaskId,
-      })
-    : null;
 
   const counts = { delivery: 0, decision: 0, total: inboxItems.length };
   for (const item of inboxItems) counts[item.kind] += 1;
   return {
     workspaceId: input.workspaceId,
-    selectedNode: { nodeId: input.nodeId, activeTask },
+    selectedNode,
     inbox: { items: inboxItems, counts },
   };
 }

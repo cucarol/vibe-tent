@@ -308,7 +308,7 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
     const delivered = (await client.taskDeliver(workspaceId, dispatched.taskPath, {
       summary: "done",
     })) as { delivery: { id: string } };
-    await client.taskAccept(workspaceId, dispatched.taskPath, delivered.delivery.id, "user");
+    await client.taskAccept(workspaceId, delivered.delivery.id, "user");
 
     const item = (await client.nodeCollaboration(workspaceId, note.nodeId)) as NodeCollaboration;
     assertIdle(item, note.nodeId, workspaceId);
@@ -673,7 +673,7 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     const delivered = (await client.taskDeliver(workspaceId, d2.taskPath, {
       summary: "for reject",
     })) as { delivery: { id: string } };
-    await client.taskReject(workspaceId, d2.taskPath, delivered.delivery.id, "user", {
+    await client.taskReject(workspaceId, delivered.delivery.id, "user", {
       resume: false,
       note: "terminal reject",
     });

@@ -305,16 +305,23 @@ taskInput.listPending
 interaction.listPending
 ```
 
-`workspace.collaboration(workspaceId,nodeId)` is the product read boundary. It
+`workspace.collaboration(workspaceId,nodeId?)` is the product read boundary. It
 joins existing Task, Delivery, DecisionRequest, Role, Connection, and Node
-identity facts without persisting a second source. `selectedNode` is exactly
-`{nodeId,activeTask}`; graph remains the only Node title/type/mode authority.
+identity facts without persisting a second source. Without `nodeId`,
+`selectedNode` is `null` and the workspace Inbox remains available. Otherwise
+`selectedNode` is exactly `{nodeId,activeTask}`; graph remains the only Node title/type/mode authority.
 The active Task separates immutable parent responsibility (`user|role`) from
 execution (`role|connection|null`) and may expose only its exact ready Delivery
 summary and actionable user Decision. Its Inbox includes user-responsibility
 ready Deliveries and actionable user-targeted Decisions only, in stable order.
 No Task path, Session/runtime/provider fact, commit, or target head crosses this
 wire.
+
+Review mutations take `workspaceId + deliveryId + actor` (plus the existing
+accept/reject options), and Decision response takes `workspaceId + requestId +
+response`. Service resolves one strict canonical Task from that durable id;
+zero or multiple identities fail loud. Task paths remain internal routing facts
+and never cross the review/response request wire.
 
 During the source sequence, legacy `node.collaboration(s)` and
 `interaction.listPending` reads remain for the existing Desktop. UI batch J

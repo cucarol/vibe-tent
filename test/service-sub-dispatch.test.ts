@@ -824,7 +824,6 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     );
     const accepted = await reviewerClient.rpcRaw("task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: (delivered.result as { delivery: { id: string } }).delivery.id,
       actor: "rl-orchestrator",
     });
@@ -1145,7 +1144,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     );
     const subAccepted = await reviewerClient.rpcRaw("task.accept", {
       workspaceId,
-      taskPath: subTaskPath,
       deliveryId: (subDelivered.result as { delivery: { id: string } }).delivery.id,
       actor: "rl-orchestrator",
     });
@@ -1183,7 +1181,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
 
     const parentAccepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath: parentTaskPath,
       deliveryId: (parentDelivered.result as { delivery: { id: string } }).delivery.id,
       actor: "user",
     });

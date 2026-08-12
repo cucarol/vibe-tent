@@ -308,7 +308,6 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
     });
@@ -357,7 +356,6 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
     });
@@ -410,7 +408,6 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
     });
@@ -457,7 +454,6 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
     });

@@ -184,7 +184,6 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
 
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
       resume: false,
@@ -278,7 +277,6 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
     // Terminal reject enqueues pending even when dirty (fail-closed keep scene).
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
-      taskPath,
       deliveryId: delivery.id,
       actor: "user",
       resume: false,
