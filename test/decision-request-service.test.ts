@@ -372,8 +372,8 @@ test("response persists deterministic TaskInput before answer and retry creates 
       /not published until its Decision Request is answered/
     );
 
-    const eventTypes: string[] = [];
-    const unsubscribe = svc.ctx.events.subscribe((event) => eventTypes.push(event.type));
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const unsubscribe = svc.ctx.events.subscribe((event) => events.push(event));
     const responded = (await root.decisionRequestRespond(
       workspaceId,
       requested.request.id,
@@ -382,8 +382,20 @@ test("response persists deterministic TaskInput before answer and retry creates 
     unsubscribe();
     assert.equal(responded.request.status, "answered");
     assert.equal(responded.state, "running");
+    const eventTypes = events.map((event) => event.type);
+    const resolvedIndex = events.findIndex((event) => event.type === "decisionRequest.resolved");
+    const taskStateIndex = events.findIndex(
+      (event) =>
+        event.type === "task.state" &&
+        (event.payload as { reason?: unknown }).reason === "decisionRequest.respond"
+    );
+    assert.ok(resolvedIndex >= 0, `missing decisionRequest.resolved: ${eventTypes.join(",")}`);
     assert.ok(
-      eventTypes.indexOf("decisionRequest.resolved") < eventTypes.indexOf("task.state"),
+      taskStateIndex >= 0,
+      `missing decisionRequest.respond task.state: ${eventTypes.join(",")}`
+    );
+    assert.ok(
+      resolvedIndex < taskStateIndex,
       "resolved invalidation must precede exact Task resume projection"
     );
     const afterRetry = await svc.ctx.taskInputs.listForTask(workspaceId, taskPath);

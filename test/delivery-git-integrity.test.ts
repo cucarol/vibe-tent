@@ -860,7 +860,7 @@ test("review mutations reject a replaced Delivery before Git or durable writes",
         actor: "user",
         ...(method === "task.reject" ? { note: "stale card", resume: false } : {}),
       });
-      assert.equal(stale.error?.code, -32004, JSON.stringify(stale.error));
+      assert.equal(stale.error?.code, RPC_LIFECYCLE, JSON.stringify(stale.error));
       assert.equal(
         (stale.error?.data as { code?: string } | undefined)?.code,
         "REVIEW_DELIVERY_TASK_NOT_UNIQUE"

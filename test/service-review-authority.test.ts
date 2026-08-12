@@ -420,6 +420,31 @@ test("review RPC requires one exact Delivery record and one canonical Task ident
     assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
     await mount.env.fs.remove(duplicateAlias);
 
+    const malformedAlias = sessionDeliveryPath("ss-review-malformed-alias", "dl-alias");
+    await mount.env.fs.writeFile(
+      malformedAlias,
+      [
+        "---",
+        "type: delivery",
+        `id: ${fixture.deliveryId}`,
+        `taskId: ${task.id}`,
+        `sourceNodeId: ${delivery.sourceNodeId}`,
+        "status: broken",
+        "---",
+        "corrupt target-claiming body",
+        "",
+      ].join("\n")
+    );
+    const malformedAliasRejected = await root.tryCall("task.reject", {
+      workspaceId,
+      deliveryId: fixture.deliveryId,
+      actor: "user",
+      resume: false,
+    });
+    assert.equal(malformedAliasRejected.ok, false);
+    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
+    await mount.env.fs.remove(malformedAlias);
+
     const canonicalMismatch = sessionDeliveryPath("ss-review-mismatch", fixture.deliveryId);
     await writeDelivery(mount.env.fs, {
       ...delivery,
