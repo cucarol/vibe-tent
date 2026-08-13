@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { createTaskResult } from "../src/core/task-result.js";
+import { createTaskResult, writeTaskResult } from "../src/core/task-result.js";
 import { writeTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -94,8 +94,11 @@ async function seedOldTerminal(
       taskId: opts.taskId,
       resultsDir: "temp/sessions/ss-executor/results",
       report: "old result body",
-      status: "accepted",
+      status: "ready",
     });
+    d.status = "accepted";
+    d.review = { reviewer: "user", at: OLD };
+    await writeTaskResult(fsa, d);
     let dRaw = await fsa.readFile(d.path);
     dRaw = dRaw
       .replace(/createdAt: .*/, `createdAt: ${OLD}`)

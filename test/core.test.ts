@@ -656,7 +656,7 @@ test("中断认领:force-release 不扫描无当前 Task 指针的 Result（不�
   const fsa = new NodeFs(dir);
   const env = {
     fs: fsa,
-    clock: { now: () => "t" },
+    clock: { now: () => "2026-07-28T15:00:00.000Z" },
     tentName: "wqb",
   };
   const result = await createTaskResult(fsa, env.clock, {

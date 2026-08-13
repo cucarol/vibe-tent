@@ -153,7 +153,7 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
       "---",
       "type: task",
       "id: tk-stnocard",
-      "sessionId: ss-executor",
+      "executionSessionId: ss-executor",
       "requester: { kind: user, id: user }",
       "state: running",
       "manifest: temp/sessions/ss-executor/manifest.yml",

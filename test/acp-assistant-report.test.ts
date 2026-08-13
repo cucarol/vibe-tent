@@ -56,6 +56,6 @@ test("multi-segment simulation: intermediate + tools + final → last only", () 
   current += "RESULT";
   ({ segments, current } = sealAssistantMessageSegment(segments, current));
   assert.equal(current, "");
-  assert.equal(selectFinalAssistantReport(segments), "FINAL_DELIVERY");
+  assert.equal(selectFinalAssistantReport(segments), "FINAL_RESULT");
   assert.doesNotMatch(selectFinalAssistantReport(segments), /inspect/);
 });

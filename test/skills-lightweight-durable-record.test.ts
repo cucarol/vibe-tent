@@ -21,21 +21,22 @@ test("Role and Task Skills keep the lightweight durable-work contract", async ()
     const normalized = text.replace(/\s+/g, " ");
     assert.match(
       normalized,
-      /Task and (?:its )?TaskResult report (?:are|is) the default durable/i
+      /Task (?:plus|and) TaskResult(?: report)? (?:are|is) the default(?: durable(?: work)?)? record/i
     );
-    assert.match(normalized, /across Tasks or Sessions/i);
+    assert.match(normalized, /cross-Task(?:\/cross-Session)?/i);
     assert.match(normalized, /existing relevant writable Node/i);
-    assert.match(normalized, /parent or user/i);
-    assert.match(normalized, /never create a process-only Node/i);
+    assert.match(normalized, /report to (?:the )?requester/i);
+  }
+
+  for (const text of [role, task]) {
+    assert.match(text.replace(/\s+/g, " "), /never create a process-only Node/i);
   }
 
   for (const text of [task, taskCli]) {
     const normalized = text.replace(/\s+/g, " ");
-    assert.match(normalized, /no outcome wrapper/i);
-    assert.match(
-      normalized,
-      /only (?:those two controls|`blocked` and `needs-input`) park/i
-    );
+    assert.match(normalized, /(?:no outcome wrapper|without a wrapper)/i);
+    assert.match(normalized, /(?:`outcome: blocked`|blocked control) parks/i);
+    assert.match(normalized, /needs-input uses (?:a )?DecisionRequest/i);
     assert.doesNotMatch(normalized, /`outcome: delivered` remains accepted/i);
   }
 });

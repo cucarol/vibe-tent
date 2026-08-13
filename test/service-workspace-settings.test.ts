@@ -312,7 +312,7 @@ test("task envelope persists canonical acceptMode and rejects retired disk value
       "resultPolicy: review"
     );
     await fsa.writeFile(d.taskPath, retiredField);
-    await assert.rejects(() => loadTaskRecord(fsa, d.taskPath), /retired resultPolicy/);
+    await assert.rejects(() => loadTaskRecord(fsa, d.taskPath), /acceptMode must be/);
     assert.equal(await fsa.readFile(d.taskPath), retiredField);
   });
 });
