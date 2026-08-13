@@ -857,11 +857,9 @@ test("resolveAcpSkillMeta requirePathExists fails loud for missing path; name-on
   assert.deepEqual(nameOnly, [{ name: "name-only" }]);
 });
 
-test("disk quarantine on unknown mcpServers field with secret shape", async () => {
+test("invalid mcpServers field fails loud without mutating or exposing secret bytes", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-q-"));
-  await fs.writeFile(
-    connectionsPath(dataDir),
-    JSON.stringify({
+  const original = JSON.stringify({
       connections: [
         {
           connectionId: "grok-acp-q",
@@ -878,10 +876,14 @@ test("disk quarantine on unknown mcpServers field with secret shape", async () =
           ],
         },
       ],
-    }) + "\n",
-    "utf8"
+    }) + "\n";
+  await fs.writeFile(connectionsPath(dataDir), original, "utf8");
+  await assert.rejects(
+    () => loadAgentConnections(dataDir),
+    (error: unknown) =>
+      error instanceof Error && /unreadable/i.test(error.message) && !error.message.includes("sk-leak")
   );
-  await assert.rejects(() => loadAgentConnections(dataDir), /quarantined/i);
+  assert.equal(await fs.readFile(connectionsPath(dataDir), "utf8"), original);
   const backups = (await fs.readdir(dataDir)).filter((name) => name.startsWith("connections.json.corrupt-"));
-  assert.equal(backups.length, 1);
+  assert.equal(backups.length, 0);
 });

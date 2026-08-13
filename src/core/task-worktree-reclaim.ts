@@ -25,7 +25,7 @@ import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { spawn } from "node:child_process";
 
-/** Stable machine codes for reclaim preview / auto-reclaim diagnostics. */
+/** Stable machine codes for explicit reclaim diagnostics. */
 export type TaskWorktreeReclaimCode =
   | "RECLAIMABLE"
   | "RECLAIMED"
@@ -101,7 +101,7 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
    * Service settle re-probe: called immediately before any git worktree remove
    * (and before force metadata drop). Fail-closed → map to SESSION_ACTIVE so a
    * late isTurnActive/isAlive/open Session after evaluate still defers remove.
-   * Production auto-reclaim always supplies this under the per-Task lifecycle lock.
+   * Service explicit reconcile supplies this under the per-Task lifecycle lock.
    */
   assertSessionSettledBeforeRemove?: () =>
     | Promise<
@@ -147,7 +147,7 @@ export async function evaluateTaskWorktreeReclaim(
     targetBranch: task.targetBranch,
   };
 
-  // Durable role lanes are never auto-reclaimed.
+  // Durable role lanes are never reclaimed by the Task-lane operation.
   if (!isTaskScopedWorktreeLane(task)) {
     return {
       ...base,
@@ -838,7 +838,7 @@ export async function reclaimTaskWorktree(
 
 /**
  * Convenience: load results for the task then evaluate/reclaim.
- * Used by Service auto-reclaim and restart recovery.
+ * Used by the explicit Service reconcile operation.
  */
 export async function reclaimTaskWorktreeForEnvelope(
   fs: FsAdapter,

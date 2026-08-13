@@ -256,7 +256,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
   }
 });
 
-test("missing Connections initialize once, explicit empty remains empty, corrupt Connections fail loud once", async () => {
+test("missing Connections initialize once, explicit empty stays empty, corrupt reads are non-mutating", async () => {
   const missingDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-missing-"));
   const defaults = await ensureDefaultAgentConnections(missingDir);
   assert.equal(defaults.length, 6);
@@ -268,11 +268,12 @@ test("missing Connections initialize once, explicit empty remains empty, corrupt
   assert.deepEqual(JSON.parse(await fs.readFile(connectionsPath(emptyDir), "utf8")), { connections: [] });
 
   const corruptDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-corrupt-"));
-  await fs.writeFile(connectionsPath(corruptDir), "{ not-json", "utf8");
-  await assert.rejects(() => ensureDefaultAgentConnections(corruptDir), /quarantined/i);
-  await assert.rejects(() => fs.stat(connectionsPath(corruptDir)), { code: "ENOENT" });
+  const corruptRaw = "{ not-json";
+  await fs.writeFile(connectionsPath(corruptDir), corruptRaw, "utf8");
+  await assert.rejects(() => ensureDefaultAgentConnections(corruptDir), /unreadable/i);
+  assert.equal(await fs.readFile(connectionsPath(corruptDir), "utf8"), corruptRaw);
   const backups = (await fs.readdir(corruptDir)).filter((name) => name.startsWith("connections.json.corrupt-"));
-  assert.equal(backups.length, 1);
+  assert.equal(backups.length, 0);
 });
 
 test("canonical Agent Connections accept explicit launch fields", async () => {

@@ -306,6 +306,7 @@ test("AgentRuntime: Connection/request cannot override reserved; coreEnv + diagn
   const dataDir = await tempDir("tent-reserved-");
   const cwd = await tempDir("tent-reserved-cwd-");
   const secret = "resolver-output-under-any-key-4411";
+  let alive = true;
   const captured: Array<{
     dataDir?: string;
     coreDataDir?: string;
@@ -332,7 +333,7 @@ test("AgentRuntime: Connection/request cannot override reserved; coreEnv + diagn
       coreEnv?: Record<string, string>;
       diagnosticSecrets?: string[];
       sessionId: string;
-    }) => {
+    }, emit: (event: { type: "session.exited"; sessionId: string; exitCode: number }) => void) => {
       captured.push({
         dataDir: plan.env.TENT_SERVICE_DATA_DIR,
         coreDataDir: plan.coreEnv?.TENT_SERVICE_DATA_DIR,
@@ -342,8 +343,11 @@ test("AgentRuntime: Connection/request cannot override reserved; coreEnv + diagn
       return {
         sessionId: plan.sessionId,
         pid: 4242,
-        isAlive: () => true,
-        stop: async () => undefined,
+        isAlive: () => alive,
+        stop: async () => {
+          alive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
+        },
       };
     },
     mapExit: () => ({ type: "session.exited" as const, sessionId: "", exitCode: 0 }),

@@ -356,6 +356,34 @@ async function assertStopped(client: AcpClient): Promise<void> {
   assert.equal(client.isAlive(), false);
 }
 
+test("AcpClient retries an explicit stop after an unconfirmed child exit", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({ sessionId: "ss-stopretry", events });
+  await client.connect();
+  const internals = client as unknown as {
+    proc: import("node:child_process").ChildProcess | null;
+    waitForExitOrForceKill(timeoutMs: number): Promise<void>;
+  };
+  const proc = internals.proc;
+  assert.ok(proc);
+  const originalKill = proc.kill.bind(proc);
+  const originalWait = internals.waitForExitOrForceKill.bind(client);
+  let allowExit = false;
+  proc.kill = ((signal?: NodeJS.Signals | number) =>
+    allowExit ? originalKill(signal) : true) as typeof proc.kill;
+  internals.waitForExitOrForceKill = async () => {
+    throw new Error("child exit was not confirmed");
+  };
+
+  await assert.rejects(() => client.stop("user"), /child exit was not confirmed/);
+  assert.equal(client.isAlive(), true);
+
+  allowExit = true;
+  internals.waitForExitOrForceKill = originalWait;
+  await client.stop("user");
+  assert.equal(client.isAlive(), false);
+});
+
 test("AcpClient accepts an exact UTF-8 assistant budget across sustained small chunks", async () => {
   const events: RuntimeEvent[] = [];
   const client = await makeClient({

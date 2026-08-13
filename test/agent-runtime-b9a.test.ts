@@ -573,6 +573,7 @@ test("concurrent starts for one session launch exactly one managed provider", as
   const cwd = await tempCwd();
   let startCalls = 0;
   let stopCalls = 0;
+  let shutdownAlive = true;
   const adapter: ProviderAdapter = {
     id: "start-single-flight",
     displayNameKey: "adapter.startSingleFlight",
@@ -595,9 +596,11 @@ test("concurrent starts for one session launch exactly one managed provider", as
       return {
         sessionId: plan.sessionId,
         pid: 8100 + startCalls,
-        isAlive: () => true,
+        isAlive: () => shutdownAlive,
         stop: async () => {
           stopCalls += 1;
+          shutdownAlive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
         },
       };
     },
@@ -679,6 +682,7 @@ test("shutdown waits for an in-flight managed start and rejects new work", async
     releaseStart = resolve;
   });
   let stopCalls = 0;
+  let shutdownAlive = true;
   const adapter: ProviderAdapter = {
     id: "shutdown-start-race",
     displayNameKey: "adapter.shutdownStartRace",
@@ -701,9 +705,11 @@ test("shutdown waits for an in-flight managed start and rejects new work", async
       return {
         sessionId: plan.sessionId,
         pid: 8201,
-        isAlive: () => true,
+        isAlive: () => shutdownAlive,
         stop: async () => {
           stopCalls += 1;
+          shutdownAlive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
         },
       };
     },
@@ -737,6 +743,65 @@ test("shutdown waits for an in-flight managed start and rejects new work", async
   await shutdown;
   assert.equal(stopCalls, 1);
   assert.equal(runtime.supervisor.listLive().length, 0);
+});
+
+test("managed stop retains live truth until the child exit is confirmed", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let alive = true;
+  let emitRuntime!: (event: RuntimeEvent) => void;
+  const adapter: ProviderAdapter = {
+    id: "stop-unconfirmed",
+    displayNameKey: "adapter.stopUnconfirmed",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    startManagedSession: async (plan, emit) => {
+      emitRuntime = emit;
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 8301 });
+      return {
+        sessionId: plan.sessionId,
+        pid: 8301,
+        isAlive: () => alive,
+        stop: async () => undefined,
+      };
+    },
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    connections: [testConnection("stop-unconfirmed", adapter.id)],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const sessionId = "ss-stoptruth";
+  await startConnection(runtime, { sessionId, connectionId: "stop-unconfirmed", cwd });
+
+  await assert.rejects(() => runtime.stopSession(sessionId, "user"), /exit was not confirmed/);
+  const retained = await runtime.registry.read(sessionId);
+  assert.equal(retained?.state, "live");
+  assert.equal(retained?.pid, 8301);
+  assert.equal((await runtime.probe(sessionId)).isAlive, true);
+  assert.equal(events.some((event) => event.type === "session.exited"), false);
+
+  alive = false;
+  emitRuntime({ type: "session.exited", sessionId, exitCode: 0 });
+  await runtime.stopSession(sessionId, "user");
+  const stopped = await runtime.registry.read(sessionId);
+  assert.equal(stopped?.state, "stopped");
+  assert.equal(stopped?.pid, undefined);
+  assert.equal(events.some((event) => event.type === "session.exited"), true);
+  await runtime.shutdown();
 });
 
 test("shutdown stops push children (service-stop policy)", async () => {
@@ -866,6 +931,7 @@ test("concurrent native resume calls share one in-flight managed bridge", async 
   const cwd = await tempCwd();
   let resumeCalls = 0;
   let stopCalls = 0;
+  let resumeAlive = true;
   const adapter: ProviderAdapter = {
     id: "resume-test",
     displayNameKey: "adapter.resumeTest",
@@ -889,9 +955,11 @@ test("concurrent native resume calls share one in-flight managed bridge", async 
         sessionId: plan.sessionId,
         pid: 4242,
         providerSessionId: token.providerSessionId ?? token.raw,
-        isAlive: () => true,
+        isAlive: () => resumeAlive,
         stop: async () => {
           stopCalls += 1;
+          resumeAlive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
         },
       };
     },
@@ -1010,6 +1078,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
     serviceDataDir?: string;
   }> = [];
   let secret = "secret-v1";
+  let snapshotAlive = true;
   const adapter: ProviderAdapter = {
     id: "snapshot-resume",
     displayNameKey: "adapter.snapshotResume",
@@ -1031,11 +1100,15 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
         sessionId: plan.sessionId,
         pid: 7001,
         providerSessionId: "provider-snapshot-1",
-        isAlive: () => true,
-        stop: async () => undefined,
+        isAlive: () => snapshotAlive,
+        stop: async () => {
+          snapshotAlive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
+        },
       };
     },
     resumeManagedSession: async (plan, token, emit) => {
+      snapshotAlive = true;
       const acp = plan.extras?.acp as { model?: string; endpoint?: string } | undefined;
       resumedPlans.push({
         model: acp?.model,
@@ -1048,8 +1121,11 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
         sessionId: plan.sessionId,
         pid: 7002,
         providerSessionId: token.providerSessionId ?? token.raw,
-        isAlive: () => true,
-        stop: async () => undefined,
+        isAlive: () => snapshotAlive,
+        stop: async () => {
+          snapshotAlive = false;
+          emit({ type: "session.exited", sessionId: plan.sessionId, exitCode: 0 });
+        },
       };
     },
     parseResumeToken: (raw) => ({ raw, providerSessionId: raw }),

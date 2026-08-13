@@ -443,7 +443,9 @@ async function startOwnedLocalTentService(
         // 3) bounded drain of in-flight managed injects
         // 4) close task-input store last so markDelivered|failed|uncertain can land
         stopManagedTaskInputBackgroundAccept();
-        await attempt(() => runtime.shutdown(), true);
+        // A controlled Service stop is truthful: an unconfirmed child exit is
+        // reported after the remaining cleanup completes.
+        await attempt(() => runtime.shutdown());
         await attempt(
           () => drainManagedTaskInputBackgroundForShutdown(5_000),
           true

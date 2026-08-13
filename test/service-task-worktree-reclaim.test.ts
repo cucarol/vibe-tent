@@ -1,5 +1,5 @@
 /**
- * Service: terminal Task worktree auto-reclaim + exact preview/reconcile RPC.
+ * Service: explicit exact-Task worktree preview/reconcile RPC.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
+import { createServiceClient } from "../src/service/client.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { ensureRoleWorkspace, ensureTaskWorkspace } from "../src/core/workspace.js";
@@ -19,9 +20,6 @@ import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   setBeforeTaskWorktreeReclaimRemoveForTests,
 } from "../src/service/handlers.js";
-import {
-  listTaskWorktreeReclaimPending,
-} from "../src/core/task-worktree-reclaim-queue.js";
 import type { TaskRecord } from "../src/core/task.js";
 
 const FAKE_DEFAULT_CONNECTION_ID = "fake-default";
@@ -119,7 +117,7 @@ test("CLIENT_METHODS includes exact Task worktree preview and reconcile", () => 
   assert.ok(CLIENT_METHODS.includes("task.worktreeReclaim.reconcile"));
 });
 
-test("P0: terminal reject auto-reclaims clean Session Task worktree", async () => {
+test("terminal reject preserves the lane until explicit exact reconcile", async () => {
   const ws = await makeGitTentWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -168,6 +166,16 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
       currentResultId: result.id,
       updatedAt: clock.now(),
     });
+    const sessionAt = clock.now();
+    await svc.ctx.runtime.registry.create({
+      id: "ss-fakedefault",
+      adapterId: "external",
+      state: "stopped",
+      workspace: workspaceId,
+      currentTaskId: taskId,
+      createdAt: sessionAt,
+      updatedAt: sessionAt,
+    });
 
     assert.equal(await pathExists(lane.worktree), true);
 
@@ -192,12 +200,19 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
     const rejected = rejectedRes.result as { state: string };
     assert.equal(rejected.state, "rejected");
 
-    // Auto-reclaim should have removed the worktree.
+    assert.equal(await pathExists(lane.worktree), true, "review does not auto-delete worktrees");
+    const reclaimed = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!reclaimed.error, JSON.stringify(reclaimed.error));
     assert.equal(
-      await pathExists(lane.worktree),
-      false,
-      "terminal reject must auto-reclaim clean Task worktree"
+      (reclaimed.result as { reclaimed: boolean }).reclaimed,
+      true,
+      JSON.stringify(reclaimed.result)
     );
+    assert.equal(await pathExists(lane.worktree), false);
     // Task envelope remains for audit.
     const task = await loadTaskRecord(sysFs, taskPath);
     assert.equal(task.state, "rejected");
@@ -269,10 +284,20 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
     // Mount never scans historical inventory or mutates this lane.
-    assert.equal((await listTaskWorktreeReclaimPending(sysFs)).length, 0);
     assert.equal(await pathExists(lane.worktree), true);
 
-    // Terminal reject enqueues pending even when dirty (fail-closed keep scene).
+    const sessionAt = clock.now();
+    await svc.ctx.runtime.registry.create({
+      id: "ss-fakedefault",
+      adapterId: "external",
+      state: "stopped",
+      workspace: workspaceId,
+      currentTaskId: taskId,
+      createdAt: sessionAt,
+      updatedAt: sessionAt,
+    });
+
+    // Terminal reject leaves the dirty scene intact.
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
       resultId: result.id,
@@ -347,7 +372,6 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    assert.equal((await listTaskWorktreeReclaimPending(sysFs)).length, 0);
     assert.equal(await pathExists(lane.worktree), true, "historical inventory untouched");
   });
 });
@@ -416,16 +440,6 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       updatedAt: clock.now(),
     });
 
-    const { enqueueTaskWorktreeReclaimPending } = await import(
-      "../src/core/task-worktree-reclaim-queue.js"
-    );
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId,
-      taskPath,
-      workspaceRoot: ws,
-      trigger: "test.session-active",
-    });
-
     const blocked = await rpc(svc, "task.worktreeReclaim.reconcile", {
       workspaceId,
       taskPath,
@@ -441,7 +455,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     } catch {
       // already stopped
     }
-    // Drop session binding so registry residue cannot keep SESSION_ACTIVE after stop.
+    // The exact stopped binding is sufficient; no global Session scan is used.
     await patchTaskRecord(sysFs, taskPath, {
       state: "failed",
       workspace: lane.workspace,
@@ -449,12 +463,6 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       branch: lane.branch,
       targetBranch: lane.targetBranch,
       updatedAt: clock.now(),
-    });
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId,
-      taskPath,
-      workspaceRoot: ws,
-      trigger: "test.after-stop",
     });
     const cleaned = await rpc(svc, "task.worktreeReclaim.reconcile", {
       workspaceId,
@@ -470,7 +478,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
   });
 });
 
-test("P0: accepted-while-external queues; session.leave reclaims exact Task only", async () => {
+test("external Session leave never deletes a lane; explicit reconcile remains exact", async () => {
   const ws = await makeGitTentWorkspace("reclaim-ext-leave");
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -548,23 +556,6 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
       updatedAt: clock.now(),
     });
 
-    const { enqueueTaskWorktreeReclaimPending, listTaskWorktreeReclaimPending } =
-      await import("../src/core/task-worktree-reclaim-queue.js");
-
-    // Simulate terminal accept while external still open → SESSION_ACTIVE queue.
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId: targetId,
-      taskPath: targetPath,
-      workspaceRoot: ws,
-      trigger: "task.accept",
-    });
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId: otherId,
-      taskPath: otherPath,
-      workspaceRoot: ws,
-      trigger: "task.fail",
-    });
-
     // Dirty the unrelated lane so recover cannot reclaim it even if attempted.
     await fs.writeFile(path.join(otherLane.worktree, "KEEP.txt"), "other\n");
 
@@ -583,39 +574,32 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     );
     assert.equal(await pathExists(otherLane.worktree), true);
 
-    // Leave external — never deliver/accept; must retry exact currentTaskId only.
+    // Leave external — never submit/review and never auto-delete a worktree.
     const left = await rpc(svc, "session.leave", {
       workspaceId,
       sessionId,
     });
     assert.ok(!left.error, JSON.stringify(left.error));
-    const leftBody = left.result as {
-      delivered: boolean;
-      accepted: boolean;
-      left: boolean;
-    };
-    assert.equal(leftBody.delivered, false);
-    assert.equal(leftBody.accepted, false);
+    const leftBody = left.result as { left: boolean };
     assert.equal(leftBody.left, true);
 
+    assert.equal(await pathExists(targetLane.worktree), true);
+    const reconciled = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath: targetPath,
+      actor: "user",
+    });
+    assert.ok(!reconciled.error, JSON.stringify(reconciled.error));
     assert.equal(
-      await pathExists(targetLane.worktree),
-      false,
-      "exact Task worktree must reclaim on session.leave"
+      (reconciled.result as { reclaimed: boolean }).reclaimed,
+      true,
+      JSON.stringify(reconciled.result)
     );
+    assert.equal(await pathExists(targetLane.worktree), false);
     assert.equal(
       await pathExists(otherLane.worktree),
       true,
-      "unrelated pending queue must remain untouched"
-    );
-    const pending = await listTaskWorktreeReclaimPending(sysFs);
-    assert.ok(
-      pending.some((e) => e.taskId === otherId),
-      "other pending entry must still be queued"
-    );
-    assert.ok(
-      !pending.some((e) => e.taskId === targetId),
-      "target pending entry cleared after successful reclaim"
+      "unrelated exact Task lane must remain untouched"
     );
   });
 });
@@ -639,7 +623,7 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const nodePath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskRecord(sysFs, clock, {
-      requester: { kind: "role", id: "规划" },
+      requester: { kind: "role", id: "rl-executor" },
       assigneeRoleId: "rl-executor",
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: "temp/roles/rl-executor/manifests/m.yml",
@@ -681,12 +665,33 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     });
     assert.ok(unauthorized.error, "non-parent Role must not gain reconcile authority");
 
-    const reconcile = await rpc(svc, "task.worktreeReclaim.reconcile", {
+    const localImpersonation = await rpc(svc, "task.worktreeReclaim.reconcile", {
       workspaceId,
       taskPath,
-      actor: "规划",
+      actor: "rl-executor",
     });
-    assert.ok(!reconcile.error, JSON.stringify(reconcile.error));
+    assert.ok(localImpersonation.error, "local caller cannot impersonate the parent Role");
+
+    const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const entered = (await root.sessionEnter({
+      workspaceId,
+      roleId: "rl-executor",
+      cwd: roleLane.worktree,
+      externalKey: "reclaim-role-authority",
+    })) as { session: { sessionId: string }; sessionToken: string };
+    const roleClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.session.sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
+    const reconcile = await roleClient.tryCall("task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "rl-executor",
+    });
+    assert.equal(reconcile.ok, true, reconcile.ok ? undefined : reconcile.error.message);
+    if (!reconcile.ok) return;
     assert.equal((reconcile.result as { code: string }).code, "NOT_APPLICABLE");
     assert.equal(await pathExists(roleLane.worktree), true, "role lane must survive reconcile");
   });
@@ -763,16 +768,6 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     await git(lane.worktree, "add", "late-after-terminal.txt");
     await git(lane.worktree, "commit", "-q", "-m", "late post-terminal commit");
 
-    const { enqueueTaskWorktreeReclaimPending } = await import(
-      "../src/core/task-worktree-reclaim-queue.js"
-    );
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId,
-      taskPath,
-      workspaceRoot: ws,
-      trigger: "test.terminal-busy-late-write",
-    });
-
     const blockedBusy = await rpc(svc, "task.worktreeReclaim.reconcile", {
       workspaceId,
       taskPath,
@@ -786,9 +781,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
       "lane must stay while bound session is still alive/busy after late write"
     );
 
-    // Install critical-section TOCTOU hook BEFORE session settle: stopSession may
-    // immediately retry pending reclaim via session.exited. The hook dirties the
-    // lane after evaluate eligibility and before exact remove → DIRTY fail-closed.
+    // Install the critical-section TOCTOU hook before the explicit reconcile.
     setBeforeTaskWorktreeReclaimRemoveForTests(async () => {
       await fs.writeFile(
         path.join(lane.worktree, "critical-section-race.txt"),
@@ -801,7 +794,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
       } catch {
         // already stopped
       }
-      // Drop binding residue so registry cannot keep SESSION_ACTIVE after stop.
+      // Preserve the exact stopped binding; no inventory scan is permitted.
       await patchTaskRecord(sysFs, taskPath, {
         state: "failed",
         workspace: lane.workspace,
@@ -809,12 +802,6 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
         branch: lane.branch,
         targetBranch: lane.targetBranch,
         updatedAt: clock.now(),
-      });
-      await enqueueTaskWorktreeReclaimPending(sysFs, {
-        taskId,
-        taskPath,
-        workspaceRoot: ws,
-        trigger: "test.after-session-settle-critical-dirty",
       });
       const blockedDirty = await rpc(svc, "task.worktreeReclaim.reconcile", {
         workspaceId,
@@ -843,12 +830,6 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
 
     // Clean the race file; worktree must be clean+settled before reclaim.
     await fs.unlink(path.join(lane.worktree, "critical-section-race.txt"));
-    await enqueueTaskWorktreeReclaimPending(sysFs, {
-      taskId,
-      taskPath,
-      workspaceRoot: ws,
-      trigger: "test.after-clean-settle",
-    });
     const cleaned = await rpc(svc, "task.worktreeReclaim.reconcile", {
       workspaceId,
       taskPath,

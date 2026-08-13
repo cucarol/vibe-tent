@@ -1219,17 +1219,32 @@ export class AgentRuntime implements AgentRuntimePort {
     }
 
     const managed = this.managed.get(sessionId);
-    if (managed) {
-      try {
+    try {
+      if (managed) {
         await managed.stop(reason);
-      } finally {
+        if (managed.isAlive()) {
+          throw new Error(`Stop failed for session ${sessionId}: child exit was not confirmed`);
+        }
+        await this.waitForManagedTerminal(sessionId);
         this.managed.delete(sessionId);
+      } else if (this.supervisor.isAlive(sessionId)) {
+        await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
       }
-      await this.waitForManagedTerminal(sessionId);
-    } else if (this.supervisor.isAlive(sessionId)) {
-      await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
+      await this.waitForChildExit(sessionId);
+    } catch (error) {
+      const message = truncateUtf8Text(
+        error instanceof Error ? error.message : String(error),
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
+      const current = await this.registry.read(sessionId);
+      if (current) {
+        await this.registry.update(sessionId, {
+          stopReason: reason,
+          lastError: message,
+        });
+      }
+      throw new Error(message);
     }
-    await this.waitForChildExit(sessionId);
 
     // onChildExit may race; re-read after process reaped and mark terminal.
     const current = await this.registry.read(sessionId);
@@ -1368,6 +1383,7 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   private async shutdownInternal(): Promise<void> {
+    const stopErrors: string[] = [];
     try {
       await Promise.allSettled([
         ...this.startInFlight.values(),
@@ -1378,21 +1394,18 @@ export class AgentRuntime implements AgentRuntimePort {
       for (const id of live) {
         try {
           await this.stopSessionInternal(id, "shutdown");
-        } catch {
-          const m = this.managed.get(id);
-          if (m) {
-            try {
-              await m.stop("shutdown");
-            } catch {
-              // best-effort
-            }
-            this.managed.delete(id);
-          } else {
-            await this.supervisor.stop(id);
-          }
+        } catch (error) {
+          stopErrors.push(error instanceof Error ? error.message : String(error));
         }
       }
-      await this.supervisor.stopAll("shutdown");
+      if (stopErrors.length > 0) {
+        throw new Error(
+          truncateUtf8Text(
+            `Runtime shutdown could not confirm child exit: ${stopErrors.join("; ")}`,
+            ACP_DIAGNOSTIC_EVENT_BYTES
+          )
+        );
+      }
     } finally {
       this.closed = true;
     }

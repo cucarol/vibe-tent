@@ -871,8 +871,8 @@ export const CLIENT_METHODS = [
   "operationalRetention.purge",
   /**
    * Read-only diagnostic for one terminal Task's temporary Git worktree reclaim.
-   * Params: workspaceId + taskPath. Does not mass-scan inventory; auto-reclaim still
-   * runs without this RPC after terminal transitions / mount recovery.
+   * Params: workspaceId + taskPath. Reclaim is an explicit exact-Task operation;
+   * terminal transitions and mount recovery never schedule hidden cleanup.
    */
   "task.worktreeReclaim.preview",
   "task.worktreeReclaim.reconcile",

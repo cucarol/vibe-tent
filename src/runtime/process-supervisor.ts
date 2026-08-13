@@ -31,6 +31,8 @@ export interface SupervisorExitInfo {
 export interface ProcessSupervisorOptions {
   /** Force-kill after graceful stop request (default 2000ms). */
   gracefulMs?: number;
+  /** Wait for the actual child exit after force-kill request (default 1500ms). */
+  forceExitMs?: number;
   /** Optional ring buffer size for stdout/stderr diagnostics (default 0 = off). */
   stdoutRingBytes?: number;
   onExit?: (info: SupervisorExitInfo) => void;
@@ -52,11 +54,13 @@ export class ProcessSupervisor {
   private readonly children = new Map<string, LiveChild>();
   private readonly gracefulMs: number;
   private readonly stdoutRingBytes: number;
+  private readonly forceExitMs: number;
   private readonly onExit?: (info: SupervisorExitInfo) => void;
   private readonly onStdout?: (sessionId: string, text: string) => void;
 
   constructor(options: ProcessSupervisorOptions = {}) {
     this.gracefulMs = options.gracefulMs ?? 2000;
+    this.forceExitMs = options.forceExitMs ?? 1500;
     this.stdoutRingBytes = options.stdoutRingBytes ?? 0;
     this.onExit = options.onExit;
     this.onStdout = options.onStdout;
@@ -242,7 +246,6 @@ export class ProcessSupervisor {
 
     const gracefulMs = options?.gracefulMs ?? this.gracefulMs;
     const signal = options?.signal ?? "SIGTERM";
-    const pid = live.child.pid;
 
     try {
       live.child.kill(signal);
@@ -255,30 +258,40 @@ export class ProcessSupervisor {
       return;
     }
 
-    await new Promise<void>((resolve) => {
+    const exitedGracefully = await this.waitForExit(live, gracefulMs);
+    if (!exitedGracefully) {
+      await this.forceKill(live);
+      const exitedAfterForce = await this.waitForExit(live, this.forceExitMs);
+      if (!exitedAfterForce || !live.exited) {
+        throw new Error(
+          `Stop failed for session ${sessionId}: child exit was not confirmed`
+        );
+      }
+    }
+
+    this.children.delete(sessionId);
+  }
+
+  private async waitForExit(live: LiveChild, timeoutMs: number): Promise<boolean> {
+    if (live.exited) return true;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
       const done = () => {
+        if (settled) return;
+        settled = true;
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = undefined;
         }
-        resolve();
+        live.child.removeListener("exit", onExit);
+        resolve(live.exited);
       };
-
-      if (live.exited) {
-        done();
-        return;
-      }
-
       const onExit = () => done();
       live.child.once("exit", onExit);
-
       live.killTimer = setTimeout(() => {
-        live.child.removeListener("exit", onExit);
-        void this.forceKill(live).finally(done);
-      }, gracefulMs);
+        done();
+      }, timeoutMs);
     });
-
-    this.children.delete(sessionId);
   }
 
   /** Stop every live child (service shutdown default for push-mode). */
@@ -315,15 +328,5 @@ export class ProcessSupervisor {
       }
     }
 
-    // Wait briefly for exit event
-    if (!live.exited) {
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, 500);
-        live.child.once("exit", () => {
-          clearTimeout(t);
-          resolve();
-        });
-      });
-    }
   }
 }

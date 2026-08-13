@@ -224,27 +224,27 @@ test("ToolApprovalStore retries loading after a transient non-ENOENT read error"
   assert.equal((await store.get(item.id))?.status, "expired");
 });
 
-test("connections: malformed catalog is quarantined once and fails loud without defaults", async () => {
+test("connections: malformed catalog fails loud without mutating original bytes", async () => {
   const dataDir = await tempDir("tent-connections-corrupt-");
   const file = connectionsPath(dataDir);
   const secret = "https://user:secret@example.invalid/?token=hidden";
   await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(file, `{ "connections": [{"connectionId":"x","baseUrl":"${secret}"`, "utf8");
+  const original = `{ "connections": [{"connectionId":"x","endpoint":"${secret}"`;
+  await fs.writeFile(file, original, "utf8");
 
   const capture = captureConsoleError();
   try {
     await assert.rejects(
       () => ensureDefaultAgentConnections(dataDir),
-      /Agent Connections are unreadable and were quarantined/
+      /Agent Connections are unreadable/
     );
-    await assert.rejects(() => fs.access(file));
+    await assert.rejects(() => ensureDefaultAgentConnections(dataDir), /Agent Connections are unreadable/);
+    assert.equal(await fs.readFile(file, "utf8"), original);
     const names = await fs.readdir(dataDir);
     const backups = names.filter((name) => name.startsWith("connections.json.corrupt-"));
-    assert.equal(backups.length, 1);
-    assert.ok((await fs.readFile(path.join(dataDir, backups[0]!), "utf8")).includes(secret));
-    assert.ok(capture.lines.some((line) => /connections\.json was corrupt/.test(line)));
+    assert.equal(backups.length, 0);
     assert.ok(capture.lines.every((line) => !line.includes(secret)));
-    assert.equal(names.includes("connections.json"), false, "corruption must not install defaults");
+    assert.equal(names.includes("connections.json"), true, "invalid reads never install defaults");
   } finally {
     capture.restore();
   }
@@ -260,7 +260,7 @@ test("connections: valid explicit empty catalog remains empty", async () => {
   });
 });
 
-test("connections: invalid or unknown row quarantines the full file", async () => {
+test("connections: invalid or unknown row fails loud without rewriting the file", async () => {
   const cases: Array<{ label: string; row: Record<string, unknown> }> = [
     {
       label: "unknown-field",
@@ -279,23 +279,15 @@ test("connections: invalid or unknown row quarantines the full file", async () =
   for (const { label, row } of cases) {
     const dataDir = await tempDir(`tent-connections-${label}-`);
     const file = connectionsPath(dataDir);
-    await fs.writeFile(
-      file,
-      JSON.stringify({ connections: [fakeConnection("valid-route"), row] }) + "\n",
-      "utf8"
-    );
+    const original = JSON.stringify({ connections: [fakeConnection("valid-route"), row] }) + "\n";
+    await fs.writeFile(file, original, "utf8");
     const capture = captureConsoleError();
     try {
-      await assert.rejects(() => loadAgentConnections(dataDir), /quarantined/);
-      await assert.rejects(() => fs.access(file));
+      await assert.rejects(() => loadAgentConnections(dataDir), /Agent Connections are unreadable/);
+      assert.equal(await fs.readFile(file, "utf8"), original);
       const names = await fs.readdir(dataDir);
       const backups = names.filter((name) => name.startsWith("connections.json.corrupt-"));
-      assert.equal(backups.length, 1, `${label}: one backup`);
-      const backup = JSON.parse(
-        await fs.readFile(path.join(dataDir, backups[0]!), "utf8")
-      ) as { connections: unknown[] };
-      assert.equal(backup.connections.length, 2, `${label}: full input retained`);
-      assert.ok(capture.lines.some((line) => /connections\.json was corrupt/.test(line)));
+      assert.equal(backups.length, 0, `${label}: no backup or mutation`);
     } finally {
       capture.restore();
     }
@@ -620,6 +612,15 @@ test("startLocalTentService owns one dataDir until stop", async () => {
   }
   const next = await startLocalTentService({ dataDir, writeEndpoint: true });
   await next.stop();
+});
+
+test("controlled Service stop reports an unconfirmed runtime child exit after cleanup", async () => {
+  const dataDir = await tempDir("tent-service-stop-truth-");
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: false });
+  svc.runtime.shutdown = async () => {
+    throw new Error("child exit was not confirmed");
+  };
+  await assert.rejects(() => svc.stop(), /child exit was not confirmed/);
 });
 
 test("failed service startup releases its data-dir lease", async () => {

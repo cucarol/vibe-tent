@@ -1096,7 +1096,7 @@ export class ServiceClient {
 
   /**
    * Read-only Task worktree reclaim diagnostic (task-api WorkspaceLane GC).
-   * Does not remove anything; auto-reclaim still runs on terminal transitions.
+   * Does not remove anything; reclaim occurs only through explicit exact-Task reconciliation.
    */
   taskWorktreeReclaimPreview(workspaceId: string, taskPath: string) {
     return this.call("task.worktreeReclaim.preview", {
@@ -1106,8 +1106,8 @@ export class ServiceClient {
   }
 
   /**
-   * User-only exact-task reclaim reconciliation. Reloads one Task and reuses
-   * normal ownership/dirty/session/integration gates; never scans or prunes.
+   * Transport-bound local-user or parent-Role exact-task reclaim. Reloads one
+   * Task and reuses ownership/dirty/exact-session/integration gates; never scans.
    */
   taskWorktreeReclaimReconcile(
     workspaceId: string,

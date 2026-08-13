@@ -20,6 +20,7 @@ import {
   PI_ACP_ADAPTER_ID,
 } from "../adapters/index.js";
 import { defaultNpxLaunch } from "../adapters/acp/connection.js";
+import { truncateUtf8Text } from "../adapters/acp/limits.js";
 import {
   defaultAllowedSkillRoots,
   parseMcpServersArrayValue,
@@ -29,7 +30,7 @@ import {
 } from "../adapters/acp/mcp-skills.js";
 import { cloneAgentConnection, type AgentConnectionConfig } from "../runtime/agent-connection.js";
 import type { AgentConnectionProjection } from "./types.js";
-import { backupCorruptMachineFile, isNotFoundError, warnCorruptMachineState, writeJsonAtomic } from "../machine-state.js";
+import { isNotFoundError, writeJsonAtomic } from "../machine-state.js";
 import {
   parseEndpointValue, parseLaunchSecretRefValue, parseEnvKeyValue, parseNonEmptyStringValue,
   parsePermissionPolicyValue, parsePositiveTimeoutValue, parseConnectionIdValue, type FieldResult,
@@ -102,12 +103,9 @@ function parseConnectionRow(value: unknown): AgentConnectionConfig | null {
   return route;
 }
 
-async function quarantineConnections(file: string): Promise<never> {
-  const backup = await backupCorruptMachineFile(file);
-  warnCorruptMachineState(file, backup, "ignored");
+function unreadableConnections(file: string): never {
   throw new Error(
-    `Agent Connections are unreadable and were quarantined: ${file}` +
-      (backup ? ` (backup: ${backup})` : "")
+    truncateUtf8Text(`Agent Connections are unreadable: ${file}`, 2048)
   );
 }
 
@@ -119,25 +117,25 @@ export async function loadAgentConnections(dataDir: string): Promise<AgentConnec
     text = await fs.readFile(file, "utf8");
   } catch (err) {
     if (isNotFoundError(err)) return [];
-    return quarantineConnections(file);
+    return unreadableConnections(file);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return quarantineConnections(file);
+    return unreadableConnections(file);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return quarantineConnections(file);
+    return unreadableConnections(file);
   }
   const connections = (parsed as { connections?: unknown }).connections;
-  if (!Array.isArray(connections)) return quarantineConnections(file);
+  if (!Array.isArray(connections)) return unreadableConnections(file);
   const out: AgentConnectionConfig[] = [];
   for (const value of connections) {
     const connection = parseConnectionRow(value);
     if (!connection || out.some((existing) => existing.connectionId === connection.connectionId)) {
-      return quarantineConnections(file);
+      return unreadableConnections(file);
     }
     out.push(connection);
   }

@@ -351,6 +351,7 @@ export class AcpClient {
   private providerSessionId: string | undefined;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
+  private childExited = false;
   private exitWaiters: Array<() => void> = [];
   private readonly label: string;
   /**
@@ -549,7 +550,7 @@ export class AcpClient {
 
   isAlive(): boolean {
     const pid = this.proc?.pid;
-    if (pid == null || pid <= 0 || this.closed) return false;
+    if (pid == null || pid <= 0 || this.childExited) return false;
     try {
       process.kill(pid, 0);
       return true;
@@ -938,6 +939,11 @@ export class AcpClient {
     if (this.stopPromise) return this.stopPromise;
     const operation = this.stopExclusive(reason);
     this.stopPromise = operation;
+    void operation.catch(() => {
+      if (this.stopPromise === operation && !this.childExited) {
+        this.stopPromise = undefined;
+      }
+    });
     return operation;
   }
 
@@ -945,14 +951,17 @@ export class AcpClient {
     reason: "user" | "interrupt" | "shutdown"
   ): Promise<void> {
     void reason;
-    if (this.closed && this.stopRequested) return;
+    if (this.childExited) {
+      this.cleanupStreams();
+      return;
+    }
     this.stopRequested = true;
     this.closed = true;
     this.cancelPermissionWaiters();
     this.rejectAllPending(new Error("session stopped"));
 
     const proc = this.proc;
-    if (!proc || proc.killed) {
+    if (!proc) {
       this.cleanupStreams();
       return;
     }
@@ -964,6 +973,13 @@ export class AcpClient {
     }
 
     await this.waitForExitOrForceKill(1500);
+    if (!this.childExited) {
+      throw new Error(
+        this.boundedRedactedDiagnostic(
+          `${this.label} stop was not confirmed by child exit`
+        )
+      );
+    }
     this.cleanupStreams();
   }
 
@@ -1141,6 +1157,7 @@ export class AcpClient {
     child.stdout?.on("end", () => this.resetStdoutFrame());
 
     child.on("exit", (code, signal) => {
+      this.childExited = true;
       this.exitCode = code;
       this.exitSignal = signal;
       this.closed = true;
@@ -1631,6 +1648,7 @@ export class AcpClient {
     const proc = this.proc;
     if (
       !proc ||
+      this.childExited ||
       this.exitCode !== null ||
       this.exitSignal !== null ||
       proc.exitCode !== null ||
@@ -1652,7 +1670,23 @@ export class AcpClient {
       }),
     ]);
     if (timer) clearTimeout(timer);
-    if (outcome === "timeout") await this.forceKill();
+    if (outcome !== "timeout") return;
+    await this.forceKill();
+    let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+    const confirmed = await Promise.race([
+      this.waitExit().then(() => true),
+      new Promise<false>((resolve) => {
+        confirmTimer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+    if (confirmTimer) clearTimeout(confirmTimer);
+    if (!confirmed || !this.childExited) {
+      throw new Error(
+        this.boundedRedactedDiagnostic(
+          `${this.label} stop failed: child exit was not confirmed`
+        )
+      );
+    }
   }
 
   private async forceKill(): Promise<void> {
