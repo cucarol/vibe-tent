@@ -704,8 +704,14 @@ export class AgentRuntime implements AgentRuntimePort {
         // ACP / structured transports own stdio — not ProcessSupervisor.
         const managed = await adapter.startManagedSession(plan, (rawEvent) => {
           const ev = boundRuntimeDiagnosticEvent(rawEvent);
-          // Managed failure: mark terminal + drop handle so probe never claims live orphan.
-          // Service maps task failed separately (idempotent). Process stop is adapter-owned.
+          const managedAtEvent =
+            this.managed.get(req.sessionId) ?? startedManaged;
+          const terminalWhileAlive =
+            (ev.type === "session.failed" || ev.type === "session.exited") &&
+            managedAtEvent?.isAlive() === true;
+          // Managed terminal projection retires only a confirmed-dead handle.
+          // A premature adapter terminal stays diagnostic-only and must not reach
+          // Service Task projection while the owned child remains alive.
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             terminalProjection = this.trackManagedTerminal(
@@ -752,7 +758,7 @@ export class AgentRuntime implements AgentRuntimePort {
               })
               .catch(() => undefined);
           }
-          this.emit(ev);
+          if (!terminalWhileAlive) this.emit(ev);
         });
         startedManaged = managed;
         if (terminalDuringManagedStart) {
@@ -1005,6 +1011,11 @@ export class AgentRuntime implements AgentRuntimePort {
         resumeToken,
         (rawEvent) => {
           const ev = boundRuntimeDiagnosticEvent(rawEvent);
+          const managedAtEvent =
+            this.managed.get(req.sessionId) ?? resumedManaged;
+          const terminalWhileAlive =
+            (ev.type === "session.failed" || ev.type === "session.exited") &&
+            managedAtEvent?.isAlive() === true;
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             terminalProjection = this.trackManagedTerminal(
@@ -1051,7 +1062,7 @@ export class AgentRuntime implements AgentRuntimePort {
               })
               .catch(() => undefined);
           }
-          this.emit(ev);
+          if (!terminalWhileAlive) this.emit(ev);
         }
       );
       resumedManaged = managed;

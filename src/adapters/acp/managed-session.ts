@@ -129,6 +129,9 @@ export class AcpManagedSession implements ManagedSession {
   beginBackgroundTurn(work: () => Promise<void>): Promise<void> {
     const turn = this.runTurn(work);
     this.bootstrapDone = turn;
+    // Production starts this turn fire-and-forget. Keep the rejected Promise
+    // for waitBootstrap callers while marking the background rejection handled.
+    void turn.catch(() => undefined);
     return turn;
   }
 

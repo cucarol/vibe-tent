@@ -800,6 +800,14 @@ test("managed stop retains live truth until the child exit is confirmed", async 
   assert.equal(retainedAfterTerminal?.state, "live");
   assert.equal(retainedAfterTerminal?.pid, 8301);
   assert.equal((await runtime.probe(sessionId)).isAlive, true);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "session.failed" && event.error === "premature terminal"
+    ),
+    false,
+    "Service subscribers must not observe terminal projection for a live child"
+  );
 
   await assert.rejects(() => runtime.stopSession(sessionId, "user"), /exit was not confirmed/);
   const retained = await runtime.registry.read(sessionId);

@@ -397,44 +397,53 @@ test("AcpManagedSession keeps real child liveness after a rejected stop", async 
 
 test("managed prompt failure is terminal only after confirmed stop", async () => {
   const events: RuntimeEvent[] = [];
+  const unhandled: unknown[] = [];
+  const observeUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", observeUnhandled);
   let failedReports = 0;
-  const session = await startManagedAcpSession({
-    plan: {
-      sessionId: "ss-prompt-stop-truth",
-      connectionId: "prompt-stop-truth",
-      cwd: process.cwd(),
-      env: {},
-      bootstrapPrompt: "go",
-    },
-    emit: (event) => events.push(event),
-    client: {
-      pid: 4243,
-      providerSession: "provider-prompt-stop-truth",
-      sessionConfig: {} as never,
-      isAlive: () => true,
-      connect: async () => ({
+  try {
+    const session = await startManagedAcpSession({
+      plan: {
+        sessionId: "ss-prompt-stop-truth",
+        connectionId: "prompt-stop-truth",
+        cwd: process.cwd(),
+        env: {},
+        bootstrapPrompt: "go",
+      },
+      emit: (event) => events.push(event),
+      client: {
         pid: 4243,
-        providerSessionId: "provider-prompt-stop-truth",
-        loadSessionSupported: false,
-        resumeSessionSupported: false,
+        providerSession: "provider-prompt-stop-truth",
         sessionConfig: {} as never,
-      }),
-      sendPrompt: async () => {
-        throw new Error("prompt failed");
+        isAlive: () => true,
+        connect: async () => ({
+          pid: 4243,
+          providerSessionId: "provider-prompt-stop-truth",
+          loadSessionSupported: false,
+          resumeSessionSupported: false,
+          sessionConfig: {} as never,
+        }),
+        sendPrompt: async () => {
+          throw new Error("prompt failed");
+        },
+        stop: async () => {
+          throw new Error("child exit was not confirmed");
+        },
+        reportFailed: () => {
+          failedReports += 1;
+        },
       },
-      stop: async () => {
-        throw new Error("child exit was not confirmed");
-      },
-      reportFailed: () => {
-        failedReports += 1;
-      },
-    },
-  });
+    });
 
-  await assert.rejects(() => session.waitBootstrap(), /child exit was not confirmed/);
-  assert.equal(session.isAlive(), true);
-  assert.equal(failedReports, 0);
-  assert.equal(events.some((event) => event.type === "session.failed"), false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(() => session.waitBootstrap(), /child exit was not confirmed/);
+    assert.equal(session.isAlive(), true);
+    assert.equal(failedReports, 0);
+    assert.equal(events.some((event) => event.type === "session.failed"), false);
+  } finally {
+    process.off("unhandledRejection", observeUnhandled);
+  }
 });
 
 test("ACP limit failure emits terminal only after confirmed child exit", async () => {
