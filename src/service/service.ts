@@ -355,7 +355,7 @@ async function startOwnedLocalTentService(
   };
 
   // Bridge runtime events → EventEnvelope (no chat tokens).
-  // Projection is serialized per sessionId with one bounded retry on failure.
+  // Projection is serialized per sessionId; a failed event does not poison later ones.
   // Keep service-owned references so shutdown cannot return while terminal
   // runtime events are still mutating task/session projections in the background.
   const runtimeProjections = new Set<Promise<void>>();

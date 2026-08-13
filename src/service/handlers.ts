@@ -10725,24 +10725,19 @@ async function runManagedSessionFlight(
  */
 const runtimeProjectionQueue = new MutationBus();
 
-/** Single bounded retry delay for a failed projection (deterministic, short). */
-const PROJECTION_RETRY_DELAY_MS = 40;
-
 type RuntimeProjectionTestHooks = {
-  /** Runs at the start of each projection attempt (including retries). */
-  beforeProject?: (ev: RuntimeEvent, attempt: number) => Promise<void> | void;
+  /** Runs at the start of each projection. */
+  beforeProject?: (ev: RuntimeEvent) => Promise<void> | void;
   /**
-   * Fail this many projection attempts (decremented across events/retries),
-   * then succeed. Used to simulate transient vs permanent mutation failures.
+   * Fail this many projections (decremented across events), then succeed.
+   * Used to inject a single projection failure without a second attempt.
    */
-  failAttemptsRemaining?: number;
-  /** Override retry delay (default PROJECTION_RETRY_DELAY_MS). */
-  retryDelayMs?: number;
+  failProjectionsRemaining?: number;
 };
 
 let runtimeProjectionTestHooks: RuntimeProjectionTestHooks | null = null;
 
-/** Test helper: inject delay / transient failures into runtime projection. */
+/** Test helper: inject delay / projection failures into runtime projection. */
 export function setRuntimeProjectionTestHooksForTests(
   hooks: RuntimeProjectionTestHooks | null
 ): void {
@@ -10810,14 +10805,6 @@ function isManagedAutoSubmitSealing(
   return false;
 }
 
-function projectionRetryDelayMs(): number {
-  return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
-}
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function classifyProjectionError(err: unknown): {
   errorClass: string;
   errorCode?: string | number;
@@ -10845,8 +10832,8 @@ function classifyProjectionError(err: unknown): {
  * Bridge RuntimeEvent → session registry / task lifecycle / client events.
  *
  * Returns a Promise callers may ignore. Projection is serialized per sessionId
- * (not process-wide). On failure: one bounded retry; after exhaustion emit a
- * safe service.health diagnostic and resolve without throwing (no unhandled rejection).
+ * (not process-wide). On failure emit a safe service.health diagnostic and
+ * resolve without throwing (no unhandled rejection); later events may still run.
  */
 export function mapRuntimeEventToService(
   ctx: HandlerContext,
@@ -10854,24 +10841,12 @@ export function mapRuntimeEventToService(
 ): Promise<void> {
   return runtimeProjectionQueue.run(ev.sessionId, async () => {
     try {
-      await projectRuntimeEventWithRetry(ctx, ev);
+      await projectRuntimeEvent(ctx, ev);
     } catch (err) {
       await reportRuntimeProjectionFailure(ctx, ev, err);
-      // Exhausted retry: do not throw — later events for this session must still run.
+      // Do not throw — later events for this session must still run.
     }
   });
-}
-
-async function projectRuntimeEventWithRetry(
-  ctx: HandlerContext,
-  ev: RuntimeEvent
-): Promise<void> {
-  try {
-    await projectRuntimeEventOnce(ctx, ev, 1);
-  } catch {
-    await sleepMs(projectionRetryDelayMs());
-    await projectRuntimeEventOnce(ctx, ev, 2);
-  }
 }
 
 async function reportRuntimeProjectionFailure(
@@ -10910,23 +10885,22 @@ async function reportRuntimeProjectionFailure(
 }
 
 /**
- * Single projection attempt. Emits client-visible session.state only after
- * internal session projection succeeds (stdout_tail remains diagnostics-only).
+ * One projection. Emits client-visible session.state only after internal
+ * session projection succeeds (stdout_tail remains diagnostics-only).
  */
-async function projectRuntimeEventOnce(
+async function projectRuntimeEvent(
   ctx: HandlerContext,
-  ev: RuntimeEvent,
-  attempt: number
+  ev: RuntimeEvent
 ): Promise<void> {
   if (runtimeProjectionTestHooks?.beforeProject) {
-    await runtimeProjectionTestHooks.beforeProject(ev, attempt);
+    await runtimeProjectionTestHooks.beforeProject(ev);
   }
   if (
     runtimeProjectionTestHooks &&
-    typeof runtimeProjectionTestHooks.failAttemptsRemaining === "number" &&
-    runtimeProjectionTestHooks.failAttemptsRemaining > 0
+    typeof runtimeProjectionTestHooks.failProjectionsRemaining === "number" &&
+    runtimeProjectionTestHooks.failProjectionsRemaining > 0
   ) {
-    runtimeProjectionTestHooks.failAttemptsRemaining -= 1;
+    runtimeProjectionTestHooks.failProjectionsRemaining -= 1;
     const injected = new Error("injected runtime projection failure");
     injected.name = "ProjectionInjectedError";
     (injected as Error & { code: string }).code = "PROJECTION_INJECTED";
@@ -11035,7 +11009,7 @@ async function projectRuntimeEventOnce(
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when currentTaskId known.
-  // Task lifecycle ops are idempotent; failures throw so the outer retry can re-run.
+  // Task lifecycle ops are idempotent; a later event may still reconcile.
   if (rec?.currentTaskId) {
     const mountInfos = ctx.host.list();
     for (const info of mountInfos) {
@@ -11119,7 +11093,6 @@ async function projectRuntimeEventOnce(
   }
 
   // Client-visible session.state only after full internal projection succeeds.
-  // Failed attempts never reach here, so a single retry does not duplicate this event.
   ctx.events.emit(
     "session.state",
     workspaceId,

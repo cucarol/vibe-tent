@@ -6040,7 +6040,7 @@ function normalizeLf(value: string): string {
   return value.replace(/\r\n/g, "\n");
 }
 
-// ---- runtime projection reliability (per-session queue + one retry) ----
+// ---- runtime projection reliability (per-session queue, no retry) ----
 
 test("runtime projection: ACP observation is internal-only and emits no session state", async () => {
   await withService(async (svc) => {
@@ -6120,12 +6120,11 @@ test("runtime projection: same-session waiting_user → live preserves order und
       releaseWait = resolve;
     });
     setRuntimeProjectionTestHooksForTests({
-      beforeProject: async (ev, attempt) => {
-        if (ev.type === "session.waiting_user" && attempt === 1) {
+      beforeProject: async (ev) => {
+        if (ev.type === "session.waiting_user") {
           await waitGate;
         }
       },
-      retryDelayMs: 5,
     });
 
     try {
@@ -6155,66 +6154,7 @@ test("runtime projection: same-session waiting_user → live preserves order und
   });
 });
 
-test("runtime projection: transient failure retries once and emits one session.state", async () => {
-  await withService(async (svc) => {
-    const sessionId = "ss-projretry1";
-    const now = new Date().toISOString();
-    await svc.runtime.registry.write({
-      id: sessionId,
-      connectionId: "fake-default",
-      adapterId: FAKE_ADAPTER_ID,
-      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
-      state: "live",
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    const sessionStates: Array<Record<string, unknown>> = [];
-    const health: Array<Record<string, unknown>> = [];
-    const unsub = svc.events.subscribe((ev) => {
-      if (ev.type === "session.state") {
-        sessionStates.push(ev.payload as Record<string, unknown>);
-      }
-      if (ev.type === "service.health") {
-        health.push(ev.payload as Record<string, unknown>);
-      }
-    });
-
-    const attempts: number[] = [];
-    setRuntimeProjectionTestHooksForTests({
-      failAttemptsRemaining: 1,
-      retryDelayMs: 5,
-      beforeProject: (_ev, attempt) => {
-        attempts.push(attempt);
-      },
-    });
-
-    try {
-      await mapRuntimeEventToService(svc.ctx, {
-        type: "session.waiting_user",
-        sessionId,
-        summary: "transient",
-      });
-
-      assert.deepEqual(attempts, [1, 2], "exactly one retry after first failure");
-      assert.equal(sessionStates.length, 1, "one normal session.state after successful retry");
-      assert.equal(sessionStates[0].runtimeEvent, "session.waiting_user");
-      assert.equal(sessionStates[0].sessionId, sessionId);
-      assert.ok(
-        !health.some((h) => h.action === "runtime-projection-failed"),
-        "successful retry must not emit projection-failed health"
-      );
-
-      const rec = await svc.runtime.registry.read(sessionId);
-      assert.equal(rec?.state, "waiting-user");
-    } finally {
-      unsub();
-      resetRuntimeProjectionForTests();
-    }
-  });
-});
-
-test("runtime projection: permanent failure emits diagnostic, no unhandled rejection, queue continues", async () => {
+test("runtime projection: one failed projection emits one diagnostic, no unhandled rejection, queue continues", async () => {
   await withService(async (svc) => {
     const sessionId = "ss-projperm1";
     const now = new Date().toISOString();
@@ -6246,17 +6186,15 @@ test("runtime projection: permanent failure emits diagnostic, no unhandled rejec
     process.on("unhandledRejection", onUnhandled);
 
     setRuntimeProjectionTestHooksForTests({
-      // Both attempt 1 and the single retry fail.
-      failAttemptsRemaining: 2,
-      retryDelayMs: 5,
+      failProjectionsRemaining: 1,
     });
 
     try {
-      // Must resolve (not reject) after exhaustion so callers/void do not get unhandled rejections.
+      // Must resolve (not reject) so callers/void do not get unhandled rejections.
       await mapRuntimeEventToService(svc.ctx, {
         type: "session.waiting_user",
         sessionId,
-        summary: "permanent inject",
+        summary: "inject fail",
       });
       // Allow any stray rejection microtasks to surface.
       await new Promise((r) => setTimeout(r, 40));
@@ -6315,7 +6253,6 @@ test("runtime projection: different sessions are not process-wide serialized", a
         }
         finishOrder.push(ev.sessionId);
       },
-      retryDelayMs: 5,
     });
 
     try {
@@ -6373,13 +6310,12 @@ test("service stop waits for terminal runtime projections before disposing", asy
     });
 
     setRuntimeProjectionTestHooksForTests({
-      beforeProject: async (event, attempt) => {
-        if (event.sessionId === sessionId && event.type === "session.exited" && attempt === 1) {
+      beforeProject: async (event) => {
+        if (event.sessionId === sessionId && event.type === "session.exited") {
           enteredProjection();
           await projectionGate;
         }
       },
-      retryDelayMs: 5,
     });
 
     let firstStopResolved = false;
