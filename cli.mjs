@@ -996,11 +996,6 @@ function parseFrontmatter(raw) {
     const key = trimmed.slice(0, colon).trim();
     let valuePart = trimmed.slice(colon + 1).trim();
     valuePart = stripInlineComment(valuePart);
-    if ((valuePart.startsWith("{") || valuePart.startsWith("[")) && !flowCollectionCloses(valuePart)) {
-      const recovered = readLegacyMultilineFlowCollection(lines, i, valuePart);
-      valuePart = recovered.value;
-      i = recovered.nextIndex;
-    }
     if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
       const { value, nextIndex } = readBlockSequence(lines, i + 1, key);
       data[key] = normalizeValueForKey(key, value);
@@ -1016,63 +1011,6 @@ function stripInlineComment(v) {
   if (v.startsWith('"') || v.startsWith("'")) return v;
   const hash = v.indexOf(" #");
   return hash === -1 ? v : v.slice(0, hash).trim();
-}
-function scanFlowCollection(text, initial) {
-  const state = initial ?? { stack: [], quote: null, invalid: false };
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (state.quote) {
-      if (ch === "\\" && state.quote === '"' && i + 1 < text.length) {
-        i += 1;
-        continue;
-      }
-      if (ch === state.quote) state.quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      state.quote = ch;
-      continue;
-    }
-    if (ch === "{" || ch === "[") {
-      state.stack.push(ch);
-      continue;
-    }
-    if (ch === "}" || ch === "]") {
-      const expected = ch === "}" ? "{" : "[";
-      if (state.stack.pop() !== expected) {
-        state.invalid = true;
-        return state;
-      }
-    }
-  }
-  return state;
-}
-function flowCollectionCloses(value) {
-  const state = scanFlowCollection(value);
-  return !state.invalid && state.quote === null && state.stack.length === 0;
-}
-function readLegacyMultilineFlowCollection(lines, startIndex, initialValue) {
-  let value = initialValue;
-  let state = scanFlowCollection(initialValue);
-  if (state.invalid) {
-    throw new Error("Invalid frontmatter YAML: malformed multiline flow collection.");
-  }
-  for (let i = startIndex + 1; i < lines.length; i++) {
-    if (/^[A-Za-z_][\w-]*\s*:/.test(lines[i])) {
-      throw new Error("Invalid frontmatter YAML: unterminated multiline flow collection.");
-    }
-    const continuation = `
-${lines[i]}`;
-    value += continuation;
-    state = scanFlowCollection(continuation, state);
-    if (state.invalid) {
-      throw new Error("Invalid frontmatter YAML: malformed multiline flow collection.");
-    }
-    if (state.quote === null && state.stack.length === 0) {
-      return { value, nextIndex: i };
-    }
-  }
-  throw new Error("Invalid frontmatter YAML: unterminated multiline flow collection.");
 }
 function coerce(v) {
   if (v === "") return void 0;
