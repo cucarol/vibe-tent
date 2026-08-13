@@ -7,6 +7,7 @@ import type {
   ProviderCapabilities,
   ResumeToken,
 } from "../types.js";
+import { ManagedSessionStartupError } from "../types.js";
 import type { RuntimeEvent, StopReason } from "../../runtime/types.js";
 import type {
   AcpPermissionOption,
@@ -143,16 +144,6 @@ export class AcpManagedSession implements ManagedSession {
     } finally {
       this.turnActiveDepth = Math.max(0, this.turnActiveDepth - 1);
     }
-  }
-}
-
-export async function stopAcpClientQuiet(
-  client: Pick<ManagedAcpClient, "stop">
-): Promise<void> {
-  try {
-    await client.stop("interrupt");
-  } catch {
-    // best-effort — process may already be dead
   }
 }
 
@@ -297,6 +288,7 @@ export async function startManagedAcpSession(
   input: StartManagedAcpSessionInput
 ): Promise<AcpManagedSession> {
   const { plan, emit, client } = input;
+  const session = new AcpManagedSession(plan.sessionId, client, emit);
   // Explicit empty bootstrapPrompt means: go live without a first session/prompt
   // (reject-resume restores the process, then injects U2A ## Review Feedback).
   // Omitted/undefined still falls back to default bootstrap for normal startSession.
@@ -310,11 +302,10 @@ export async function startManagedAcpSession(
   try {
     await client.connect({ mode: "new" });
   } catch (err) {
-    await stopAcpClientQuiet(client);
+    if (client.isAlive()) throw new ManagedSessionStartupError(err, session);
     throw err;
   }
 
-  const session = new AcpManagedSession(plan.sessionId, client, emit);
   // Session is live after connect; turn busy tracks the in-flight bootstrap only.
   if (bootstrap) {
     session.beginBackgroundTurn(() =>
@@ -336,6 +327,7 @@ export async function resumeManagedAcpSession(
   input: ResumeManagedAcpSessionInput
 ): Promise<AcpManagedSession> {
   const { plan, emit, client, providerSessionId } = input;
+  const session = new AcpManagedSession(plan.sessionId, client, emit);
   const loadId = providerSessionId.trim();
   if (!loadId) {
     throw new Error("resumeManagedAcpSession requires non-empty providerSessionId");
@@ -347,14 +339,13 @@ export async function resumeManagedAcpSession(
   try {
     await client.connect({ mode: connectMode, providerSessionId: loadId });
   } catch (err) {
-    // Honest failure: never fall back to session/new. Kill orphan bridge process.
-    await stopAcpClientQuiet(client);
+    // Never fall back to session/new. Preserve a still-live bridge for runtime cleanup.
+    if (client.isAlive()) throw new ManagedSessionStartupError(err, session);
     throw err;
   }
 
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
   // Optional post-load/resume prompt only — empty means stay live without auto-result.
-  const session = new AcpManagedSession(plan.sessionId, client, emit);
   if (bootstrap) {
     session.beginBackgroundTurn(() =>
       runManagedBootstrapPrompt(plan, emit, client, bootstrap)

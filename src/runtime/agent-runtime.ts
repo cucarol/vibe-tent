@@ -3,7 +3,11 @@
 
 import * as path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
+import {
+  ManagedSessionStartupError,
+  type ManagedSession,
+  type ProviderAdapter,
+} from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
 import {
@@ -702,64 +706,73 @@ export class AgentRuntime implements AgentRuntimePort {
 
       if (typeof adapter.startManagedSession === "function") {
         // ACP / structured transports own stdio — not ProcessSupervisor.
-        const managed = await adapter.startManagedSession(plan, (rawEvent) => {
-          const ev = boundRuntimeDiagnosticEvent(rawEvent);
-          const managedAtEvent =
-            this.managed.get(req.sessionId) ?? startedManaged;
-          const terminalWhileAlive =
-            (ev.type === "session.failed" || ev.type === "session.exited") &&
-            managedAtEvent?.isAlive() === true;
-          // Managed terminal projection retires only a confirmed-dead handle.
-          // A premature adapter terminal stays diagnostic-only and must not reach
-          // Service Task projection while the owned child remains alive.
-          if (ev.type === "session.failed") {
-            terminalDuringManagedStart = { state: "failed", error: ev.error };
-            terminalProjection = this.trackManagedTerminal(
-              req.sessionId,
-              "failed",
-              ev.error
-            );
-          } else if (ev.type === "session.exited") {
-            terminalDuringManagedStart = {
-              state: "stopped",
-              exitCode: ev.exitCode,
-            };
-            terminalProjection = this.trackManagedTerminal(
-              req.sessionId,
-              "stopped",
-              undefined,
-              ev.exitCode
-            );
-          } else if (ev.type === "session.waiting_user") {
-            void this.registry
-              .update(req.sessionId, { state: "waiting-user" })
-              .catch(() => undefined);
-          } else if (ev.type === "session.live") {
-            if (!startupCommitted) {
-              startupLivePid = ev.pid;
-              return;
+        let managed: ManagedSession;
+        try {
+          managed = await adapter.startManagedSession(plan, (rawEvent) => {
+            const ev = boundRuntimeDiagnosticEvent(rawEvent);
+            const managedAtEvent =
+              this.managed.get(req.sessionId) ?? startedManaged;
+            const terminalWhileAlive =
+              (ev.type === "session.failed" || ev.type === "session.exited") &&
+              managedAtEvent?.isAlive() === true;
+            // Managed terminal projection retires only a confirmed-dead handle.
+            // A premature adapter terminal stays diagnostic-only and must not reach
+            // Service Task projection while the owned child remains alive.
+            if (ev.type === "session.failed") {
+              terminalDuringManagedStart = { state: "failed", error: ev.error };
+              terminalProjection = this.trackManagedTerminal(
+                req.sessionId,
+                "failed",
+                ev.error
+              );
+            } else if (ev.type === "session.exited") {
+              terminalDuringManagedStart = {
+                state: "stopped",
+                exitCode: ev.exitCode,
+              };
+              terminalProjection = this.trackManagedTerminal(
+                req.sessionId,
+                "stopped",
+                undefined,
+                ev.exitCode
+              );
+            } else if (ev.type === "session.waiting_user") {
+              void this.registry
+                .update(req.sessionId, { state: "waiting-user" })
+                .catch(() => undefined);
+            } else if (ev.type === "session.live") {
+              if (!startupCommitted) {
+                startupLivePid = ev.pid;
+                return;
+              }
+              void this.registry
+                .update(req.sessionId, {
+                  state: "live",
+                  ...(ev.pid != null ? { pid: ev.pid } : {}),
+                })
+                .catch(() => undefined);
+            } else if (ev.type === "session.config_options") {
+              void this.registry
+                .update(req.sessionId, {
+                  acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
+                })
+                .catch(() => undefined);
+            } else if (ev.type === "session.acp_observation") {
+              void this.registry
+                .update(req.sessionId, {
+                  acpObservation: { ...ev.observation },
+                })
+                .catch(() => undefined);
             }
-            void this.registry
-              .update(req.sessionId, {
-                state: "live",
-                ...(ev.pid != null ? { pid: ev.pid } : {}),
-              })
-              .catch(() => undefined);
-          } else if (ev.type === "session.config_options") {
-            void this.registry
-              .update(req.sessionId, {
-                acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
-              })
-              .catch(() => undefined);
-          } else if (ev.type === "session.acp_observation") {
-            void this.registry
-              .update(req.sessionId, {
-                acpObservation: { ...ev.observation },
-              })
-              .catch(() => undefined);
+            if (!terminalWhileAlive) this.emit(ev);
+          });
+        } catch (error) {
+          if (error instanceof ManagedSessionStartupError) {
+            startedManaged = error.managedSession;
+            this.managed.set(req.sessionId, startedManaged);
           }
-          if (!terminalWhileAlive) this.emit(ev);
-        });
+          throw error;
+        }
         startedManaged = managed;
         if (terminalDuringManagedStart) {
           const terminal = terminalDuringManagedStart as
@@ -832,15 +845,34 @@ export class AgentRuntime implements AgentRuntimePort {
       });
       return handleFrom(live);
     } catch (err) {
-      this.managed.delete(req.sessionId);
+      let retainedManaged = false;
+      let stopError: unknown;
       if (startedManaged) {
-        await startedManaged.stop("interrupt").catch(() => undefined);
-        await this.waitForManagedTerminal(req.sessionId, true);
+        try {
+          await startedManaged.stop("interrupt");
+        } catch (error) {
+          stopError = error;
+        }
+        retainedManaged = startedManaged.isAlive();
+        if (retainedManaged) {
+          this.managed.set(req.sessionId, startedManaged);
+        } else {
+          this.managed.delete(req.sessionId);
+          await this.waitForManagedTerminal(req.sessionId, true);
+        }
       } else if (this.supervisor.isAlive(req.sessionId)) {
         await this.supervisor.stop(req.sessionId).catch(() => undefined);
         await this.waitForChildExit(req.sessionId, true);
       }
-      const rawMessage = err instanceof Error ? err.message : String(err);
+      const rawMessage = retainedManaged
+        ? `${err instanceof Error ? err.message : String(err)}; ${
+            stopError instanceof Error
+              ? stopError.message
+              : "managed child exit was not confirmed"
+          }`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       // Never persist raw launch-secret values into SessionRegistry / Service errors.
       const message = redactDiagnosticText(rawMessage, {
         env: {
@@ -848,6 +880,18 @@ export class AgentRuntime implements AgentRuntimePort {
         },
         secrets: diagnosticSecrets,
       });
+      if (retainedManaged) {
+        const retained = await this.registry.update(req.sessionId, {
+          state: "starting",
+          pid: startedManaged?.pid,
+          lastError: message,
+        });
+        throw Object.assign(new Error(message), {
+          session: handleFrom(retained),
+          ...copyRuntimeErrorMetadata(err),
+        });
+      }
+      this.managed.delete(req.sessionId);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message,
@@ -1006,65 +1050,74 @@ export class AgentRuntime implements AgentRuntimePort {
         | { state: "stopped"; exitCode: number | null }
         | undefined;
 
-      const managed = await resumeManagedSession(
-        plan,
-        resumeToken,
-        (rawEvent) => {
-          const ev = boundRuntimeDiagnosticEvent(rawEvent);
-          const managedAtEvent =
-            this.managed.get(req.sessionId) ?? resumedManaged;
-          const terminalWhileAlive =
-            (ev.type === "session.failed" || ev.type === "session.exited") &&
-            managedAtEvent?.isAlive() === true;
-          if (ev.type === "session.failed") {
-            terminalDuringManagedStart = { state: "failed", error: ev.error };
-            terminalProjection = this.trackManagedTerminal(
-              req.sessionId,
-              "failed",
-              ev.error
-            );
-          } else if (ev.type === "session.exited") {
-            terminalDuringManagedStart = {
-              state: "stopped",
-              exitCode: ev.exitCode,
-            };
-            terminalProjection = this.trackManagedTerminal(
-              req.sessionId,
-              "stopped",
-              undefined,
-              ev.exitCode
-            );
-          } else if (ev.type === "session.waiting_user") {
-            void this.registry
-              .update(req.sessionId, { state: "waiting-user" })
-              .catch(() => undefined);
-          } else if (ev.type === "session.live") {
-            if (!startupCommitted) {
-              startupLivePid = ev.pid;
-              return;
+      let managed: ManagedSession;
+      try {
+        managed = await resumeManagedSession(
+          plan,
+          resumeToken,
+          (rawEvent) => {
+            const ev = boundRuntimeDiagnosticEvent(rawEvent);
+            const managedAtEvent =
+              this.managed.get(req.sessionId) ?? resumedManaged;
+            const terminalWhileAlive =
+              (ev.type === "session.failed" || ev.type === "session.exited") &&
+              managedAtEvent?.isAlive() === true;
+            if (ev.type === "session.failed") {
+              terminalDuringManagedStart = { state: "failed", error: ev.error };
+              terminalProjection = this.trackManagedTerminal(
+                req.sessionId,
+                "failed",
+                ev.error
+              );
+            } else if (ev.type === "session.exited") {
+              terminalDuringManagedStart = {
+                state: "stopped",
+                exitCode: ev.exitCode,
+              };
+              terminalProjection = this.trackManagedTerminal(
+                req.sessionId,
+                "stopped",
+                undefined,
+                ev.exitCode
+              );
+            } else if (ev.type === "session.waiting_user") {
+              void this.registry
+                .update(req.sessionId, { state: "waiting-user" })
+                .catch(() => undefined);
+            } else if (ev.type === "session.live") {
+              if (!startupCommitted) {
+                startupLivePid = ev.pid;
+                return;
+              }
+              void this.registry
+                .update(req.sessionId, {
+                  state: "live",
+                  ...(ev.pid != null ? { pid: ev.pid } : {}),
+                })
+                .catch(() => undefined);
+            } else if (ev.type === "session.config_options") {
+              void this.registry
+                .update(req.sessionId, {
+                  acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
+                })
+                .catch(() => undefined);
+            } else if (ev.type === "session.acp_observation") {
+              void this.registry
+                .update(req.sessionId, {
+                  acpObservation: { ...ev.observation },
+                })
+                .catch(() => undefined);
             }
-            void this.registry
-              .update(req.sessionId, {
-                state: "live",
-                ...(ev.pid != null ? { pid: ev.pid } : {}),
-              })
-              .catch(() => undefined);
-          } else if (ev.type === "session.config_options") {
-            void this.registry
-              .update(req.sessionId, {
-                acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
-              })
-              .catch(() => undefined);
-          } else if (ev.type === "session.acp_observation") {
-            void this.registry
-              .update(req.sessionId, {
-                acpObservation: { ...ev.observation },
-              })
-              .catch(() => undefined);
+            if (!terminalWhileAlive) this.emit(ev);
           }
-          if (!terminalWhileAlive) this.emit(ev);
+        );
+      } catch (error) {
+        if (error instanceof ManagedSessionStartupError) {
+          resumedManaged = error.managedSession;
+          this.managed.set(req.sessionId, resumedManaged);
         }
-      );
+        throw error;
+      }
       resumedManaged = managed;
 
       if (terminalDuringManagedStart) {
@@ -1130,12 +1183,31 @@ export class AgentRuntime implements AgentRuntimePort {
       });
       return handleFrom(live);
     } catch (err) {
-      this.managed.delete(req.sessionId);
+      let retainedManaged = false;
+      let stopError: unknown;
       if (resumedManaged) {
-        await resumedManaged.stop("interrupt").catch(() => undefined);
-        await this.waitForManagedTerminal(req.sessionId, true);
+        try {
+          await resumedManaged.stop("interrupt");
+        } catch (error) {
+          stopError = error;
+        }
+        retainedManaged = resumedManaged.isAlive();
+        if (retainedManaged) {
+          this.managed.set(req.sessionId, resumedManaged);
+        } else {
+          this.managed.delete(req.sessionId);
+          await this.waitForManagedTerminal(req.sessionId, true);
+        }
       }
-      const rawMessage = err instanceof Error ? err.message : String(err);
+      const rawMessage = retainedManaged
+        ? `${err instanceof Error ? err.message : String(err)}; ${
+            stopError instanceof Error
+              ? stopError.message
+              : "managed child exit was not confirmed"
+          }`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       const tokenRedacted = redactRuntimeValue(rawMessage, tokenRaw);
       const message = redactDiagnosticText(tokenRedacted, {
         env: {
@@ -1143,6 +1215,18 @@ export class AgentRuntime implements AgentRuntimePort {
         },
         secrets: diagnosticSecrets,
       });
+      if (retainedManaged) {
+        const retained = await this.registry.update(req.sessionId, {
+          state: "starting",
+          pid: resumedManaged?.pid,
+          lastError: message,
+        });
+        throw Object.assign(new Error(message), {
+          session: handleFrom(retained),
+          ...copyRuntimeErrorMetadata(err),
+        });
+      }
+      this.managed.delete(req.sessionId);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message,

@@ -114,6 +114,31 @@ export interface ManagedSession {
   sendFollowUpPrompt?(prompt: string): Promise<void>;
 }
 
+/** Startup failed before the adapter could return, but its child is still owned. */
+export class ManagedSessionStartupError extends Error {
+  readonly managedSession: ManagedSession;
+  readonly cause: unknown;
+  readonly code?: string;
+  readonly terminalAlreadyEmitted?: true;
+
+  constructor(cause: unknown, managedSession: ManagedSession) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "ManagedSessionStartupError";
+    this.managedSession = managedSession;
+    this.cause = cause;
+    if (cause && typeof cause === "object") {
+      const source = cause as {
+        code?: unknown;
+        terminalAlreadyEmitted?: unknown;
+      };
+      if (typeof source.code === "string") this.code = source.code;
+      if (source.terminalAlreadyEmitted === true) {
+        this.terminalAlreadyEmitted = true;
+      }
+    }
+  }
+}
+
 export interface ProviderAdapter {
   readonly id: string;
   readonly displayNameKey: string;

@@ -810,11 +810,18 @@ export class AcpClient {
     } catch (err) {
       // connect owns the freshly spawned process until a Session exists. Any
       // initialize/auth/session-start failure must close that exact child before
-      // control returns to AgentRuntime; callers cannot safely recover this handle.
-      await this.stop("shutdown").catch(() => undefined);
-      if (isAcpLimitError(err)) throw err;
-      if (this.limitError) throw this.limitError;
-      const message = err instanceof Error ? err.message : String(err);
+      // control returns to AgentRuntime. A failed stop must remain observable so
+      // the managed-session wrapper can transfer the still-live handle upward.
+      const failure = isAcpLimitError(err)
+        ? err
+        : this.limitError ?? err;
+      try {
+        await this.stop("shutdown");
+      } catch (stopError) {
+        if (this.isAlive()) throw stopError;
+      }
+      if (isAcpLimitError(failure)) throw failure;
+      const message = failure instanceof Error ? failure.message : String(failure);
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;

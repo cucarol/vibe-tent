@@ -26,7 +26,10 @@ import {
   AcpManagedSession,
   startManagedAcpSession,
 } from "../src/adapters/acp/managed-session.js";
-import type { ProviderAdapter } from "../src/adapters/types.js";
+import {
+  ManagedSessionStartupError,
+  type ProviderAdapter,
+} from "../src/adapters/types.js";
 import {
   createAgentRuntime,
   ProcessSupervisor,
@@ -395,6 +398,45 @@ test("AcpManagedSession keeps real child liveness after a rejected stop", async 
   assert.equal(session.isAlive(), false);
 });
 
+test("managed ACP startup transfers a still-live client to runtime ownership", async () => {
+  const client = {
+    pid: 4244,
+    providerSession: undefined,
+    sessionConfig: {} as never,
+    isAlive: () => true,
+    connect: async () => {
+      throw new Error("startup child exit was not confirmed");
+    },
+    sendPrompt: async () => {
+      throw new Error("unused");
+    },
+    stop: async () => undefined,
+    reportFailed: () => undefined,
+  };
+
+  await assert.rejects(
+    () =>
+      startManagedAcpSession({
+        plan: {
+          sessionId: "ss-managed-startup-owner",
+          connectionId: "managed-startup-owner",
+          cwd: process.cwd(),
+          env: {},
+          bootstrapPrompt: "",
+        },
+        emit: () => undefined,
+        client,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ManagedSessionStartupError);
+      assert.equal(error.managedSession.sessionId, "ss-managed-startup-owner");
+      assert.equal(error.managedSession.pid, 4244);
+      assert.equal(error.managedSession.isAlive(), true);
+      return true;
+    }
+  );
+});
+
 test("managed prompt failure is terminal only after confirmed stop", async () => {
   const events: RuntimeEvent[] = [];
   const unhandled: unknown[] = [];
@@ -484,6 +526,53 @@ test("ACP limit failure emits terminal only after confirmed child exit", async (
   await client.stop("user");
   assert.equal(client.isAlive(), false);
   assert.equal(events.filter((event) => event.type === "session.failed").length, 1);
+});
+
+test("ACP connect surfaces an unconfirmed startup stop while retaining the live child", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({ sessionId: "ss-connect-stop-truth", events });
+  const internals = client as unknown as {
+    proc: import("node:child_process").ChildProcess | null;
+    spawnProcess(): void;
+    request(method: string, params: unknown): Promise<unknown>;
+    waitForExitOrForceKill(timeoutMs: number): Promise<void>;
+  };
+  const originalSpawn = internals.spawnProcess.bind(client);
+  const originalRequest = internals.request.bind(client);
+  const originalWait = internals.waitForExitOrForceKill.bind(client);
+  let proc: import("node:child_process").ChildProcess | null = null;
+  let originalKill:
+    | ((signal?: number | NodeJS.Signals) => boolean)
+    | undefined;
+  internals.spawnProcess = () => {
+    originalSpawn();
+    proc = internals.proc;
+    assert.ok(proc);
+    originalKill = proc.kill.bind(proc);
+    proc.kill = (() => true) as typeof proc.kill;
+  };
+  internals.request = async () => {
+    throw new Error("initialize failed");
+  };
+  internals.waitForExitOrForceKill = async () => {
+    throw new Error("startup child exit was not confirmed");
+  };
+
+  try {
+    await assert.rejects(
+      () => client.connect(),
+      /startup child exit was not confirmed/
+    );
+    assert.equal(client.isAlive(), true);
+    assert.equal(events.some((event) => event.type === "session.failed"), false);
+  } finally {
+    internals.request = originalRequest;
+    internals.waitForExitOrForceKill = originalWait;
+    const child = internals.proc;
+    if (child && originalKill) child.kill = originalKill;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await client.stop("shutdown");
+  }
 });
 
 test("AcpClient waits for the exit event after ChildProcess.exitCode is populated", async () => {

@@ -8,7 +8,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { createFakeAdapter, FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
-import type { ProviderAdapter } from "../src/adapters/types.js";
+import {
+  ManagedSessionStartupError,
+  type ManagedSession,
+  type ProviderAdapter,
+} from "../src/adapters/types.js";
 import {
   createAgentRuntime,
   createAgentConnectionSnapshot,
@@ -826,6 +830,74 @@ test("managed stop retains live truth until the child exit is confirmed", async 
   await runtime.shutdown();
 });
 
+test("managed startup retains a live child until its exit is confirmed", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let alive = true;
+  let emitRuntime!: (event: RuntimeEvent) => void;
+  const sessionId = "ss-startup-stoptruth";
+  const owned: ManagedSession = {
+    sessionId,
+    pid: 8302,
+    isAlive: () => alive,
+    stop: async () => {
+      throw new Error("startup child exit was not confirmed");
+    },
+  };
+  const adapter: ProviderAdapter = {
+    id: "startup-stop-unconfirmed",
+    displayNameKey: "adapter.startupStopUnconfirmed",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    startManagedSession: async (_plan, emit) => {
+      emitRuntime = emit;
+      throw new ManagedSessionStartupError(
+        new Error("initialize failed"),
+        owned
+      );
+    },
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    connections: [testConnection("startup-stop-unconfirmed", adapter.id)],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+
+  await assert.rejects(
+    () =>
+      startConnection(runtime, {
+        sessionId,
+        connectionId: "startup-stop-unconfirmed",
+        cwd,
+      }),
+    /startup child exit was not confirmed/
+  );
+  const retained = await runtime.registry.read(sessionId);
+  assert.equal(retained?.state, "starting");
+  assert.equal(retained?.pid, 8302);
+  assert.equal((await runtime.probe(sessionId)).isAlive, true);
+  assert.equal(events.some((event) => event.type === "session.failed"), false);
+
+  alive = false;
+  emitRuntime({ type: "session.exited", sessionId, exitCode: 0 });
+  await runtime.stopSession(sessionId, "user");
+  assert.equal((await runtime.registry.read(sessionId))?.state, "stopped");
+  await runtime.shutdown();
+});
+
 test("shutdown stops push children (service-stop policy)", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
@@ -1027,6 +1099,7 @@ test("native resume requires both provider conversation identities and exact equ
     const dataDir = await tempDataDir();
     const cwd = await tempCwd();
     let stopCalls = 0;
+    let alive = true;
     const adapter: ProviderAdapter = {
       id: `resume-identity-${missing}`,
       displayNameKey: "adapter.resumeIdentity",
@@ -1048,9 +1121,10 @@ test("native resume requires both provider conversation identities and exact equ
           sessionId: plan.sessionId,
           pid: 5150,
           ...(missing === "actual" ? {} : { providerSessionId: "provider-exact" }),
-          isAlive: () => true,
+          isAlive: () => alive,
           stop: async () => {
             stopCalls += 1;
+            alive = false;
           },
         };
       },

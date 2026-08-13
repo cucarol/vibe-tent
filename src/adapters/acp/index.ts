@@ -50,7 +50,6 @@ export {
   parseAcpResumeToken,
   resumeManagedAcpSession,
   startManagedAcpSession,
-  stopAcpClientQuiet,
   type AcpPermissionAskHooks,
   type AcpResumeTransport,
   type ManagedAcpClient,
