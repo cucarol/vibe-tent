@@ -264,8 +264,9 @@ Result and Task projections to resolve the outcome. V0.2 adds no accept
 idempotency token, receipt, compatibility path, or automatic retry.
 
 A non-empty natural managed final report creates a Result directly after the
-producing turn and workspace lane settle. `blocked` and `failed` are Task states,
-not Results. Their bounded `statusDetail` is the single honest handoff for a
+producing turn and workspace lane settle. Explicit blocked work uses the existing
+Task `waiting` state with `statusDetail.kind=blocked`; `failed` is terminal. Neither
+case creates a Result. Bounded `statusDetail` is the single honest handoff for a
 report or error that did not become a Result. Needs-input is expressed only by a
 Decision Request. Missing format, transient provider/adapter failure, or Result
 publication failure does not create an incident-specific state or entity: Tent

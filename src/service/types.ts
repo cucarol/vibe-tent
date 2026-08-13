@@ -689,7 +689,7 @@ export const CLIENT_METHODS = [
   "docs.importAttachment",
   /**
    * User-only Node type mutation (MutationBus + baseEtag).
-   * Public semantic path for compound type strings; not via free-form docs.write.
+   * Public semantic path for one optional arbitrary Node type marker; not via free-form docs.write.
    * Success emits exactly one node.changed with reason docs.setType.
    */
   "docs.setType",

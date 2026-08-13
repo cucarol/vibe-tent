@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { createTaskResult } from "../src/core/task-result.js";
+import { createTaskResult, writeTaskResult } from "../src/core/task-result.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { createServiceClient } from "../src/service/client.js";
@@ -124,22 +124,70 @@ test("interaction.listPending aggregates actionable Result and tool approval wit
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
 
-    // Ready TaskResult via core writer under the mounted system root
+    // The exact current user-reviewable Result is the only Result interaction.
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const clock = { now: () => "2022-01-01T00:00:00.000Z" };
-    const readyResult = await createTaskResult(fsa, clock, {
+    const submitted = await roleClient.taskSubmit(workspaceId, taskPath, {
+      report: "Ready for human review",
+    }) as { result: { id: string; createdAt: string } };
+    const readyResult = submitted.result;
+
+    // Stale ready inventory sharing the same Task id is not current authority.
+    await createTaskResult(fsa, clock, {
       taskId,
       resultsDir: "temp/roles/rl-executor/results",
-      report: "Ready for human review — must not appear in interaction projection",
+      report: "Stale ready history",
+      status: "ready",
+    });
+
+    // Orphan ready inventory is likewise not a user action.
+    await createTaskResult(fsa, clock, {
+      taskId: "tk-orphan",
+      resultsDir: "temp/roles/rl-executor/results",
+      report: "Orphan ready history",
       status: "ready",
     });
 
     // Non-ready result must not appear
-    await createTaskResult(fsa, clock, {
-      taskId,
+    const acceptedHistory = await createTaskResult(fsa, clock, {
+      taskId: "tk-history",
       resultsDir: "temp/roles/rl-executor/results",
       report: "Already accepted history",
-      status: "accepted",
+      status: "ready",
+    });
+    acceptedHistory.status = "accepted";
+    acceptedHistory.review = {
+      reviewer: "user",
+      at: "2022-01-01T00:00:00.000Z",
+    };
+    await writeTaskResult(fsa, acceptedHistory);
+
+    const roleNode = await client.docsCreateNote(workspaceId, {
+      name: "role-owned-result",
+      type: "prompt",
+    });
+    const roleOwnedEntered = await client.sessionEnter({
+      workspaceId,
+      roleId: "rl-executor",
+      cwd: ws,
+      externalKey: "interaction-role-owned",
+    }) as { session: { sessionId: string }; sessionToken: string };
+    const roleOwnedClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: roleOwnedEntered.session.sessionId,
+      currentSessionToken: roleOwnedEntered.sessionToken,
+    });
+    const roleOwned = await roleOwnedClient.taskDispatch(workspaceId, {
+      workNodeIds: [roleNode.nodeId],
+      contextNodeIds: [],
+      assigneeRoleId: "rl-executor",
+      prompt: "Role-owned result is not a user Inbox action",
+      requester: { kind: "role", id: "rl-executor" },
+    }) as { taskPath: string };
+    await roleOwnedClient.taskClaim(workspaceId, roleOwned.taskPath);
+    await roleOwnedClient.taskSubmit(workspaceId, roleOwned.taskPath, {
+      report: "Return to the responsible Role",
     });
 
     const result = (await client.interactionListPending(
@@ -185,6 +233,18 @@ test("interaction.listPending aggregates actionable Result and tool approval wit
     const got = await client.taskResultGet(workspaceId, readyResult.id);
     assert.equal(got.result.id, readyResult.id);
     assert.equal(got.result.report.includes("Ready for human review"), true);
+
+    await createTaskResult(fsa, clock, {
+      id: readyResult.id,
+      taskId: "tk-duplicate",
+      resultsDir: "temp/roles/rl-other/results",
+      report: "Duplicate identity must fail closed",
+      status: "ready",
+    });
+    await assert.rejects(
+      () => client.interactionListPending(workspaceId),
+      /Task Result identity is not unique|INTERACTION_RESULT_NOT_UNIQUE/i
+    );
   });
 });
 
@@ -211,5 +271,48 @@ test("interaction.listPending empty workspace returns zero counts", async () => 
     assert.equal(result.counts.decisionRequest, 0);
     assert.equal(result.counts.toolApproval, 0);
     assert.equal(result.counts.result, 0);
+  });
+});
+
+test("interaction.listPending fails closed on duplicate current Task identity", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const local = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const { workspaceId } = await local.mount(ws) as { workspaceId: string };
+    const node = await local.docsCreateNote(workspaceId, { name: "duplicate-task" });
+    const entered = await local.sessionEnter({
+      workspaceId,
+      roleId: "rl-executor",
+      cwd: ws,
+    }) as { session: { sessionId: string }; sessionToken: string };
+    const role = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.session.sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
+    const dispatched = await local.taskDispatch(workspaceId, {
+      workNodeIds: [node.nodeId],
+      contextNodeIds: [],
+      assigneeRoleId: "rl-executor",
+      prompt: "duplicate authority fixture",
+      requester: { kind: "user", id: "user" },
+    }) as { taskPath: string };
+    await role.taskClaim(workspaceId, dispatched.taskPath);
+    await role.taskSubmit(workspaceId, dispatched.taskPath, { report: "review me" });
+
+    const systemFs = new NodeFs(path.join(ws, ".tent"));
+    const raw = await systemFs.readFile(dispatched.taskPath);
+    const duplicatePath = `temp/roles/rl-other/tasks/${path.posix.basename(dispatched.taskPath)}`;
+    await systemFs.mkdir(path.posix.dirname(duplicatePath));
+    await systemFs.writeFile(
+      duplicatePath,
+      raw.replace(/^assigneeRoleId: rl-executor$/m, "assigneeRoleId: rl-other")
+    );
+
+    await assert.rejects(
+      () => local.interactionListPending(workspaceId),
+      /Task identity is ambiguous|INTERACTION_RESULT_TASK_NOT_UNIQUE/i
+    );
   });
 });

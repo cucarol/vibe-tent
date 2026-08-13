@@ -527,7 +527,7 @@ export async function dispatchMethod(
       case "skill.install":
         return skillInstall(ctx, p);
       case "task.dispatch":
-        return taskDispatch(ctx, p);
+        return taskDispatch(ctx, p, callContext);
       case "task.claim":
         return taskClaimRpc(ctx, p, {
           sessionId: callContext.callerSessionId,
@@ -2770,7 +2770,11 @@ function mapDocsMoveError(err: unknown): RpcError {
 
 // ---- task.* ----
 
-async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskDispatch(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
   assertAllowedParams(
     p,
     new Set([
@@ -2800,6 +2804,22 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const explicitRequester = parseOptionalTaskActor(p.requester, "requester");
   const explicitAcceptMode = parseAcceptMode(optionalString(p, "acceptMode"));
   const requester = resolveDispatchRequesterFromRpc(explicitRequester);
+
+  // Role review authority is never inferred from an unbound client. A user
+  // requester is only a return responsibility label; task.accept separately
+  // enforces local user authority, so ordinary attached Sessions may create it.
+  if (requester.kind === "role") {
+    await requireRoleClaimCallerSession(
+      ctx,
+      workspaceId,
+      requester.id,
+      {
+        sessionId: callContext.callerSessionId,
+        externalKey: callContext.callerExternalKey,
+      },
+      "task.dispatch"
+    );
+  }
 
   const isSubDispatch =
     requester.kind === "role" && requester.id !== requestedRoleId;
@@ -3730,7 +3750,8 @@ async function requireRoleClaimCallerSession(
   ctx: HandlerContext,
   workspaceId: string,
   roleId: string,
-  caller: { sessionId?: string; externalKey?: string }
+  caller: { sessionId?: string; externalKey?: string },
+  action = "task.claim"
 ): Promise<SessionRecord> {
   let callerSessionId = caller.sessionId?.trim() || undefined;
   if (!callerSessionId && caller.externalKey?.trim()) {
@@ -3741,7 +3762,7 @@ async function requireRoleClaimCallerSession(
     );
     if (matches.length === 1) callerSessionId = matches[0]!.id;
     else if (matches.length > 1) {
-      throw new RpcError(-32001, "task.claim host-native Session context is ambiguous", {
+      throw new RpcError(-32001, `${action} host-native Session context is ambiguous`, {
         code: "TASK_CLAIM_CALLER_SESSION_AMBIGUOUS",
         externalKey: caller.externalKey,
       });
@@ -3750,7 +3771,7 @@ async function requireRoleClaimCallerSession(
   if (!callerSessionId) {
     throw new RpcError(
       -32001,
-      "task.claim requires trusted current Role Session context",
+      `${action} requires trusted current Role Session context`,
       { code: "TASK_CLAIM_CALLER_SESSION_REQUIRED", roleId }
     );
   }
@@ -3765,7 +3786,7 @@ async function requireRoleClaimCallerSession(
   ) {
     throw new RpcError(
       -32001,
-      "task.claim caller Session is not an exact live workspace/Role binding",
+      `${action} caller Session is not an exact live workspace/Role binding`,
       {
         code: "TASK_CLAIM_CALLER_SESSION_MISMATCH",
         roleId,
@@ -5395,9 +5416,16 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         taskForIntegrate,
         commits
       );
-      // Commit-bearing Results durably snapshot resolved target HEAD at review time.
-      targetHead =
-        canonicalCommits.length > 0
+      const recoverableResult = await loadRecoverableTaskSubmitResult(
+        mount.env.fs,
+        taskForIntegrate
+      );
+      // An exact response-loss retry must compare against and reuse the durable
+      // Result candidate before looking at the now-mutated integration target.
+      // Only a genuinely fresh submit snapshots the current target HEAD.
+      targetHead = recoverableResult
+        ? recoverableResult.targetHead ?? undefined
+        : canonicalCommits.length > 0
           ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate, mount.env.fs)
           : undefined;
       if (targetHead && afterTargetHeadSnapshotForTests) {
@@ -5413,6 +5441,8 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       });
     });
     if (prepared.kind === "done") return prepared.result;
+    canonicalCommits = [...prepared.commits];
+    targetHead = prepared.targetHead;
     if (canonicalCommits.length > 0) {
       const taskForIntegrate = await loadTaskRecord(mount.env.fs, taskPath);
       await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
@@ -5421,6 +5451,11 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         taskPath,
       })(canonicalCommits);
     }
+    await beforeTaskSubmitFinalizeForTests?.({
+      workspaceId,
+      taskPath,
+      resultId: prepared.resultId,
+    });
     return ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
       return finalizeTaskSubmitAuto(
@@ -5462,6 +5497,37 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     autoIntegrated: result.autoIntegrated,
     state: result.task.state,
   };
+}
+
+async function loadRecoverableTaskSubmitResult(
+  fs: import("../core/adapter.js").FsAdapter,
+  task: TaskRecord
+): Promise<TaskResultRecord | undefined> {
+  const resultId = task.currentResultId;
+  if (!resultId) return undefined;
+  const resultPath = taskResultPathForTask(task.path, resultId);
+  if (!(await fs.exists(resultPath))) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Task currentResultId points to a missing exact TaskResult: ${resultId}`,
+      { code: "RESULT_CHANGED", resultId, taskId: task.id }
+    );
+  }
+  const result = await loadTaskResult(fs, resultPath);
+  if (
+    result.path !== resultPath ||
+    result.id !== resultId ||
+    result.taskId !== task.id
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Task currentResultId does not identify its exact TaskResult: ${resultId}`,
+      { code: "RESULT_CHANGED", resultId, taskId: task.id }
+    );
+  }
+  return result.status === "ready" || result.status === "accepted"
+    ? result
+    : undefined;
 }
 
 /**
@@ -5552,19 +5618,16 @@ async function requireUniqueTaskForReviewTaskResult(
     throw reviewTaskResultTaskLookupError(resultId, duplicateTaskIds.length, 0);
   }
   const resultPath = taskResultPathForTask(task.path, resultId);
-  const resultMatches = (await loadTaskResults(mount.env.fs)).filter(
-    (candidate) => candidate.id === resultId
-  );
-  if (resultMatches.length !== 1) {
-    throw reviewTaskResultTaskLookupError(resultId, 1, resultMatches.length);
+  if (!(await mount.env.fs.exists(resultPath))) {
+    throw reviewTaskResultTaskLookupError(resultId, 1, 0);
   }
-  const result = resultMatches[0]!;
+  const result = await loadTaskResult(mount.env.fs, resultPath);
   if (
     result.path !== resultPath ||
     result.id !== resultId ||
     result.taskId !== task.id
   ) {
-    throw reviewTaskResultTaskLookupError(resultId, 1, resultMatches.length);
+    throw reviewTaskResultTaskLookupError(resultId, 1, 0);
   }
   return { task, result };
 }
@@ -8822,7 +8885,7 @@ async function interactionListPending(
 
   let requests: Awaited<ReturnType<typeof ctx.decisionRequests.listPending>>;
   let toolApprovals: Awaited<ReturnType<typeof ctx.toolApprovals.listPending>>;
-  let results: Awaited<ReturnType<typeof loadTaskResults>>;
+  let taskResults: Awaited<ReturnType<typeof loadTaskResults>>;
   try {
     // Parallel reads are independent; reject if any source fails.
     const settled = await Promise.all([
@@ -8832,7 +8895,7 @@ async function interactionListPending(
     ]);
     requests = settled[0];
     toolApprovals = settled[1];
-    results = settled[2];
+    taskResults = settled[2];
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RpcError(
@@ -8844,13 +8907,24 @@ async function interactionListPending(
 
   // Task envelopes supply optional nodeId/sessionId pointers for rows that
   // only store taskPath / taskId. Missing envelopes leave pointers undefined.
+  let tasks: TaskRecord[] = [];
   let tasksByPath = new Map<string, TaskRecord>();
   let tasksById = new Map<string, TaskRecord>();
+  let taskRecordsById = new Map<string, TaskRecord[]>();
   try {
-    const tasks = await loadTaskRecords(mount.env.fs);
+    tasks = await loadTaskRecords(mount.env.fs);
     tasksByPath = new Map(tasks.map((t) => [t.path, t]));
+    taskRecordsById = new Map();
+    for (const task of tasks) {
+      if (!task.id) continue;
+      const sameId = taskRecordsById.get(task.id) ?? [];
+      sameId.push(task);
+      taskRecordsById.set(task.id, sameId);
+    }
     tasksById = new Map(
-      tasks.filter((t): t is TaskRecord & { id: string } => !!t.id).map((t) => [t.id, t])
+      [...taskRecordsById.entries()]
+        .filter(([, records]) => records.length === 1)
+        .map(([taskId, records]) => [taskId, records[0]!])
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -8917,9 +8991,71 @@ async function interactionListPending(
     items.push(item);
   }
 
-  for (const result of results) {
-    if (result.status !== "ready") continue;
-    const task = tasksById.get(result.taskId);
+  const currentResultOwners = new Map<string, TaskRecord[]>();
+  const taskResultsById = new Map<string, TaskResultRecord[]>();
+  for (const result of taskResults) {
+    const sameId = taskResultsById.get(result.id) ?? [];
+    sameId.push(result);
+    taskResultsById.set(result.id, sameId);
+  }
+  for (const task of tasks) {
+    if (task.state !== "submitted" || task.requester?.kind !== "user") continue;
+    if (task.requester.id !== "user" || !task.id || !task.currentResultId) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "User-reviewable Task has invalid Result authority",
+        { code: "INTERACTION_RESULT_TASK_INVALID", taskId: task.id ?? null }
+      );
+    }
+    const sameTaskId = taskRecordsById.get(task.id) ?? [];
+    if (sameTaskId.length !== 1) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "User-reviewable Task identity is ambiguous",
+        { code: "INTERACTION_RESULT_TASK_NOT_UNIQUE", taskId: task.id }
+      );
+    }
+    const owners = currentResultOwners.get(task.currentResultId) ?? [];
+    owners.push(task);
+    currentResultOwners.set(task.currentResultId, owners);
+  }
+
+  for (const [resultId, owners] of currentResultOwners) {
+    if (owners.length !== 1) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "User-reviewable Task Result identity is ambiguous",
+        { code: "INTERACTION_RESULT_NOT_UNIQUE", resultId, matches: owners.length }
+      );
+    }
+    const task = owners[0]!;
+    const resultPath = taskResultPathForTask(task.path, resultId);
+    const matchingResults = taskResultsById.get(resultId) ?? [];
+    if (matchingResults.length !== 1) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "User-reviewable Task Result identity is not unique",
+        {
+          code: "INTERACTION_RESULT_NOT_UNIQUE",
+          taskId: task.id,
+          resultId,
+          matches: matchingResults.length,
+        }
+      );
+    }
+    const result = matchingResults[0]!;
+    if (
+      result.path !== resultPath ||
+      result.id !== resultId ||
+      result.taskId !== task.id ||
+      result.status !== "ready"
+    ) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "User-reviewable Task Result does not match its exact Task authority",
+        { code: "INTERACTION_RESULT_CHANGED", taskId: task.id, resultId }
+      );
+    }
     const item: PendingTaskResultInteraction = {
       kind: "result",
       id: result.id,
@@ -8928,8 +9064,8 @@ async function interactionListPending(
       taskId: result.taskId,
       path: result.path,
       status: "ready",
-      ...(task?.path ? { taskPath: task.path } : {}),
-      ...(task?.executionSessionId ? { sessionId: task.executionSessionId } : {}),
+      taskPath: task.path,
+      ...(task.executionSessionId ? { sessionId: task.executionSessionId } : {}),
     };
     items.push(item);
   }
@@ -12285,6 +12421,19 @@ export function setAfterTargetHeadSnapshotForTests(
   afterTargetHeadSnapshotForTests = fn;
 }
 
+/** Test-only crash boundary after task.submit integration and before finalize. */
+let beforeTaskSubmitFinalizeForTests:
+  | ((input: { workspaceId: string; taskPath: string; resultId: string }) => Promise<void>)
+  | null = null;
+
+export function setBeforeTaskSubmitFinalizeForTests(
+  fn:
+    | ((input: { workspaceId: string; taskPath: string; resultId: string }) => Promise<void>)
+    | null
+): void {
+  beforeTaskSubmitFinalizeForTests = fn;
+}
+
 /** Test-only crash boundary after real accept integration and before finalize. */
 let beforeTaskAcceptFinalizeForTests:
   | ((input: { workspaceId: string; taskPath: string; resultId: string }) => Promise<void>)
@@ -12413,6 +12562,7 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
   afterTaskRejectContinuationPersistForTests = null;
+  beforeTaskSubmitFinalizeForTests = null;
   afterManagedSessionProviderStartForTests = null;
   beforeTaskClaimCoreForTests = null;
   beforeReplaceTaskInputRollbackForTests = null;

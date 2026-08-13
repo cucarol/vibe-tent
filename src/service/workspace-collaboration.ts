@@ -1,4 +1,7 @@
-import type { TaskResultRecord } from "../core/task-result.js";
+import {
+  taskResultPathForTask,
+  type TaskResultRecord,
+} from "../core/task-result.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import type { TaskRecord } from "../core/task.js";
 import { isTaskId } from "../core/task-model.js";
@@ -281,7 +284,8 @@ function selectUserInboxResults(
     if (
       !result ||
       result.status !== "ready" ||
-      result.taskId !== task.id
+      result.taskId !== task.id ||
+      result.path !== taskResultPathForTask(task.path, result.id)
     ) {
       throw consistencyError("User-reviewable Task Result identity is stale", {
         resultId: task.currentResultId ?? null,

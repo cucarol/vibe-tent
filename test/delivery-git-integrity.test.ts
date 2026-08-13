@@ -19,15 +19,16 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
-import { setBeforeTaskAcceptFinalizeForTests } from "../src/service/handlers.js";
+import {
+  setBeforeTaskAcceptFinalizeForTests,
+  setBeforeTaskSubmitFinalizeForTests,
+} from "../src/service/handlers.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { RPC_LIFECYCLE } from "../src/service/types.js";
 import { taskReject } from "../src/core/task-lifecycle.js";
 import { loadTaskRecord } from "../src/core/task.js";
 import {
   loadTaskResults,
-  sessionTaskResultPath,
-  writeTaskResult,
 } from "../src/core/task-result.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
@@ -114,6 +115,7 @@ async function claimRunningWithBase(
     prompt: string;
     noteName?: string;
     workspaceId?: string;
+    acceptMode?: "review-required" | "auto-accept" | "agent-decide";
   }
 ): Promise<{
   workspaceId: string;
@@ -145,7 +147,7 @@ async function claimRunningWithBase(
     contextNodeIds: [],
     connectionId: "fake-default",
     prompt: opts.prompt,
-    acceptMode: "review-required",
+    acceptMode: opts.acceptMode ?? "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -287,25 +289,96 @@ test("task.accept retry finalizes an exact fast-forward already integrated befor
   });
 });
 
-test("task.accept finalize rejects a TaskResult-id collision introduced during Git integration", async () => {
-  const ws = await makeWorkspace("accept-finalize-result-collision");
+test("task.submit exact retry reuses the persisted target after integration response loss", async () => {
+  const ws = await makeWorkspace("submit-crash-fast-forward");
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
     const task = await claimRunningWithBase(svc, ws, {
-      label: "finalize-collision",
+      label: "submit-crash",
+      prompt: "recover exact auto-submit",
+      acceptMode: "auto-accept",
+    });
+    const commit = await taskCommitOnLane(
+      task.worktree,
+      "submit-crash.txt",
+      "submit crash\n",
+      "submit crash"
+    );
+    setBeforeTaskSubmitFinalizeForTests(async () => {
+      throw new Error("injected post-submit-integrate crash");
+    });
+    try {
+      const first = await rpc(svc, "task.submit", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        report: "auto result survives response loss",
+        commits: [commit],
+      });
+      assert.ok(first.error, "injected crash must stop before submit finalize");
+    } finally {
+      setBeforeTaskSubmitFinalizeForTests(null);
+    }
+
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+    const mount = svc.ctx.host.require(task.workspaceId);
+    const partial = await loadTaskRecord(mount.env.fs, task.taskPath);
+    assert.equal(partial.state, "submitted");
+    assert.ok(partial.currentResultId);
+    const resultPath = (await loadTaskResults(mount.env.fs, { taskId: partial.id })).find(
+      (row) => row.id === partial.currentResultId
+    )!.path;
+    const taskBeforeConflict = await mount.env.fs.readFile(task.taskPath);
+    const resultBeforeConflict = await mount.env.fs.readFile(resultPath);
+    const conflicting = await rpc(svc, "task.submit", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      report: "different candidate",
+      commits: [commit],
+    });
+    assert.equal(
+      (conflicting.error?.data as { code?: string } | undefined)?.code,
+      "RESULT_CHANGED"
+    );
+    assert.equal(await mount.env.fs.readFile(task.taskPath), taskBeforeConflict);
+    assert.equal(await mount.env.fs.readFile(resultPath), resultBeforeConflict);
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+
+    const retry = await rpc(svc, "task.submit", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      report: "auto result survives response loss",
+      commits: [commit],
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.equal((retry.result as { state: string }).state, "accepted");
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+    const rows = await loadTaskResults(mount.env.fs, { taskId: partial.id });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.id, partial.currentResultId);
+    assert.equal(rows[0]!.status, "accepted");
+  });
+});
+
+test("task.accept finalize rejects exact TaskResult semantic drift introduced during Git integration", async () => {
+  const ws = await makeWorkspace("accept-finalize-result-drift");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "finalize-drift",
       prompt: "revalidate exact TaskResult after integration",
     });
     const commit = await taskCommitOnLane(
       task.worktree,
-      "finalize-collision.txt",
-      "collision\n",
-      "finalize collision"
+      "finalize-drift.txt",
+      "drift\n",
+      "finalize drift"
     );
     const delivered = await rpc(svc, "task.submit", {
       workspaceId: task.workspaceId,
       taskPath: task.taskPath,
-      report: "ready before exact TaskResult collision",
+      report: "ready before exact TaskResult drift",
       commits: [commit],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
@@ -317,35 +390,10 @@ test("task.accept finalize rejects a TaskResult-id collision introduced during G
     );
     assert.ok(exact);
     const exactRaw = await mount.env.fs.readFile(exact.path);
-    const collisionPath = sessionTaskResultPath("ss-finalize-collision", resultId);
-
-    setBeforeTaskAcceptFinalizeForTests(async () => {
-      await writeTaskResult(mount.env.fs, { ...exact, path: collisionPath });
-    });
-    try {
-      const accepted = await rpc(svc, "task.accept", {
-        workspaceId: task.workspaceId,
-        resultId,
-        actor: "user",
-      });
-      assert.equal(
-        (accepted.error?.data as { code?: string } | undefined)?.code,
-        "REVIEW_RESULT_TASK_NOT_UNIQUE"
-      );
-    } finally {
-      setBeforeTaskAcceptFinalizeForTests(null);
-    }
-
-    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
-    assert.equal(await mount.env.fs.readFile(exact.path), exactRaw);
-    assert.equal(await mount.env.fs.exists(collisionPath), true);
-    await mount.env.fs.remove(collisionPath);
-    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, resultId);
-
     setBeforeTaskAcceptFinalizeForTests(async () => {
       await mount.env.fs.writeFile(
         exact.path,
-        exactRaw.replace("ready before exact TaskResult collision", "drifted after Git")
+        exactRaw.replace("ready before exact TaskResult drift", "drifted after Git")
       );
     });
     try {

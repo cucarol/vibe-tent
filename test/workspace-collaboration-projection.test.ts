@@ -568,3 +568,34 @@ test("workspace.collaboration rejects duplicate identity for a current TaskResul
     );
   });
 });
+
+test("workspace.collaboration rejects a current Result stored outside its Task namespace", async () => {
+  const { workspace, systemFs, ids } = await makeWorkspace();
+  await withService(async (_svc, client) => {
+    const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
+    const nodeId = ids.get("user-result")!;
+    const task = await writeTask(systemFs, {
+      workNodeIds: [nodeId],
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
+    });
+    const wrongNamespace = await createTaskResult(
+      systemFs,
+      { now: () => "2026-01-01T00:00:00.000Z" },
+      {
+        taskId: task.id!,
+        resultsDir: "temp/roles/rl-parent/results",
+        report: "Wrong owner namespace",
+        status: "ready",
+      }
+    );
+    await patchTaskRecord(systemFs, task.path, {
+      state: "submitted",
+      currentResultId: wrongNamespace.id,
+    });
+    await assert.rejects(
+      () => client.workspaceCollaboration(workspaceId),
+      /Task Result identity is stale|WORKSPACE_COLLABORATION_STALE|consistency error/i
+    );
+  });
+});

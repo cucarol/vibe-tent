@@ -395,6 +395,7 @@ export function resolveDispatchRequester(input: {
 export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskRecord> {
   if (!(await fs.exists(path))) throw new Error(`Task record not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
+  assertNoRetiredTaskAuthorityFields(data);
   if (data.type !== "task" || typeof data.manifest !== "string") {
     throw new Error(`Invalid task record format: ${path}.`);
   }
@@ -542,6 +543,14 @@ function resolveRequesterFromDisk(data: Record<string, unknown>): TaskActorRef {
     throw new Error("Invalid Task record: missing requester.");
   }
   return parseTaskActorRef(data.requester, "requester");
+}
+
+function assertNoRetiredTaskAuthorityFields(data: Record<string, unknown>): void {
+  for (const field of ["reviewer", "dispatchedBy"] as const) {
+    if (Object.prototype.hasOwnProperty.call(data, field)) {
+      throw new Error(`Invalid Task record: retired ${field} field; use requester.`);
+    }
+  }
 }
 
 /**
@@ -890,6 +899,7 @@ export async function patchTaskRecord(
   if (!(await fs.exists(path))) throw new Error(`Task record not found: ${path}.`);
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
+  assertNoRetiredTaskAuthorityFields(data);
   if (data.type !== "task") throw new Error(`Invalid Task record format: ${path}.`);
 
   if (patch.state) {
