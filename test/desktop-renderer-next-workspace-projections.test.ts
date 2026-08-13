@@ -89,7 +89,6 @@ function provenance() {
       id: "rs-1",
       status: "accepted",
       taskId: "tk-1",
-      sourceNodeId: "cx-source",
       artifactRefs: [
         { kind: "commit", target: "a".repeat(40) },
         { kind: "directory", target: "dist" },
@@ -220,19 +219,36 @@ test("workspace collaboration parser accepts exact workspace Inbox with no selec
   assert.equal(normalized.value.inbox.counts.total, 0);
 });
 
-test("output provenance validates explicit joins and never infers a chain", () => {
+test("output provenance validates explicit wire records without inventing a source join", () => {
   const ready = normalizeOutputProvenance(provenance(), workspaceId, "cx-output");
   assert.equal(ready.state, "ready");
   if (ready.state === "ready") {
     assert.deepEqual(ready.value.result?.artifactRefs, provenance().result.artifactRefs);
   }
 
-  const mismatch = provenance();
-  mismatch.sourceNode.nodeId = "cx-guessed-from-time";
+  const independentSource = provenance();
+  independentSource.sourceNode.nodeId = "cx-explicit-source";
   assert.equal(
-    normalizeOutputProvenance(mismatch, workspaceId, "cx-output").state,
+    normalizeOutputProvenance(independentSource, workspaceId, "cx-output").state,
+    "ready",
+    "the renderer cannot reconstruct Task workNodeIds from this wire"
+  );
+
+  const malformedSource = provenance() as unknown as { sourceNode: Record<string, unknown> };
+  malformedSource.sourceNode = { nodeId: "cx-source", path: 42 };
+  assert.equal(
+    normalizeOutputProvenance(malformedSource, workspaceId, "cx-output").state,
     "error"
   );
+
+  const missingSource = provenance() as unknown as Record<string, unknown>;
+  missingSource.sourceNode = null;
+  missingSource.incomplete = ["source_missing"];
+  const incomplete = normalizeOutputProvenance(missingSource, workspaceId, "cx-output");
+  assert.equal(incomplete.state, "ready");
+  if (incomplete.state === "ready") {
+    assert.deepEqual(incomplete.value.incomplete, ["source_missing"]);
+  }
 });
 
 test("output provenance fails closed on non-canonical artifact refs", () => {

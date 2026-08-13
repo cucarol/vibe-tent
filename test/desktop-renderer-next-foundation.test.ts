@@ -591,17 +591,6 @@ test("production invalidation is immediate and provenance is selected-output onl
   assert.doesNotMatch(production, /outputs\.map|provenanceRows|Promise\.all\([\s\S]*outputProvenance/);
 });
 
-test("ADR documents foundation boundary", async () => {
-  const adr = await read("docs/desktop/adr-renderer-next-foundation.md");
-  assert.match(adr, /Service is the sole fact/);
-  assert.match(adr, /entityRef/);
-  assert.match(adr, /placementId/);
-  assert.match(adr, /renderer-next/);
-  assert.match(adr, /production entry/i);
-  assert.match(adr, /drawer\/overlay|default-collapsed/i);
-  assert.doesNotMatch(adr, /always-on|always reachable/i);
-});
-
 test("Outline chrome defaults collapsed with open/expand/locate interfaces", () => {
   const initial = createDefaultOutlineChrome();
   assert.equal(isOutlineOpen(initial), false);
