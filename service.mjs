@@ -22417,7 +22417,7 @@ var AcpClient = class {
   }
   waitExit() {
     const proc = this.proc;
-    if (!proc || this.childExited || this.exitCode !== null || this.exitSignal !== null || proc.exitCode !== null || proc.signalCode !== null) {
+    if (!proc || this.childExited) {
       return Promise.resolve();
     }
     return new Promise((resolve15) => {
@@ -29729,7 +29729,7 @@ function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
 function assertTaskSessionPostStartOwnership(operation, taskPath, current, expected) {
   const actual = captureTaskSessionBindSnapshot(current);
   const immutableIdentityUnchanged = actual.taskId === expected.taskId && actual.sessionId === expected.sessionId && actual.roleId === expected.roleId && actual.workspace === expected.workspace && actual.worktree === expected.worktree && actual.branch === expected.branch && actual.targetBranch === expected.targetBranch && actual.baseCommit === expected.baseCommit && actual.acceptMode === expected.acceptMode && JSON.stringify(actual.requester) === JSON.stringify(expected.requester) && actual.nodeContextJson === expected.nodeContextJson;
-  const validSameSessionProgress = current.state === "running" || current.state === "waiting";
+  const validSameSessionProgress = current.state === "running" || current.state === "waiting" || current.state === "submitted";
   if (immutableIdentityUnchanged && validSameSessionProgress) return;
   throw new RpcError(
     RPC_LIFECYCLE,
