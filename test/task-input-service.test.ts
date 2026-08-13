@@ -103,6 +103,26 @@ async function pollUntil<T>(
   throw new Error(`timeout waiting for ${label}`);
 }
 
+async function waitForBootstrapTurn(
+  client: ReturnType<typeof createServiceClient>,
+  workspaceId: string,
+  taskPath: string,
+  sessionId: string,
+  label: string
+): Promise<void> {
+  await pollUntil(async () => {
+    const [task, session] = await Promise.all([
+      client.taskGet(workspaceId, taskPath) as Promise<{ task: { state: string }}>,
+      client.sessionGet(sessionId) as Promise<{
+        session: { isTurnActive?: boolean };
+      }>,
+    ]);
+    return task.task.state === "waiting" && session.session.isTurnActive === true
+      ? true
+      : null;
+  }, 15_000, label);
+}
+
 async function makeWorkspace(): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-ws-"));
   const fsa = new NodeFs(workspace);
@@ -545,7 +565,19 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       type: "prompt",
     }));
     // Persisted parent Role may acknowledge ambiguity for its child.
-    const parentDispatched = (await client.taskDispatch(workspaceId, {
+    const dispatcherEntered = (await client.sessionEnter({
+      workspaceId,
+      roleId: "rl-dispatcher",
+      externalKey: "task-input-parent-dispatch",
+      cwd: ws,
+    })) as { session: { sessionId: string }; sessionToken: string };
+    const dispatcher = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: dispatcherEntered.session.sessionId,
+      currentSessionToken: dispatcherEntered.sessionToken,
+    });
+    const parentDispatched = (await dispatcher.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Canonical parent acknowledgement fixture",
@@ -955,19 +987,13 @@ test("managed ACP: task.sendInput continues same session; delivered survives Tas
       "hold for append"
     );
 
-    await pollUntil(async () => {
-      try {
-        const logRaw = await fs.readFile(logPath, "utf8");
-        const log = JSON.parse(logRaw) as { prompts?: string[] };
-        if (!Array.isArray(log.prompts) || log.prompts.length < 1) return null;
-        const t = (await client.taskGet(workspaceId, taskPath)) as {
-          task: { state: string };
-        };
-        return t.task.state === "waiting" ? log : null;
-      } catch {
-        return null;
-      }
-    }, 15_000, "bootstrap finished while waiting");
+    await waitForBootstrapTurn(
+      client,
+      workspaceId,
+      taskPath,
+      started.session.sessionId,
+      "bootstrap finished while waiting"
+    );
 
     // Resume to running so managed inject path is typical; waiting also allowed.
     await client.taskResume(workspaceId, taskPath);
@@ -1742,11 +1768,12 @@ test("reject-resume: background completion projects processing → delivered", a
         text: "FIFO_SECOND_WHILE_RESULT_OWNER_HELD",
       })) as { input: { id: string } };
       await pollUntil(async () => {
-        const raw = await fs.readFile(logPath, "utf8").catch(() => "{}");
-        const log = JSON.parse(raw) as { prompts?: string[] };
-        return (log.prompts ?? []).some((prompt) =>
-          prompt.includes("FIFO_SECOND_WHILE_RESULT_OWNER_HELD")
-        )
+        const row = (await client.taskInputGet(
+          workspaceId,
+          taskPath,
+          second.input.id
+        )) as { input: { status: string } };
+        return row.input.status === "processing" || row.input.status === "delivered"
           ? true
           : null;
       }, 5_000, "second same-Task FIFO continuation enters while result owner is held");
@@ -2523,20 +2550,13 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     }, 15_000, "session alive");
 
     await client.taskWait(workspaceId, taskPath, "user-input", "hold for fifo");
-    await pollUntil(async () => {
-      try {
-        const logRaw = await fs.readFile(logPath, "utf8");
-        const log = JSON.parse(logRaw) as { prompts?: string[] };
-        const t = (await client.taskGet(workspaceId, taskPath)) as {
-          task: { state: string };
-        };
-        return log.prompts && log.prompts.length >= 1 && t.task.state === "waiting"
-          ? log
-          : null;
-      } catch {
-        return null;
-      }
-    }, 15_000, "bootstrap done while waiting");
+    await waitForBootstrapTurn(
+      client,
+      workspaceId,
+      taskPath,
+      started.session.sessionId,
+      "bootstrap done while waiting"
+    );
 
     // Keep the Task waiting while both inputs are durably accepted. Resuming
     // here would also retry the already-preserved bootstrap report, allowing
@@ -2660,28 +2680,19 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         acceptMode: "review-required",
       })) as { taskPath: string };
       const taskPath = dispatched.taskPath;
-      await client.taskStartSession(workspaceId, {
+      const started = (await client.taskStartSession(workspaceId, {
         taskPath,
         callerKind: "user",
-      });
+      })) as { session: { sessionId: string } };
       // Park before bootstrap prompt_complete can deliver (delay=900ms).
       await client.taskWait(workspaceId, taskPath, "user-input", "hold");
-      await pollUntil(async () => {
-        try {
-          const logRaw = await fs.readFile(logFile, "utf8");
-          const log = JSON.parse(logRaw) as { prompts?: string[] };
-          const t = (await client.taskGet(workspaceId, taskPath)) as {
-            task: { state: string };
-          };
-          return log.prompts &&
-            log.prompts.length >= 1 &&
-            t.task.state === "waiting"
-            ? t
-            : null;
-        } catch {
-          return null;
-        }
-      }, 15_000, `${name} bootstrap finished while waiting`);
+      await waitForBootstrapTurn(
+        client,
+        workspaceId,
+        taskPath,
+        started.session.sessionId,
+        `${name} bootstrap finished while waiting`
+      );
       // Stay waiting so peer setup cannot race auto-submit.
       return taskPath;
     }
@@ -2890,22 +2901,13 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     }, 15_000, "session alive");
 
     await client.taskWait(workspaceId, taskPath, "user-input", "hold async");
-    await pollUntil(async () => {
-      try {
-        const logRaw = await fs.readFile(logPath, "utf8");
-        const log = JSON.parse(logRaw) as { prompts?: string[] };
-        const t = (await client.taskGet(workspaceId, taskPath)) as {
-          task: { state: string };
-        };
-        return log.prompts &&
-          log.prompts.length >= 1 &&
-          t.task.state === "waiting"
-          ? log
-          : null;
-      } catch {
-        return null;
-      }
-    }, 15_000, "bootstrap done while waiting");
+    await waitForBootstrapTurn(
+      client,
+      workspaceId,
+      taskPath,
+      started.session.sessionId,
+      "bootstrap done while waiting"
+    );
     // sendInput accepts waiting Tasks. Keeping this Task parked prevents the
     // completed bootstrap report from racing a default TaskResult ahead of the
     // durable input acceptance being measured here.
@@ -3119,22 +3121,13 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
 
     // Park before bootstrap prompt_complete can deliver (delay=2500ms).
     await client.taskWait(workspaceId, taskPath, "user-input", "hold hang");
-    await pollUntil(async () => {
-      try {
-        const logRaw = await fs.readFile(logPath, "utf8");
-        const log = JSON.parse(logRaw) as { prompts?: string[] };
-        const t = (await client.taskGet(workspaceId, taskPath)) as {
-          task: { state: string };
-        };
-        return log.prompts &&
-          log.prompts.length >= 1 &&
-          t.task.state === "waiting"
-          ? true
-          : null;
-      } catch {
-        return null;
-      }
-    }, 15_000, "bootstrap parked for hang");
+    await waitForBootstrapTurn(
+      client,
+      workspaceId,
+      taskPath,
+      started.session.sessionId,
+      "bootstrap parked for hang"
+    );
     // The live managed Session can accept U2A while Task state remains waiting;
     // do not retry the completed bootstrap report before this hung-turn seam.
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
@@ -3145,19 +3138,12 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
 
     // Inject claimed (processing) and mock saw the follow-up — then hangs.
     await pollUntil(async () => {
-      try {
-        const got = (await client.taskInputGet(
-          workspaceId,
-          taskPath,
-          sent.input.id
-        )) as { input: { status: string } };
-        const logRaw = await fs.readFile(logPath, "utf8");
-        const log = JSON.parse(logRaw) as { prompts?: string[] };
-        const saw = (log.prompts ?? []).some((p) => p.includes("HANG_U2A"));
-        return got.input.status === "processing" && saw ? true : null;
-      } catch {
-        return null;
-      }
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        sent.input.id
+      )) as { input: { status: string } };
+      return got.input.status === "processing" ? true : null;
     }, 15_000, "hang follow-up in processing");
 
     const t0 = Date.now();

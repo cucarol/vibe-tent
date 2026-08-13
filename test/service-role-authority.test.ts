@@ -322,7 +322,7 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "block delete",
     });
     assert.ok(!d.error, JSON.stringify(d.error));

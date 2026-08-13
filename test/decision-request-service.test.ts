@@ -116,11 +116,23 @@ async function createRunningRoleTask(input: {
     "rl-executor",
     executorExternalKey
   );
+  const requesterClient =
+    input.requester.kind === "role"
+      ? (
+          await enterRole(
+            input.svc,
+            workspaceId,
+            input.workspace,
+            input.requester.id,
+            `codex:${Math.random().toString(36).slice(2)}`
+          )
+        ).client
+      : root;
   const note = await root.docsCreateNote(workspaceId, {
     name: `decision-${Math.random().toString(36).slice(2, 8)}`,
     type: "prompt",
   });
-  const dispatched = (await root.taskDispatch(workspaceId, {
+  const dispatched = (await requesterClient.taskDispatch(workspaceId, {
     workNodeIds: [note.nodeId],
     contextNodeIds: [],
     assigneeRoleId: "rl-executor",

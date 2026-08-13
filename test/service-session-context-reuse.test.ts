@@ -35,6 +35,7 @@ import {
   collectStableContextGeneration,
 } from "../src/service/session-context-generation.js";
 import { rpcCall } from "../src/service/http-server.js";
+import { createServiceClient } from "../src/service/client.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
@@ -178,16 +179,26 @@ async function dispatchConnectionTask(
   prompt: string,
   connectionId = "fake-resumable"
 ) {
-  const dispatched = await rpc(svc, "task.dispatch", {
+  const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+  const entered = (await root.sessionEnter({
     workspaceId,
+    roleId: "rl-orchestrator",
+    externalKey: `ctx-dispatch:${Math.random().toString(36).slice(2)}`,
+  })) as { session: { sessionId: string }; sessionToken: string };
+  const roleClient = createServiceClient({
+    baseUrl: svc.url,
+    token: svc.token,
+    currentSessionId: entered.session.sessionId,
+    currentSessionToken: entered.sessionToken,
+  });
+  const dispatched = await roleClient.taskDispatch(workspaceId, {
     workNodeIds: [nodeId],
     contextNodeIds: [],
     prompt,
     connectionId,
     requester: { kind: "role", id: "rl-orchestrator" },
   });
-  assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
-  return dispatched.result as { taskPath: string; session?: { sessionId: string } };
+  return dispatched as { taskPath: string; session?: { sessionId: string } };
 }
 
 async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null> {
