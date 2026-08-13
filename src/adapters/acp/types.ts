@@ -526,8 +526,6 @@ export type AcpAuthenticateParams = {
  * Provider adapters may extend this bag for provider-only knobs.
  */
 export interface AcpRouteOptions {
-  /** Absolute path to the provider CLI / ACP bridge executable on this machine. */
-  executable?: string;
   /** Explicit model id passed to the provider CLI when supported. */
   model?: string;
   /**
@@ -542,16 +540,8 @@ export interface AcpRouteOptions {
    * Service resolves via the OS-backed LaunchSecretStore; connections.json stores only this id.
    */
   launchSecretRef?: string;
-  /**
-   * Process env key whose **value** is an OpenAI-compatible / provider base URL.
-   * Only the env key *name* is stored on the machine-local Connection.
-   */
-  baseUrlEnvKey?: string;
-  /**
-   * Optional literal base URL on the **machine-local** Connection only.
-   * Prefer baseUrlEnvKey + process env. Never copy this field into workspace / git.
-   */
-  baseUrl?: string;
+  /** Optional literal endpoint on the machine-local Connection only. */
+  endpoint?: string;
   /** Max wait for session/prompt result (ms). Default: DEFAULT_PROMPT_TIMEOUT_MS. */
   promptTimeoutMs?: number;
   /**

@@ -292,7 +292,7 @@ async function assertInstalledSkills(root: string): Promise<void> {
   assert.match(role, /name: tent-role/);
   assert.match(role, /also apply `tent-task`/i);
   assert.match(task, /name: tent-task/);
-  assert.match(task, /Delivery is never acceptance/i);
+  assert.match(task, /TaskResult is never acceptance/i);
   assert.ok(init.length < 6000, "tent-init should stay cache-friendly");
   assert.ok(role.length < 6000, "tent-role should stay cache-friendly");
   assert.ok(task.length < 6000, "tent-task should stay cache-friendly");

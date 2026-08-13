@@ -1,8 +1,8 @@
 // Task lifecycle commands via Local Service RPC (architecture §4 / task-api §3).
-// Role claim/deliver MUST go through this path — no direct Core mutation.
+// Role claim/submit MUST go through this path — no direct Core mutation.
 
 import type { ServiceClient } from "../service/client.js";
-import { isDeliveryId } from "../core/task-model.js";
+import { isTaskResultId } from "../core/task-model.js";
 import { attachOrBootstrapService, type CliAttachOptions } from "./service-attach.js";
 import { ensureMountedWorkspace } from "./workspace-context.js";
 
@@ -51,19 +51,19 @@ export async function runTaskCommand(
       Object.prototype.hasOwnProperty.call(flags, "commits")
     ) {
       return failUsage(
-        "tent task accept does not accept --commits; the ready Delivery is the sole commit source"
+        "tent task accept does not accept --commits; the ready TaskResult is the sole commit source"
       );
     }
     if (sub === "accept" || sub === "reject") {
       const allowed =
         sub === "accept"
-          ? new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
+          ? new Set(["actor", "by", ...TASK_COMMON_FLAGS])
           : new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS]);
       const unknown = findUnknownFlag(flags, allowed);
       if (unknown) return failUsage(`Unknown option --${unknown} for task ${sub}`);
-      if (positionals.length !== 1 || !isDeliveryId(positionals[0]!)) {
+      if (positionals.length !== 1 || !isTaskResultId(positionals[0]!)) {
         return failUsage(
-          `Usage: tent task ${sub} <deliveryId> --actor <user|role> [--workspace <path>] [--json]`
+          `Usage: tent task ${sub} <resultId> --actor <user|role> [--workspace <path>] [--json]`
         );
       }
     }
@@ -176,7 +176,7 @@ export async function runTaskCommand(
         }
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || undefined;
         const result = await client.taskClaimDirect(workspaceId, {
-          roleId,
+          assigneeRoleId: roleId,
           workNodeIds,
           contextNodeIds,
           prompt,
@@ -192,29 +192,29 @@ export async function runTaskCommand(
           );
         });
       }
-      case "deliver": {
+      case "submit": {
         const taskPath = positionals[0];
         if (!taskPath) {
           return failUsage(
-            "Usage: tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]"
+            "Usage: tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--workspace <path>] [--json]"
           );
         }
         if (positionals.length > 1) {
           return failUsage(
-            "Usage: tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]"
+            "Usage: tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--workspace <path>] [--json]"
           );
         }
-        if (!Object.prototype.hasOwnProperty.call(flags, "summary")) {
-          return failUsage("tent task deliver requires --summary <text> or --summary -");
+        if (!Object.prototype.hasOwnProperty.call(flags, "report")) {
+          return failUsage("tent task submit requires --report <text> or --report -");
         }
-        let summary = flags.summary ?? "";
-        if (summary === "-") summary = await readStdinText();
-        if (!summary.trim()) {
-          return failUsage("tent task deliver: --summary must be non-empty");
+        let report = flags.report ?? "";
+        if (report === "-") report = await readStdinText();
+        if (!report.trim()) {
+          return failUsage("tent task submit: --report must be non-empty");
         }
         const commits = parseCommitsFlag(flags.commits);
-        const result = await client.taskDeliver(workspaceId, taskPath, {
-          summary,
+        const result = await client.taskSubmit(workspaceId, taskPath, {
+          report,
           commits,
           decision: flags.decision,
         });
@@ -223,14 +223,14 @@ export async function runTaskCommand(
             taskPath: string;
             state?: string;
             autoIntegrated?: boolean;
-            delivery?: { id?: string; status?: string; path?: string };
+            result?: { id?: string; status?: string; path?: string };
           };
           return (
-            `✓ Delivered via service RPC\n` +
+            `✓ Submitted via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
-            `state: ${row.state ?? "delivered"}\n` +
-            (row.delivery?.id ? `deliveryId: ${row.delivery.id}\n` : "") +
-            (row.delivery?.status ? `deliveryStatus: ${row.delivery.status}\n` : "") +
+            `state: ${row.state ?? "submitted"}\n` +
+            (row.result?.id ? `resultId: ${row.result.id}\n` : "") +
+            (row.result?.status ? `resultStatus: ${row.result.status}\n` : "") +
             (row.autoIntegrated != null ? `autoIntegrated: ${row.autoIntegrated}\n` : "")
           );
         });
@@ -303,18 +303,16 @@ export async function runTaskCommand(
         }
 
         // Caller authority comes from the verified environment/current actor.
-        // Role caller → parentActor=that Role (downstream review).
-        // User-direct → parentActor=user.
+        // Role caller → requester=that Role (downstream review).
+        // User-direct → requester=user.
         // Role downstream work targets the parent Role lane; user-direct work does not.
         const envRole = String(
           (globals.env?.TENT_ROLE_ID ?? globals.env?.TENT_ROLE ?? process.env.TENT_ROLE_ID ?? process.env.TENT_ROLE ?? "") as string
         ).trim();
         const roleCaller = Boolean(envRole && envRole !== "user");
-        const parentActor = roleCaller
+        const requester = roleCaller
           ? ({ kind: "role" as const, id: envRole })
           : ({ kind: "user" as const, id: "user" });
-        const asSub = roleCaller ? true : undefined;
-
         // Service RPC mirrors the public model:
         // - role target: durable Role handoff, queued, never startSession
         // - connection target: reserve a temporary ACP Session from Settings,
@@ -324,14 +322,13 @@ export async function runTaskCommand(
           workNodeIds,
           contextNodeIds,
           prompt,
-          parentActor,
-          ...(asSub ? { asSub: true as const } : {}),
+          requester,
         };
         const dispatchArgs =
           targetKind === "role"
             ? {
                 ...common,
-                roleId: targetId,
+                assigneeRoleId: targetId,
               }
             : {
                 ...common,
@@ -344,37 +341,27 @@ export async function runTaskCommand(
       case "accept": {
         const unknown = findUnknownFlag(
           flags,
-          new Set(["actor", "by", "outputs", "output-ids", ...TASK_COMMON_FLAGS])
+          new Set(["actor", "by", ...TASK_COMMON_FLAGS])
         );
         if (unknown) return failUsage(`Unknown option --${unknown} for task accept`);
-        const deliveryId = positionals[0];
-        if (!deliveryId || positionals.length > 1) {
+        const resultId = positionals[0];
+        if (!resultId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
+            "Usage: tent task accept <resultId> --actor <user|role> [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
-        const outputNodeIds =
-          parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
-        const result = await client.taskAccept(workspaceId, deliveryId, actor, {
-          outputNodeIds,
-        });
+        const result = await client.taskAccept(workspaceId, resultId, actor);
         return okPrint(result, json, (r) => {
           const row = r as {
             taskPath: string;
             state?: string;
-            boundOutputIds?: string[];
           };
-          const bound =
-            row.boundOutputIds && row.boundOutputIds.length
-              ? `boundOutputs: ${row.boundOutputIds.join(",")}\n`
-              : "";
           return (
             `✓ Accepted via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
-            `state: ${row.state ?? "accepted"}\n` +
-            bound
+            `state: ${row.state ?? "accepted"}\n`
           );
         });
       }
@@ -384,17 +371,17 @@ export async function runTaskCommand(
           new Set(["actor", "by", "note", "resume", "no-resume", ...TASK_COMMON_FLAGS])
         );
         if (unknown) return failUsage(`Unknown option --${unknown} for task reject`);
-        const deliveryId = positionals[0];
-        if (!deliveryId || positionals.length > 1) {
+        const resultId = positionals[0];
+        if (!resultId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
+            "Usage: tent task reject <resultId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task reject requires --actor <user|role>");
         const resume =
           flags.resume === "true" ? true : flags["no-resume"] === "true" ? false : undefined;
-        const result = await client.taskReject(workspaceId, deliveryId, actor, {
+        const result = await client.taskReject(workspaceId, resultId, actor, {
           note: flags.note,
           resume,
         });
@@ -727,19 +714,19 @@ export async function runTaskCommand(
 type TaskLike = {
   path?: string;
   id?: string;
-  roleId?: string;
+  assigneeRoleId?: string;
   state?: string;
   status?: string;
   workNodeIds?: string[];
   contextNodeIds?: string[];
-  sessionId?: string;
-  lastReturn?: {
+  executionSessionId?: string;
+  statusDetail?: {
     kind?: string;
     report?: string;
     error?: string;
     code?: string;
     at?: string;
-    sessionId?: string;
+    executionSessionId?: string;
   };
   prompt?: string;
 };
@@ -750,9 +737,9 @@ function formatTaskDispatch(result: unknown): string {
     taskPath: string;
     state?: string;
     relayPrompt?: string;
-    parentActor?: { kind?: string; id?: string };
-    roleId?: string;
-    sessionId?: string;
+    requester?: { kind?: string; id?: string };
+    assigneeRoleId?: string;
+    executionSessionId?: string;
     session?:
       | {
           sessionId?: string;
@@ -779,16 +766,16 @@ function formatTaskDispatch(result: unknown): string {
   const sessionState = sessionView?.state ? String(sessionView.state) : undefined;
   const sessionConnectionId = sessionView?.connectionId ? String(sessionView.connectionId) : undefined;
   const parentLabel =
-    row.parentActor?.kind && row.parentActor?.id
-      ? `${row.parentActor.kind}:${row.parentActor.id}`
+    row.requester?.kind && row.requester?.id
+      ? `${row.requester.kind}:${row.requester.id}`
       : undefined;
 
   return (
     `✓ Dispatched via service RPC\n` +
     `taskPath: ${row.taskPath}\n` +
     `state: ${row.state ?? "queued"}\n` +
-    (row.roleId ? `roleId: ${row.roleId}\n` : "") +
-    (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
+    (row.assigneeRoleId ? `assigneeRoleId: ${row.assigneeRoleId}\n` : "") +
+    (parentLabel ? `requester: ${parentLabel}\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +
     (sessionConnectionId ? `sessionConnectionId: ${sessionConnectionId}\n` : "") +
@@ -807,11 +794,11 @@ function formatTaskList(result: unknown): string {
     lines.push(
       `- ${t.path ?? t.id ?? "?"}` +
         `\tstate=${t.state ?? t.status ?? "?"}` +
-        (t.roleId ? `\trole=${t.roleId}` : "") +
+        (t.assigneeRoleId ? `\tassigneeRole=${t.assigneeRoleId}` : "") +
         `\twork=${(t.workNodeIds ?? []).join(",") || "-"}` +
         `\tcontext=${(t.contextNodeIds ?? []).join(",") || "-"}` +
-        (t.sessionId ? `\tsession=${t.sessionId}` : "") +
-        (t.lastReturn?.kind ? `\treturn=${t.lastReturn.kind}` : "")
+        (t.executionSessionId ? `\texecutionSession=${t.executionSessionId}` : "") +
+        (t.statusDetail?.kind ? `\treturn=${t.statusDetail.kind}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -822,25 +809,25 @@ function formatTaskGet(result: { task: TaskLike }): string {
   const lines = [
     `path: ${t.path ?? "?"}`,
     `id: ${t.id ?? "?"}`,
-    `roleId: ${t.roleId ?? "-"}`,
+    `assigneeRoleId: ${t.assigneeRoleId ?? "-"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
     `workNodeIds: ${(t.workNodeIds ?? []).join(", ") || "-"}`,
     `contextNodeIds: ${(t.contextNodeIds ?? []).join(", ") || "-"}`,
   ];
-  if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
-  if (t.lastReturn?.kind) {
-    lines.push("", "--- last return ---", `kind: ${t.lastReturn.kind}`);
-    if (t.lastReturn.code) lines.push(`code: ${boundedCliText(t.lastReturn.code, 160)}`);
-    if (t.lastReturn.at) lines.push(`at: ${boundedCliText(t.lastReturn.at, 80)}`);
-    if (t.lastReturn.sessionId) {
-      lines.push(`sessionId: ${boundedCliText(t.lastReturn.sessionId, 80)}`);
+  if (t.executionSessionId) lines.push(`executionSessionId: ${t.executionSessionId}`);
+  if (t.statusDetail?.kind) {
+    lines.push("", "--- last return ---", `kind: ${t.statusDetail.kind}`);
+    if (t.statusDetail.code) lines.push(`code: ${boundedCliText(t.statusDetail.code, 160)}`);
+    if (t.statusDetail.at) lines.push(`at: ${boundedCliText(t.statusDetail.at, 80)}`);
+    if (t.statusDetail.executionSessionId) {
+      lines.push(`executionSessionId: ${boundedCliText(t.statusDetail.executionSessionId, 80)}`);
     }
-    if (t.lastReturn.report) {
-      lines.push("report:", boundedCliText(t.lastReturn.report, 2000));
+    if (t.statusDetail.report) {
+      lines.push("report:", boundedCliText(t.statusDetail.report, 2000));
     }
-    if (t.lastReturn.error) {
-      lines.push("error:", boundedCliText(t.lastReturn.error, 2000));
+    if (t.statusDetail.error) {
+      lines.push("error:", boundedCliText(t.statusDetail.error, 2000));
     }
   }
   if (t.prompt) {
@@ -1162,16 +1149,16 @@ Commands:
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
       # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/review authority from durable facts
-  tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
+  tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target connection:* machine Settings Connection + exact managed Session
       # --work-node      repeatable writable Nodes (at least one; exact occupation)
       # --context-node   repeatable shared read-only context Nodes
-      # parentActor derives from the durable Role or local user boundary
+      # requester derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <deliveryId> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
-  tent task reject <deliveryId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
+  tent task accept <resultId> --actor <user|role> [--workspace <path>] [--json]
+  tent task reject <resultId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]
@@ -1186,8 +1173,8 @@ Service options:
   --attach-only           Fail if no healthy service (do not bootstrap)
   --service-entry <path>  Path to service.mjs when bootstrapping
 
-Task mutations are Local Service RPC only. Formal delivery is Delivery-only
-via tent task deliver (no direct-core or report compatibility path).
+Task mutations are Local Service RPC only. Formal result is TaskResult-only
+via tent task submit (no direct-core compatibility path).
 Derived role-init remains available because it regenerates bootstrap context only.
 `;
 }

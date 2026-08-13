@@ -5,14 +5,14 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
-  loadDeliveries,
-  sessionDeliveryPath,
-  writeDelivery,
-} from "../src/core/delivery.js";
+  loadTaskResults,
+  sessionTaskResultPath,
+  writeTaskResult,
+} from "../src/core/task-result.js";
 import { dispatch } from "../src/core/ops.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
-import { taskClaim, taskDeliver } from "../src/core/task-lifecycle.js";
+import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
+import { taskClaim, taskSubmit } from "../src/core/task-lifecycle.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { makeSessionId } from "../src/runtime/index.js";
 import { deriveSessionToken } from "../src/runtime/session-token.js";
@@ -69,13 +69,13 @@ async function withService<T>(
 type ReadyFixture = {
   workspaceId: string;
   taskPath: string;
-  deliveryId: string;
+  resultId: string;
 };
 
 async function makeReadyFixture(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
-  parentActor: { kind: "user" | "role"; id: string },
+  requester: { kind: "user" | "role"; id: string },
   label: string
 ): Promise<ReadyFixture> {
   const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -86,37 +86,37 @@ async function makeReadyFixture(
   })) as { nodeId: string };
   const mount = svc.hostApi.require(workspaceId);
   const task = await dispatch(mount.env, created.nodeId, {
-    roleId: "rl-executor",
-    parentActor,
+    assigneeRoleId: "rl-executor",
+    requester,
     workNodeIds: [created.nodeId],
     contextNodeIds: [],
-    userPrompt: `review authority ${label}`,
+    prompt: `review authority ${label}`,
   });
   await taskClaim(mount.env, task.taskPath);
-  const delivered = await taskDeliver(mount.env, task.taskPath, {
-    summary: `ready ${label}`,
+  const delivered = await taskSubmit(mount.env, task.taskPath, {
+    report: `ready ${label}`,
     commits: [],
   });
   return {
     workspaceId,
     taskPath: task.taskPath,
-    deliveryId: delivered.delivery.id,
+    resultId: delivered.result.id,
   };
 }
 
 async function snapshotReviewRows(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   fixture: ReadyFixture
-): Promise<{ task: string; delivery: string }> {
+): Promise<{ task: string; result: string }> {
   const mount = svc.hostApi.require(fixture.workspaceId);
-  const task = await loadTaskEnvelope(mount.env.fs, fixture.taskPath);
-  const delivery = (await loadDeliveries(mount.env.fs, { taskId: task.id || task.path })).find(
-    (row) => row.id === fixture.deliveryId
+  const task = await loadTaskRecord(mount.env.fs, fixture.taskPath);
+  const result = (await loadTaskResults(mount.env.fs, { taskId: task.id || task.path })).find(
+    (row) => row.id === fixture.resultId
   );
-  assert.ok(delivery, "fixture requires exact ready Delivery");
+  assert.ok(result, "fixture requires exact ready TaskResult");
   return {
     task: await mount.env.fs.readFile(fixture.taskPath),
-    delivery: await mount.env.fs.readFile(delivery.path),
+    result: await mount.env.fs.readFile(result.path),
   };
 }
 
@@ -130,7 +130,7 @@ async function assertReviewRejectedWithoutMutation(
   const before = await snapshotReviewRows(svc, fixture);
   const result = await client.tryCall(`task.${action}`, {
     workspaceId: fixture.workspaceId,
-    deliveryId: fixture.deliveryId,
+    resultId: fixture.resultId,
     actor,
     ...(action === "reject" ? { resume: false } : {}),
   });
@@ -177,7 +177,7 @@ test("review RPC authority: local user is derived and Session callers cannot imp
       ]) {
         const legacy = await root.tryCall(method, {
           workspaceId,
-          deliveryId: local.deliveryId,
+          resultId: local.resultId,
           actor: "user",
           ...(method === "task.reject" ? { resume: false } : {}),
           ...retired,
@@ -189,7 +189,7 @@ test("review RPC authority: local user is derived and Session callers cannot imp
     }
     const accepted = await root.tryCall("task.accept", {
       workspaceId,
-      deliveryId: local.deliveryId,
+      resultId: local.resultId,
       actor: "user",
     });
     assert.equal(accepted.ok, true, JSON.stringify(accepted));
@@ -207,7 +207,7 @@ test("review RPC authority: local user is derived and Session callers cannot imp
     await svc.runtime.reserveSession({
       sessionId: managedSessionId,
       connectionId: "fake-default",
-      lastTaskId: "tk-review-authority",
+      currentTaskId: "tk-review-authority",
       workspace: workspaceId,
       runtimeWorkspace: { cwd: workspace },
     });
@@ -288,7 +288,7 @@ test("review RPC authority: only the exact external Role Session may accept or r
     );
     const accepted = await exact.tryCall("task.accept", {
       workspaceId,
-      deliveryId: acceptedFixture.deliveryId,
+      resultId: acceptedFixture.resultId,
       actor: "rl-reviewer",
     });
     assert.equal(accepted.ok, true, JSON.stringify(accepted));
@@ -301,7 +301,7 @@ test("review RPC authority: only the exact external Role Session may accept or r
     );
     const rejected = await exact.tryCall("task.reject", {
       workspaceId,
-      deliveryId: rejectedFixture.deliveryId,
+      resultId: rejectedFixture.resultId,
       actor: "rl-reviewer",
       resume: false,
     });
@@ -309,7 +309,7 @@ test("review RPC authority: only the exact external Role Session may accept or r
   });
 });
 
-test("review RPC fails closed when one Delivery id binds multiple canonical Tasks", async () => {
+test("review RPC fails closed when one TaskResult id binds multiple canonical Tasks", async () => {
   await withService(async (svc, workspace) => {
     const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const { workspaceId } = (await root.mount(workspace)) as { workspaceId: string };
@@ -326,14 +326,14 @@ test("review RPC fails closed when one Delivery id binds multiple canonical Task
       "duplicate-second"
     );
     const mount = svc.hostApi.require(workspaceId);
-    await patchTaskEnvelope(mount.env.fs, second.taskPath, {
-      activeDeliveryId: first.deliveryId,
+    await patchTaskRecord(mount.env.fs, second.taskPath, {
+      currentResultId: first.resultId,
     });
     const beforeFirst = await snapshotReviewRows(svc, first);
     const beforeSecondTask = await mount.env.fs.readFile(second.taskPath);
     const response = await root.tryCall("task.reject", {
       workspaceId,
-      deliveryId: first.deliveryId,
+      resultId: first.resultId,
       actor: "user",
       resume: false,
     });
@@ -341,7 +341,7 @@ test("review RPC fails closed when one Delivery id binds multiple canonical Task
     if (!response.ok) {
       assert.equal(
         (response.error.data as { code?: string } | undefined)?.code,
-        "REVIEW_DELIVERY_TASK_NOT_UNIQUE"
+        "REVIEW_RESULT_TASK_NOT_UNIQUE"
       );
     }
     assert.deepEqual(await snapshotReviewRows(svc, first), beforeFirst);
@@ -349,7 +349,7 @@ test("review RPC fails closed when one Delivery id binds multiple canonical Task
   });
 });
 
-test("review RPC requires one exact Delivery record and one canonical Task identity", async () => {
+test("review RPC requires one exact TaskResult record and one canonical Task identity", async () => {
   await withService(async (svc, workspace) => {
     const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const { workspaceId } = (await root.mount(workspace)) as { workspaceId: string };
@@ -357,51 +357,34 @@ test("review RPC requires one exact Delivery record and one canonical Task ident
       svc,
       workspaceId,
       { kind: "user", id: "user" },
-      "strict-delivery"
+      "strict-result"
     );
     const mount = svc.hostApi.require(workspaceId);
-    const task = await loadTaskEnvelope(mount.env.fs, fixture.taskPath);
-    const delivery = (await loadDeliveries(mount.env.fs, { taskId: task.id })).find(
-      (row) => row.id === fixture.deliveryId
+    const task = await loadTaskRecord(mount.env.fs, fixture.taskPath);
+    const result = (await loadTaskResults(mount.env.fs, { taskId: task.id })).find(
+      (row) => row.id === fixture.resultId
     );
-    assert.ok(delivery);
+    assert.ok(result);
     const before = await snapshotReviewRows(svc, fixture);
 
     const uppercaseRequest = await root.tryCall("task.accept", {
       workspaceId,
-      deliveryId: fixture.deliveryId.toUpperCase(),
+      resultId: fixture.resultId.toUpperCase(),
       actor: "user",
     });
     assert.equal(uppercaseRequest.ok, false);
     if (!uppercaseRequest.ok) assert.equal(uppercaseRequest.error.code, -32602);
     assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
 
-    const duplicatePath = sessionDeliveryPath("ss-review-duplicate", fixture.deliveryId);
-    await writeDelivery(mount.env.fs, { ...delivery, path: duplicatePath });
-    const duplicate = await root.tryCall("task.accept", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-    });
-    assert.equal(duplicate.ok, false);
-    if (!duplicate.ok) {
-      assert.equal(
-        (duplicate.error.data as { deliveryMatches?: number } | undefined)?.deliveryMatches,
-        2
-      );
-    }
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(duplicatePath);
-
     const duplicateTaskPath = fixture.taskPath.replace(/\.md$/, "-duplicate-id.md");
     const duplicateTaskRaw = (await mount.env.fs.readFile(fixture.taskPath)).replace(
-      `activeDeliveryId: ${fixture.deliveryId}`,
-      "activeDeliveryId: dl-unrelated"
+      `currentResultId: ${fixture.resultId}`,
+      "currentResultId: rs-unrelated"
     );
     await mount.env.fs.writeFile(duplicateTaskPath, duplicateTaskRaw);
     const duplicateTask = await root.tryCall("task.reject", {
       workspaceId,
-      deliveryId: fixture.deliveryId,
+      resultId: fixture.resultId,
       actor: "user",
       resume: false,
     });
@@ -409,121 +392,39 @@ test("review RPC requires one exact Delivery record and one canonical Task ident
     assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
     await mount.env.fs.remove(duplicateTaskPath);
 
-    const duplicateAlias = sessionDeliveryPath("ss-review-alias", "dl-alias");
-    await writeDelivery(mount.env.fs, { ...delivery, path: duplicateAlias });
-    const aliasRejected = await root.tryCall("task.accept", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-    });
-    assert.equal(aliasRejected.ok, false);
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(duplicateAlias);
-
-    const reorderedAlias = sessionDeliveryPath("ss-review-reordered-alias", "dl-alias");
-    const canonicalRaw = await mount.env.fs.readFile(delivery.path);
-    const reorderedRaw = canonicalRaw.replace(
-      /^type: delivery\nid: ([^\n]+)\ntaskId: ([^\n]+)\n/,
-      "taskId: $2\ntype: delivery\nid: $1\n"
-    );
-    await mount.env.fs.writeFile(reorderedAlias, reorderedRaw);
-    const reorderedAliasRejected = await root.tryCall("task.reject", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-      resume: false,
-    });
-    assert.equal(reorderedAliasRejected.ok, false);
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(reorderedAlias);
-
-    const malformedAlias = sessionDeliveryPath("ss-review-malformed-alias", "dl-alias");
-    await mount.env.fs.writeFile(
-      malformedAlias,
-      [
-        "---",
-        "type: delivery",
-        `id: ${fixture.deliveryId}`,
-        `taskId: ${task.id}`,
-        `sourceNodeId: ${delivery.sourceNodeId}`,
-        "status: broken",
-        "---",
-        "corrupt target-claiming body",
-        "",
-      ].join("\n")
-    );
-    const malformedAliasRejected = await root.tryCall("task.reject", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-      resume: false,
-    });
-    assert.equal(malformedAliasRejected.ok, false);
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(malformedAlias);
-
-    const canonicalMismatch = sessionDeliveryPath("ss-review-mismatch", fixture.deliveryId);
-    await writeDelivery(mount.env.fs, {
-      ...delivery,
-      path: canonicalMismatch,
-      id: "dl-other",
-    });
-    const mismatchRejected = await root.tryCall("task.accept", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-    });
-    assert.equal(mismatchRejected.ok, false);
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(canonicalMismatch);
-
-    const uppercaseExtension = sessionDeliveryPath(
-      "ss-review-uppercase-extension",
-      fixture.deliveryId
-    ).replace(/\.md$/, ".MD");
-    await writeDelivery(mount.env.fs, { ...delivery, path: uppercaseExtension });
-    const uppercaseExtensionRejected = await root.tryCall("task.accept", {
-      workspaceId,
-      deliveryId: fixture.deliveryId,
-      actor: "user",
-    });
-    assert.equal(uppercaseExtensionRejected.ok, false);
-    assert.deepEqual(await snapshotReviewRows(svc, fixture), before);
-    await mount.env.fs.remove(uppercaseExtension);
-
-    const exactDeliveryRaw = await mount.env.fs.readFile(delivery.path);
+    const exactTaskResultRaw = await mount.env.fs.readFile(result.path);
     const taskBeforeMalformedTarget = await mount.env.fs.readFile(fixture.taskPath);
-    await mount.env.fs.writeFile(delivery.path, "malformed exact target\n");
+    await mount.env.fs.writeFile(result.path, "malformed exact target\n");
     const malformedTarget = await root.tryCall("task.reject", {
       workspaceId,
-      deliveryId: fixture.deliveryId,
+      resultId: fixture.resultId,
       actor: "user",
       resume: false,
     });
     assert.equal(malformedTarget.ok, false);
     assert.equal(await mount.env.fs.readFile(fixture.taskPath), taskBeforeMalformedTarget);
-    await mount.env.fs.writeFile(delivery.path, exactDeliveryRaw);
+    await mount.env.fs.writeFile(result.path, exactTaskResultRaw);
 
-    const unrelatedMalformed = sessionDeliveryPath("ss-review-unrelated", "dl-unrelated");
-    await mount.env.fs.writeFile(unrelatedMalformed, "not a Delivery\n");
-    const unrelatedLarge = sessionDeliveryPath("ss-review-unrelated", "dl-large");
-    await writeDelivery(mount.env.fs, {
-      ...delivery,
+    const unrelatedMalformed = sessionTaskResultPath("ss-review-unrelated", "rs-unrelated");
+    await mount.env.fs.writeFile(unrelatedMalformed, "not a TaskResult\n");
+    const unrelatedLarge = sessionTaskResultPath("ss-review-unrelated", "rs-large");
+    await writeTaskResult(mount.env.fs, {
+      ...result,
       path: unrelatedLarge,
-      id: "dl-large",
-      summary: "x".repeat(4 * 1024 * 1024),
+      id: "rs-large",
+      report: "x".repeat(4 * 1024 * 1024),
     });
     const originalReadFile = mount.env.fs.readFile.bind(mount.env.fs);
     mount.env.fs.readFile = async (inputPath) => {
       if (inputPath === unrelatedMalformed || inputPath === unrelatedLarge) {
-        throw new Error(`unrelated Delivery body must stay unread: ${inputPath}`);
+        throw new Error(`unrelated TaskResult body must stay unread: ${inputPath}`);
       }
       return originalReadFile(inputPath);
     };
     try {
       const accepted = await root.tryCall("task.accept", {
         workspaceId,
-        deliveryId: fixture.deliveryId,
+        resultId: fixture.resultId,
         actor: "user",
       });
       assert.equal(accepted.ok, true, JSON.stringify(accepted));

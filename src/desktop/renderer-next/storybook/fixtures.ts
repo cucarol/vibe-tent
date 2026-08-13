@@ -65,8 +65,8 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
       projectionState: state,
     },
     {
-      nodeId: "cx-delivery",
-      etag: "etag-delivery-v1",
+      nodeId: "cx-result",
+      etag: "etag-result-v1",
       path: "产品方向/桌面工作台/视觉验收",
       name: "视觉验收",
       title: "主界面视觉与交互证据",
@@ -129,7 +129,7 @@ export function fixtureCanvasDocument(): CanvasDocument {
         { parentPlacementId: "pl-product", depth: 1, siblingOrder: 1, expandedDirection: null }
       ),
       placement(
-        { placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 76, y: 440, width: NODE_CARD.width, height: NODE_CARD.height },
+        { placementId: "pl-result", entityRef: "cx-result", kind: "node", x: 76, y: 440, width: NODE_CARD.width, height: NODE_CARD.height },
         { parentPlacementId: "pl-workbench", depth: 2, siblingOrder: 0, expandedDirection: null }
       ),
     ],

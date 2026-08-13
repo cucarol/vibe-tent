@@ -20,7 +20,7 @@ import {
   calculateAgentConnectionLaunchDigest,
   connectionConfigFromSnapshot,
 } from "../runtime/agent-connection.js";
-import type { TaskEnvelope } from "../core/task.js";
+import type { TaskRecord } from "../core/task.js";
 import { loadWorkspaceAgents } from "../core/workspace-agents.js";
 import {
   loadRolesRegistry,
@@ -46,7 +46,7 @@ export type CollectStableContextGenerationInput = {
   packageRoot: string;
   packageVersion?: string;
   /** Exact durable Task facts. Managed collection requires its bound Session. */
-  task: Pick<TaskEnvelope, "roleId" | "sessionId" | "contextCard">;
+  task: Pick<TaskRecord, "assigneeRoleId" | "executionSessionId" | "contextCard">;
   /**
    * Exact machine-local Session row. Connection facts are read only from this
    * row's immutable non-secret snapshot; live Settings never reinterpret it.
@@ -97,7 +97,7 @@ async function requireResolvedRoleFromRegistry(
  *
  * Collector failures (binding mismatch, missing required Role/Node, unreadable
  * registry, missing built-in Skill body) throw — never yield reusable fallback
- * facts. A temporary Session Task with no roleId does not invent Role facts.
+ * facts. A temporary Session Task with no assigneeRoleId does not invent Role facts.
  */
 export async function collectStableContextGeneration(
   input: CollectStableContextGenerationInput
@@ -105,7 +105,7 @@ export async function collectStableContextGeneration(
   const agents = await loadWorkspaceAgents(input.workspaceRoot);
   const agentsPointerDigest = agentsBodyCompatibilityDigest(agents.content);
 
-  const taskSessionId = input.task.sessionId?.trim() || "";
+  const taskSessionId = input.task.executionSessionId?.trim() || "";
   const sessionId = input.session.id.trim();
   if (!taskSessionId || taskSessionId !== sessionId) {
     throw new Error(
@@ -128,9 +128,9 @@ export async function collectStableContextGeneration(
     );
   }
 
-  // Role facts belong only to an exact durable Task.roleId. A temporary Session
+  // Role facts belong only to an exact durable Task.assigneeRoleId. A temporary Session
   // receives Task/Node context, never a parent Role's private prompt.
-  const roleId = input.task.roleId?.trim() || "";
+  const roleId = input.task.assigneeRoleId?.trim() || "";
   const role = roleId
     ? await requireResolvedRoleFromRegistry(
         input.fs,

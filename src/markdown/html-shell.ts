@@ -68,14 +68,14 @@ function renderTree(nodes: WorkspaceSnapshot["tree"], activeCx: string | null, d
     .map((n) => {
       const usable = !n.invalid && !n.archived;
       const badge = usable
-        ? `<span class="badge node">${escapeHtml(n.type)}</span>`
+        ? `<span class="badge node">${escapeHtml(n.type ?? "")}</span>`
         : `<span class="badge note">${n.archived ? "archived" : "invalid"}</span>`;
       const active = n.nodeId === activeCx ? " active" : "";
       const kids = n.children?.length ? renderTree(n.children, activeCx, depth + 1) : "";
       return `<li class="tree-node${active}">
         <a href="/?open=${encodeURIComponent(n.nodeId)}" data-open="${escapeHtml(n.nodeId)}">
           <span class="name">${escapeHtml(n.title || n.name)}</span>
-          <span class="type">${escapeHtml(n.type)}</span>
+          <span class="type">${escapeHtml(n.type ?? "")}</span>
           ${badge}
         </a>
         ${kids ? `<ul>${kids}</ul>` : ""}
@@ -180,7 +180,7 @@ function renderMeta(tab: NonNullable<ReturnType<WorkspaceController["getActiveTa
     <dl>
       <dt>cx</dt><dd><code>${escapeHtml(tab.nodeId)}</code></dd>
       <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
-      <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
+      <dt>type</dt><dd>${escapeHtml(tab.type ?? "")}</dd>
     </dl>
   </div>`;
 }

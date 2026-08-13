@@ -6,7 +6,7 @@
  * from exploration nodes must not be hard-coded here.
  */
 
-/** Opaque Service/domain entity reference (Node, Task, Delivery, …). */
+/** Opaque Service/domain entity reference (Node, Task, TaskResult, …). */
 export type EntityRef = string;
 
 /** Local Canvas placement instance id — UI-only; may point at an EntityRef. */

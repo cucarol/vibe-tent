@@ -41,8 +41,8 @@ export function parseEnvKeyValue(raw: unknown, key: string): FieldResult<string>
 }
 
 /** Absolute http(s) URL with no embedded credentials, query, or fragment. */
-export function parseBaseUrlValue(raw: unknown): FieldResult<string> {
-  const value = parseNonEmptyStringValue(raw, "baseUrl");
+export function parseEndpointValue(raw: unknown): FieldResult<string> {
+  const value = parseNonEmptyStringValue(raw, "endpoint");
   if (!value.ok) return value;
   try {
     const url = new URL(value.value);
@@ -50,10 +50,10 @@ export function parseBaseUrlValue(raw: unknown): FieldResult<string> {
       (url.protocol !== "http:" && url.protocol !== "https:") ||
       url.username || url.password || url.search || url.hash
     ) {
-      return fail("Invalid baseUrl: only clean absolute http(s) URLs are allowed");
+      return fail("Invalid endpoint: only clean absolute http(s) URLs are allowed");
     }
   } catch {
-    return fail("Invalid baseUrl: must be an absolute http(s) URL");
+    return fail("Invalid endpoint: must be an absolute http(s) URL");
   }
   return value;
 }

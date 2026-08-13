@@ -34,7 +34,7 @@ const seed = (): AgentConnectionConfig[] => [
     adapterId: GROK_ACP_ADAPTER_ID,
     model: "grok-4.5",
     envKey: "CPA_GROK_API_KEY",
-    baseUrlEnvKey: "CPA_GROK_BASE_URL",
+    endpoint: "http://127.0.0.1:8317/v1",
     permissionPolicy: "deny",
   },
 ];
@@ -83,7 +83,7 @@ test("connection CRUD synchronizes the runtime and injected catalogs never write
       displayName: "Local Grok",
       model: "grok-4.5",
       envKey: "CPA_GROK_API_KEY",
-      baseUrl: "http://127.0.0.1:8317/v1",
+      endpoint: "http://127.0.0.1:8317/v1",
       permissionPolicy: "ask",
       permissionTimeoutMs: 5_000,
     })) as { connection: Record<string, unknown> };
@@ -91,10 +91,10 @@ test("connection CRUD synchronizes the runtime and injected catalogs never write
     assert.equal(svc.runtime.getConnection("grok-local")?.permissionTimeoutMs, 5_000);
 
     const got = (await client.connectionGet("grok-local")) as {
-      connection: { model?: string; baseUrl?: string };
+      connection: { model?: string; endpoint?: string };
     };
     assert.equal(got.connection.model, "grok-4.5");
-    assert.equal(got.connection.baseUrl, "http://127.0.0.1:8317/v1");
+    assert.equal(got.connection.endpoint, "http://127.0.0.1:8317/v1");
 
     const updated = (await client.connectionUpdate("grok-local", {
       displayName: "Local Grok 2",
@@ -198,7 +198,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
       displayName: "Clear Me",
       model: "custom",
       envKey: "CUSTOM_KEY",
-      baseUrl: "http://127.0.0.1:9/v1",
+      endpoint: "http://127.0.0.1:9/v1",
       permissionPolicy: "ask",
       promptTimeoutMs: 11_000,
     });
@@ -206,7 +206,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
       displayName: null,
       model: null,
       envKey: null,
-      baseUrl: null,
+      endpoint: null,
       permissionPolicy: null,
       promptTimeoutMs: null,
     })) as { connection: Record<string, unknown> };
@@ -214,7 +214,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
     assert.equal(cleared.connection.model, undefined);
     assert.equal(svc.runtime.getConnection("clearable")?.model, undefined);
 
-    for (const baseUrl of [
+    for (const endpoint of [
       "http://user:pass@127.0.0.1/v1",
       "http://127.0.0.1/v1?token=x",
       "http://127.0.0.1/v1#frag",
@@ -224,8 +224,8 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
         connectionId: `unsafe${Math.random().toString(16).slice(2, 8)}`,
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
-        baseUrl,
-      }, /baseUrl/i);
+        endpoint,
+      }, /endpoint/i);
     }
     await expectInvalid(svc, "connection.create", {
       connectionId: "dangerous",

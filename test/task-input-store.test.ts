@@ -10,7 +10,7 @@ import { test } from "node:test";
 import {
   TaskInputStore,
   formatTaskInputPrompt,
-  isTaskInputDeliveryBlockingStatus,
+  isTaskInputTaskResultBlockingStatus,
   makeTaskInputId,
   normalizeTaskInputKind,
   type TaskInputRecord,
@@ -37,14 +37,14 @@ function pending(
   };
 }
 
-test("task input store: delivery-blocking includes uncertain but retryability does not", () => {
-  assert.equal(isTaskInputDeliveryBlockingStatus("pending"), true);
-  assert.equal(isTaskInputDeliveryBlockingStatus("processing"), true);
-  assert.equal(isTaskInputDeliveryBlockingStatus("failed"), true);
-  assert.equal(isTaskInputDeliveryBlockingStatus("uncertain"), true);
-  assert.equal(isTaskInputDeliveryBlockingStatus("delivered"), false);
-  assert.equal(isTaskInputDeliveryBlockingStatus("consumed"), false);
-  assert.equal(isTaskInputDeliveryBlockingStatus("cancelled"), false);
+test("task input store: result-blocking includes uncertain but retryability does not", () => {
+  assert.equal(isTaskInputTaskResultBlockingStatus("pending"), true);
+  assert.equal(isTaskInputTaskResultBlockingStatus("processing"), true);
+  assert.equal(isTaskInputTaskResultBlockingStatus("failed"), true);
+  assert.equal(isTaskInputTaskResultBlockingStatus("uncertain"), true);
+  assert.equal(isTaskInputTaskResultBlockingStatus("delivered"), false);
+  assert.equal(isTaskInputTaskResultBlockingStatus("consumed"), false);
+  assert.equal(isTaskInputTaskResultBlockingStatus("cancelled"), false);
 });
 
 test("task input store: listBlockingForDeliver includes uncertain and excludes terminal", async () => {
@@ -137,7 +137,7 @@ test("task input store: listBlockingForDeliver includes uncertain and excludes t
     ids,
     ["ti-failed", "ti-pending", "ti-processing", "ti-uncertain"].sort()
   );
-  assert.ok(blockers.every((b) => isTaskInputDeliveryBlockingStatus(b.status)));
+  assert.ok(blockers.every((b) => isTaskInputTaskResultBlockingStatus(b.status)));
   assert.equal(
     blockers.some(
       (b) =>

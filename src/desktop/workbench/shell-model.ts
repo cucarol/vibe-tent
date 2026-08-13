@@ -15,7 +15,7 @@ type FloatingTaskState = Pick<TaskProjection, "state">;
 /**
  * Main-window state is deliberately only the bootstrap identity needed before
  * renderer-next starts its named authoritative projections. Task, Session,
- * Delivery and Connection facts never cross getState/onStateChanged.
+ * TaskResult and Connection facts never cross getState/onStateChanged.
  */
 export class DesktopShellModel {
   private health: ServiceHealthView = { status: "offline" };
@@ -155,7 +155,7 @@ export class DesktopShellModel {
       health: this.health,
       pendingTasks: this.floatingTasks.filter((task) => task.state === "queued").length,
       takenTasks: this.floatingTasks.filter((task) =>
-        task.state === "running" || task.state === "waiting" || task.state === "delivered"
+        task.state === "running" || task.state === "waiting" || task.state === "submitted"
       ).length,
       recentCards: this.cards.list(),
       foregroundRoot: foreground?.workspaceRoot ?? null,

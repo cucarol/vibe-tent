@@ -29,14 +29,13 @@ export type CollaborationSurfaceGateway = {
   ): Promise<ProjectionRead<WorkspaceCollaborationView>>;
   dispatchTargets(workspaceId: string): Promise<CollaborationRead<DispatchTargets>>;
   dispatchTask(input: DispatchTaskRequest): Promise<CollaborationRead<CollaborationMutation>>;
-  acceptDelivery(
+  acceptTaskResult(
     workspaceId: string,
-    deliveryId: string,
-    outputNodeIds?: readonly string[]
+    resultId: string
   ): Promise<CollaborationRead<CollaborationMutation>>;
-  rejectDelivery(
+  rejectTaskResult(
     workspaceId: string,
-    deliveryId: string,
+    resultId: string,
     note: string
   ): Promise<CollaborationRead<CollaborationMutation>>;
   respondDecision(
@@ -63,8 +62,8 @@ export type CollaborationSurfaceView = {
 export type CollaborationSurfaceActions = {
   retry: () => Promise<void>;
   dispatch: (input: DispatchTaskInput) => Promise<boolean>;
-  acceptDelivery: (deliveryId: string) => Promise<boolean>;
-  rejectDelivery: (deliveryId: string, note: string) => Promise<boolean>;
+  acceptTaskResult: (resultId: string) => Promise<boolean>;
+  rejectTaskResult: (resultId: string, note: string) => Promise<boolean>;
   respondDecision: (requestId: string, response: DecisionResponse) => Promise<boolean>;
 };
 
@@ -98,8 +97,8 @@ export class CollaborationSurfaceController {
   actions = (): CollaborationSurfaceActions => ({
     retry: () => this.reload(),
     dispatch: (input) => this.runCommand("dispatch", (workspaceId) => this.gateway.dispatchTask({ workspaceId, ...input })),
-    acceptDelivery: (deliveryId) => this.runCommand(`delivery:${deliveryId}`, (workspaceId) => this.gateway.acceptDelivery(workspaceId, deliveryId)),
-    rejectDelivery: (deliveryId, note) => this.runCommand(`delivery:${deliveryId}`, (workspaceId) => this.gateway.rejectDelivery(workspaceId, deliveryId, note)),
+    acceptTaskResult: (resultId) => this.runCommand(`result:${resultId}`, (workspaceId) => this.gateway.acceptTaskResult(workspaceId, resultId)),
+    rejectTaskResult: (resultId, note) => this.runCommand(`result:${resultId}`, (workspaceId) => this.gateway.rejectTaskResult(workspaceId, resultId, note)),
     respondDecision: (requestId, response) => this.runCommand(`decision:${requestId}`, (workspaceId) => this.gateway.respondDecision(workspaceId, requestId, response)),
   });
 

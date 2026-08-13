@@ -109,7 +109,7 @@ export interface StartSessionRequest {
   /** Process-scoped env; no secret plaintext for disk. */
   env?: Record<string, string>;
   /** Optional task id projection only (never a session row on the task). */
-  lastTaskId?: string;
+  currentTaskId?: string;
   /** Mounted workspace key for multi-mount stop validation. */
   workspace?: string;
 }
@@ -120,7 +120,7 @@ export interface ReserveSessionRequest {
   /** Machine-local Settings connection selected for this new Session. */
   connectionId: string;
   /** Exact Task identity that will be durably bound to this Session. */
-  lastTaskId: string;
+  currentTaskId: string;
   workspace: string;
   workspaceLane?: WorkspaceLaneRef;
   runtimeWorkspace?: RuntimeWorkspace;
@@ -145,7 +145,7 @@ export interface ResumeSessionRequest {
   /** Absolute tent system root for post-load image reads (ephemeral). */
   bootstrapImageSystemRoot?: string;
   /** Rebind a durable Role Session to its current task before prompting. */
-  lastTaskId?: string;
+  currentTaskId?: string;
 }
 
 export interface SessionHandle {
@@ -163,7 +163,7 @@ export interface SessionHandle {
    * False when Tent started an independent Session (honest recovery / no cache claim).
    * Omitted on legacy rows / first cold start without a continuity claim.
    */
-  contextRestored?: boolean;
+  providerContextRestored?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -171,17 +171,17 @@ export interface SessionHandle {
 export interface SessionProbe {
   sessionId: string;
   state: SessionState;
-  alive: boolean;
-  resumeCapable: boolean;
+  isAlive: boolean;
+  canResume: boolean;
   pid?: number;
   lastError?: string;
   exitCode?: number | null;
   /**
    * Internal turn fact (managed ACP only). True while a session/prompt is
-   * settling. Distinct from `alive`: a live role session may be turn-idle
+   * settling. Distinct from `isAlive`: a live role session may be turn-idle
    * between prompts. Omitted / false when no managed turn is in flight.
    */
-  turnBusy?: boolean;
+  isTurnActive?: boolean;
 }
 
 /** Durable machine-local session row (architecture §3.3 / agent-runtime §6). */
@@ -210,17 +210,17 @@ export interface SessionRecord {
   workspaceLane?: WorkspaceLaneRef;
   createdAt: string;
   updatedAt: string;
-  lastTaskId?: string;
+  currentTaskId?: string;
   exitCode?: number | null;
   lastError?: string;
   stopReason?: StopReason;
   /**
    * Continuity honesty marker for managed reject-resume / resume projections.
-   * - true: provider-native same-context path (alive rebind or successful resumeSession)
+   * - true: provider-native same-context path (live rebind or successful resumeSession)
    * - false: independent new Session (no silent cache continuity claim)
    * Omitted on legacy rows and ordinary first starts that make no continuity claim.
    */
-  contextRestored?: boolean;
+  providerContextRestored?: boolean;
   /**
    * Stable reason for how this Session was bound (reject-resume path or explicit
    * task.replaceSession). Optional audit field — not a second Task state.
@@ -285,7 +285,7 @@ export interface EnterExternalSessionRequest {
   cwd?: string;
   workspaceLane?: WorkspaceLaneRef;
   /** Optional task id projection only. */
-  lastTaskId?: string;
+  currentTaskId?: string;
   /**
    * Idempotency key for external GUI sessions (e.g. provider session handle).
    * When set, a second enter with the same key reuses the live external row.

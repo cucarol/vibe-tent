@@ -21,7 +21,7 @@ export type TabState = {
   nodeId: string;
   path: string;
   name: string;
-  type: string;
+  type?: string;
   etag: string;
   buffer: string;
   savedRaw: string;
@@ -237,7 +237,7 @@ export class WorkspaceController {
   }
 
   async createNote(name: string, parentPath?: string): Promise<string> {
-    const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
+    const created = await this.docs.createNote({ name, parentPath });
     await this.refreshTree();
     await this.openNode(created.nodeId);
     this.statusMessage = `Created note ${created.path}`;

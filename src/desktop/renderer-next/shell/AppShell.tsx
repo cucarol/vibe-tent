@@ -93,7 +93,9 @@ function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnaps
     name: node.name,
     ...(node.title?.trim() ? { title: node.title } : {}),
     path: node.path,
-    type: node.type,
+    // Canvas snapshots use an empty local display fallback; the graph keeps
+    // the canonical Node.type omission intact.
+    type: node.type ?? "",
     tags: node.tags,
     mode: node.mode,
     archived: node.archived,
@@ -147,8 +149,9 @@ export function AppShell({
     if (collaboration?.status !== "ready" || !collaboration.snapshot) return new Set<string>();
     const ids = new Set<string>();
     for (const item of collaboration.snapshot.inbox.items) {
-      if (item.kind === "delivery") ids.add(item.sourceNodeId);
-      else for (const nodeId of item.nodeIds) ids.add(nodeId);
+      if (item.kind !== "result") {
+        for (const nodeId of item.nodeIds) ids.add(nodeId);
+      }
     }
     return ids;
   }, [collaboration]);

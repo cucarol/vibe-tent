@@ -19,8 +19,8 @@ import {
   reclaimTaskWorktree,
   removeTaskLaneDirectorySafe,
 } from "../src/core/task-worktree-reclaim.js";
-import type { TaskEnvelope } from "../src/core/task.js";
-import type { DeliveryRecord } from "../src/core/delivery.js";
+import type { TaskRecord } from "../src/core/task.js";
+import type { TaskResultRecord } from "../src/core/task-result.js";
 import {
   buildTaskContextCard,
   type TaskContextCard,
@@ -62,14 +62,14 @@ function fixtureContextCard(overrides?: {
 }
 
 function sessionTask(
-  partial: Partial<TaskEnvelope> & Pick<TaskEnvelope, "id" | "state" | "path">
-): TaskEnvelope {
+  partial: Partial<TaskRecord> & Pick<TaskRecord, "id" | "state" | "path">
+): TaskRecord {
   const contextCard = partial.contextCard ?? fixtureContextCard();
   return {
-    sessionId: "ss-fakedefault",
+    executionSessionId: "ss-fakedefault",
     acceptMode: "review-required",
     manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
-    parentActor: { kind: "user", id: "user" },
+    requester: { kind: "user", id: "user" },
     workNodeIds: partial.workNodeIds ?? contextCard.workNodeIds,
     contextNodeIds: partial.contextNodeIds ?? contextCard.contextNodeIds,
     nodeSnapshots: partial.nodeSnapshots ?? contextCard.nodeSnapshots,
@@ -95,7 +95,6 @@ test("naming helpers: tent-task branch + task-* directory are stable", () => {
   assert.equal(taskWorktreeBranchName("tk-abc"), "tent-task/tk-abc");
   assert.match(expectedTaskWorktreePath("/tmp/repo", "tk-abc"), /task-tk-abc$/);
 });
-
 test("role task lane is NOT_APPLICABLE (durable)", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-role-");
   const role = await ensureRoleWorkspace(workspace, "executor");
@@ -103,8 +102,8 @@ test("role task lane is NOT_APPLICABLE (durable)", async () => {
     id: "tk-roleish",
     path: "temp/roles/rl-executor/tasks/t.md",
     state: "accepted",
-    roleId: "rl-executor",
-    sessionId: undefined,
+    assigneeRoleId: "rl-executor",
+    executionSessionId: undefined,
     workspace: role.workspace,
     worktree: role.worktree,
     branch: role.branch,
@@ -136,25 +135,25 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
     branch: lane.branch,
     targetBranch: lane.targetBranch,
   });
-  const deliveries: DeliveryRecord[] = [
+  const results: TaskResultRecord[] = [
     {
-      path: "temp/sessions/ss-fakedefault/deliveries/dl-1.md",
-      id: "dl-1",
+      path: "temp/sessions/ss-fakedefault/results/rs-1.md",
+      id: "rs-1",
       taskId,
-      sourceNodeId: "cx-abc123",
       status: "accepted",
-      summary: "done",
+      report: "done",
       commits: [tip],
       checks: [],
       artifactRefs: [],
-      integrationMode: "manual-accept",
+      integrationMode: null,
+      createdAt: "2026-08-13T00:00:00.000Z",
     },
   ];
 
   const preview = await evaluateTaskWorktreeReclaim({
     workspaceRoot: workspace,
     task,
-    deliveries,
+    results,
   });
   assert.equal(preview.code, "RECLAIMABLE");
   assert.equal(preview.eligible, true);
@@ -162,7 +161,7 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
   const first = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries,
+    results,
   });
   assert.equal(first.reclaimed, true);
   assert.equal(first.code, "RECLAIMED");
@@ -180,7 +179,7 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
   const second = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries,
+    results,
   });
   assert.equal(second.reclaimed, true);
   assert.equal(second.alreadyGone, true);
@@ -202,7 +201,7 @@ test("dirty worktree refuses reclaim (DIRTY)", async () => {
     branch: lane.branch,
     targetBranch: lane.targetBranch,
   });
-  const d = await evaluateTaskWorktreeReclaim({ workspaceRoot: workspace, task, deliveries: [] });
+  const d = await evaluateTaskWorktreeReclaim({ workspaceRoot: workspace, task, results: [] });
   assert.equal(d.code, "DIRTY");
   assert.equal(d.eligible, false);
   assert.equal(await pathExists(lane.worktree), true);
@@ -244,31 +243,31 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
     branch: lane.branch,
     targetBranch: lane.targetBranch,
   });
-  const deliveries: DeliveryRecord[] = [
+  const results: TaskResultRecord[] = [
     {
-      path: "d.md",
-      id: "dl-u",
+      path: "rs.md",
+      id: "rs-u",
       taskId,
-      sourceNodeId: "cx-abc123",
       status: "accepted",
-      summary: "claimed integrated but was not",
+      report: "claimed integrated but was not",
       commits: [tip],
       checks: [],
       artifactRefs: [],
-      integrationMode: "manual-accept",
+      integrationMode: null,
+      createdAt: "2026-08-13T00:00:00.000Z",
     },
   ];
   const d = await evaluateTaskWorktreeReclaim({
     workspaceRoot: workspace,
     task,
-    deliveries,
+    results,
   });
   assert.equal(d.code, "UNINTEGRATED");
   assert.equal(d.eligible, false);
   assert.equal(await pathExists(lane.worktree), true);
 });
 
-test("rejected clean lane reclaims without delivery commits", async () => {
+test("rejected clean lane reclaims without result commits", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-rej-");
   const taskId = "tk-reclaim-rej";
   const lane = await ensureTaskWorkspace(workspace, taskId);
@@ -284,7 +283,7 @@ test("rejected clean lane reclaims without delivery commits", async () => {
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, true);
   assert.equal(r.code, "RECLAIMED");
@@ -330,16 +329,16 @@ test("no lane recorded → NOT_APPLICABLE", async () => {
   assert.equal(d.code, "NOT_APPLICABLE");
 });
 
-test("P0: accepted Delivery omits branch tip → UNINTEGRATED (task-branch settle)", async () => {
+test("P0: accepted TaskResult omits branch tip → UNINTEGRATED (task-branch settle)", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-omit-");
   const taskId = "tk-reclaim-omit";
   const lane = await ensureTaskWorkspace(workspace, taskId);
   const base = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-  await fs.writeFile(path.join(lane.worktree, "declared.txt"), "in delivery\n");
+  await fs.writeFile(path.join(lane.worktree, "declared.txt"), "in result\n");
   await git(lane.worktree, "add", "declared.txt");
   await git(lane.worktree, "commit", "-q", "-m", "declared");
   const declared = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-  await fs.writeFile(path.join(lane.worktree, "omitted.txt"), "not in delivery\n");
+  await fs.writeFile(path.join(lane.worktree, "omitted.txt"), "not in result\n");
   await git(lane.worktree, "add", "omitted.txt");
   await git(lane.worktree, "commit", "-q", "-m", "omitted tip");
   const omitted = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
@@ -356,24 +355,24 @@ test("P0: accepted Delivery omits branch tip → UNINTEGRATED (task-branch settl
     targetBranch: lane.targetBranch,
     roleBranchBase: base,
   });
-  const deliveries: DeliveryRecord[] = [
+  const results: TaskResultRecord[] = [
     {
-      path: "d.md",
-      id: "dl-omit",
+      path: "rs.md",
+      id: "rs-omit",
       taskId,
-      sourceNodeId: "cx-abc123",
       status: "accepted",
-      summary: "only declared",
+      report: "only declared",
       commits: [declared],
       checks: [],
       artifactRefs: [],
-      integrationMode: "manual-accept",
+      integrationMode: null,
+      createdAt: "2026-08-13T00:00:00.000Z",
     },
   ];
   const d = await evaluateTaskWorktreeReclaim({
     workspaceRoot: workspace,
     task,
-    deliveries,
+    results,
   });
   assert.equal(d.code, "UNINTEGRATED");
   assert.equal(d.eligible, false);
@@ -412,7 +411,7 @@ test("P0: absent dir drops only exact stale registration (no broad prune invento
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, true);
   assert.ok(r.code === "RECLAIMED" || r.code === "ALREADY_GONE");
@@ -439,7 +438,7 @@ test("P0: existing dir remove refuses when registration branch mismatches (owner
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, false);
   assert.ok(
@@ -467,7 +466,7 @@ test("P0: TOCTOU rebind after evaluate refuses remove (registration vs expected 
   const preview = await evaluateTaskWorktreeReclaim({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(preview.code, "RECLAIMABLE");
   assert.equal(preview.eligible, true);
@@ -478,7 +477,7 @@ test("P0: TOCTOU rebind after evaluate refuses remove (registration vs expected 
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
     beforeRemoveForTests: async () => {
       await git(lane.worktree, "checkout", "-B", "tent-task/foreign-rebind");
     },
@@ -510,7 +509,7 @@ test("P0: remove never force-deletes when dirtiness re-check fails", async () =>
   const clean = await evaluateTaskWorktreeReclaim({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(clean.code, "RECLAIMABLE");
   // …then dirtiness appears before remove (simulate TOCTOU).
@@ -518,7 +517,7 @@ test("P0: remove never force-deletes when dirtiness re-check fails", async () =>
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, false);
   assert.equal(r.code, "DIRTY");
@@ -607,7 +606,7 @@ test("P0: reclaim Node-rm lane with outbound junction; external sentinel survive
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(
     r.reclaimed,
@@ -671,7 +670,7 @@ test("P0: portable file symlink outbound survives Node-rm reclaim", async () => 
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, true, `got ${r.code}: ${r.reason}`);
   assert.equal(await pathExists(lane.worktree), false);
@@ -719,7 +718,7 @@ test("P0: tracked symlink in lane reclaims; external target survives", async () 
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(r.reclaimed, true, `got ${r.code}: ${r.reason}`);
   assert.equal(await pathExists(lane.worktree), false);
@@ -787,7 +786,7 @@ test("P0: Node lane rm failure fails closed (registration untouched)", async () 
   const r = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
     rmLaneDirectoryForTests: async () => {
       throw new Error("simulated fs.rm EPERM");
     },
@@ -848,7 +847,7 @@ test("P0: metadata force failure then dir-absent retry clears only exact registr
   const first = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
     removeWorktreeMetadataForTests: async () => {
       throw new Error("simulated git worktree remove --force EPERM");
     },
@@ -877,7 +876,7 @@ test("P0: metadata force failure then dir-absent retry clears only exact registr
   const second = await reclaimTaskWorktree({
     workspaceRoot: workspace,
     task,
-    deliveries: [],
+    results: [],
   });
   assert.equal(second.reclaimed, true, `retry got ${second.code}: ${second.reason}`);
   assert.ok(second.code === "RECLAIMED" || second.code === "ALREADY_GONE");

@@ -105,8 +105,6 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
       planArgs: plan.args,
-      executable: opts.executable,
-      defaultPackage: CODEX_ACP_NPX_PACKAGE,
     });
 
     const env: Record<string, string> = {

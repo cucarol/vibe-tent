@@ -36,6 +36,11 @@ import type { RuntimeEvent } from "../src/runtime/types.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_ACP = path.join(__dirname, "fixtures", "mock-acp-server.mjs");
 
+function exactNpx(packageSpec: string, trailing: string[] = []) {
+  const launch = defaultNpxLaunch();
+  return { command: launch.command, args: [...launch.argsPrefix, "--yes", packageSpec, ...trailing] };
+}
+
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
@@ -69,6 +74,7 @@ test("Codex ACP resolves the official npx bridge and injects headless API-key au
     connectionId: "codex-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(CODEX_ACP_NPX_PACKAGE),
     extras: { acp: { envKey: "OPENAI_API_KEY" } },
   });
 
@@ -93,6 +99,7 @@ test("Codex ACP fails loud when an explicitly configured key is missing", () => 
         connectionId: "codex-acp-default",
         cwd: process.cwd(),
         env: {},
+        ...exactNpx(CODEX_ACP_NPX_PACKAGE),
         extras: { acp: { envKey: "OPENAI_API_KEY" } },
       }),
     /未配置环境变量 OPENAI_API_KEY/
@@ -107,6 +114,7 @@ test("Claude ACP resolves the official npx bridge and leaves auth to the Agent b
     connectionId: "claude-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(CLAUDE_ACP_NPX_PACKAGE),
     extras: { acp: {} },
   });
 
@@ -125,6 +133,7 @@ test("Claude ACP injects an explicitly configured env key and fails when absent"
     sessionId: "ss-claude02",
     connectionId: "claude-acp-default",
     cwd: process.cwd(),
+    ...exactNpx(CLAUDE_ACP_NPX_PACKAGE),
     extras: { acp: { envKey: "ANTHROPIC_API_KEY" } },
   };
   assert.equal(
@@ -149,6 +158,8 @@ test("OpenCode ACP uses its native `opencode acp` entrypoint", () => {
     connectionId: "opencode-acp-default",
     cwd: process.cwd(),
     env: {},
+    command: defaultOpenCodeExecutable(),
+    args: ["acp"],
     extras: { acp: {} },
   });
   assert.equal(launch.command, defaultOpenCodeExecutable());
@@ -177,6 +188,7 @@ test("Copilot ACP uses the official npx package in explicit stdio mode", () => {
     connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(COPILOT_ACP_NPX_PACKAGE, ["--acp", "--stdio", "--model", "claude-sonnet-4.5"]),
     extras: { acp: { model: "claude-sonnet-4.5" } },
   });
   const npx = defaultNpxLaunch();
@@ -192,17 +204,19 @@ test("Copilot ACP uses the official npx package in explicit stdio mode", () => {
   ]);
 });
 
-test("Copilot ACP executable override still receives ACP stdio arguments", () => {
+test("Copilot ACP executes an explicit command and complete argv exactly", () => {
   const adapter = createCopilotAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-copilot02",
     connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
-    extras: { acp: { executable: "C:\\tools\\copilot.exe" } },
+    command: "C:\\tools\\copilot.exe",
+    args: ["--custom", "stdio"],
+    extras: { acp: {} },
   });
   assert.equal(launch.command, "C:\\tools\\copilot.exe");
-  assert.deepEqual(launch.args, ["--acp", "--stdio"]);
+  assert.deepEqual(launch.args, ["--custom", "stdio"]);
 });
 
 test("Copilot ACP may reuse local login or require an explicit env key", () => {
@@ -211,6 +225,7 @@ test("Copilot ACP may reuse local login or require an explicit env key", () => {
     connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(COPILOT_ACP_NPX_PACKAGE, ["--acp", "--stdio"]),
     extras: { acp: {} },
   });
   assert.equal(local.env.GH_TOKEN, undefined);
@@ -223,6 +238,7 @@ test("Copilot ACP may reuse local login or require an explicit env key", () => {
         connectionId: "copilot-acp-default",
         cwd: process.cwd(),
         env: {},
+        ...exactNpx(COPILOT_ACP_NPX_PACKAGE, ["--acp", "--stdio"]),
         extras: { acp: { envKey: "GH_TOKEN" } },
       }),
     /省略 envKey 可复用本机 Copilot 登录/
@@ -236,6 +252,7 @@ test("Pi ACP resolves the third-party pi-acp npx bridge", () => {
     connectionId: "pi-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(PI_ACP_NPX_PACKAGE),
     extras: { acp: {} },
   });
   const npx = defaultNpxLaunch();
@@ -250,6 +267,7 @@ test("Pi ACP may reuse local pi login or require an explicit env key", () => {
     connectionId: "pi-acp-default",
     cwd: process.cwd(),
     env: {},
+    ...exactNpx(PI_ACP_NPX_PACKAGE),
     extras: { acp: {} },
   });
   assert.equal(local.env.OPENAI_API_KEY, undefined);
@@ -262,6 +280,7 @@ test("Pi ACP may reuse local pi login or require an explicit env key", () => {
         connectionId: "pi-acp-default",
         cwd: process.cwd(),
         env: {},
+        ...exactNpx(PI_ACP_NPX_PACKAGE),
         extras: { acp: { envKey: "OPENAI_API_KEY" } },
       }),
     /省略 envKey 可复用本机 pi 登录/

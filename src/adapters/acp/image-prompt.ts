@@ -331,7 +331,7 @@ export function acpTransportSupportsImage(
   return caps.promptCapabilities?.image === true;
 }
 
-/** Append a short, stable fallback note (not assistant delivery noise). */
+/** Append a short, stable fallback note (not assistant result noise). */
 export function appendImageFallbackNote(
   bootstrapText: string,
   pointers: string[],
@@ -524,7 +524,7 @@ function walkMdast(node: Nodes, visit: (node: Nodes) => void): void {
  * Explicit sources only — no workspace scan. Safe read failures are skipped.
  */
 export async function collectBootstrapImageRefsFromTask(input: {
-  userPrompt: string;
+  prompt: string;
   claimBodies?: ReadonlyArray<{ body: string; notePath?: string }>;
 }): Promise<BootstrapImageRef[]> {
   const out: BootstrapImageRef[] = [];
@@ -537,7 +537,7 @@ export async function collectBootstrapImageRefsFromTask(input: {
       out.push(r);
     }
   };
-  pushAll(extractMarkdownImageRefs(input.userPrompt || ""));
+  pushAll(extractMarkdownImageRefs(input.prompt || ""));
   for (const claim of input.claimBodies ?? []) {
     pushAll(
       extractMarkdownImageRefs(claim.body || "", {

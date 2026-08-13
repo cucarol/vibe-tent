@@ -11,10 +11,10 @@ import { fileURLToPath } from "node:url";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import {
-  extractTaskUserPrompt,
-  loadTaskEnvelope,
-  patchTaskEnvelope,
-  writeTaskEnvelope,
+  extractTaskPrompt,
+  loadTaskRecord,
+  patchTaskRecord,
+  writeTaskRecord,
 } from "../src/core/task.js";
 import {
   buildTaskContextCard,
@@ -184,7 +184,7 @@ async function dispatchConnectionTask(
     contextNodeIds: [],
     prompt,
     connectionId,
-    parentActor: { kind: "role", id: "rl-orchestrator" },
+    requester: { kind: "role", id: "rl-orchestrator" },
   });
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   return dispatched.result as { taskPath: string; session?: { sessionId: string } };
@@ -232,7 +232,7 @@ test("collectStableContextGeneration digests AGENTS, Skills, and Connection fact
       packageRoot: repoRoot,
       packageVersion: "0.1.0",
       task: {
-        sessionId: "ss-collect",
+        executionSessionId: "ss-collect",
         contextCard: buildTaskContextCard({
           ...taskNodeContext(
             [...(await loadTent(new NodeFs(path.join(workspace, ".tent")))).byId.keys()][0]!,
@@ -279,7 +279,7 @@ test("frozen Node snapshots are the only durable context; Task prompt changes do
       workspaceIdentity: "ws-frozen-node-context",
       packageRoot: repoRoot,
       packageVersion: "0.1.0",
-      task: { sessionId: "ss-frozen", contextCard },
+      task: { executionSessionId: "ss-frozen", contextCard },
       session: { id: "ss-frozen", connectionSnapshot },
       fs: fsa,
     });
@@ -310,9 +310,9 @@ test("Connection dispatch starts independent exact Sessions and persists each ge
         await createWorkItemNode(svc, workspaceId),
         "Task two"
       );
-      const first = await loadTaskEnvelope(systemFs, firstResult.taskPath);
-      const second = await loadTaskEnvelope(systemFs, secondResult.taskPath);
-      assert.notEqual(extractTaskUserPrompt(first), extractTaskUserPrompt(second));
+      const first = await loadTaskRecord(systemFs, firstResult.taskPath);
+      const second = await loadTaskRecord(systemFs, secondResult.taskPath);
+      assert.notEqual(extractTaskPrompt(first), extractTaskPrompt(second));
       assert.notEqual(first.id, second.id);
       assert.ok(isContextGenerationId(first.contextGeneration!));
       assert.equal(
@@ -323,7 +323,7 @@ test("Connection dispatch starts independent exact Sessions and persists each ge
       assert.equal("taskDeltaDigest" in first, false);
       assert.equal("taskDeltaDigest" in second, false);
       assert.equal(
-        (await svc.runtime.registry.read(first.sessionId!))?.contextGeneration,
+        (await svc.runtime.registry.read(first.executionSessionId!))?.contextGeneration,
         first.contextGeneration
       );
     });
@@ -340,8 +340,8 @@ test("same exact Task resumes native Session; replaceSession is the only explici
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
       const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "resume me");
-      const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-      const firstId = first.sessionId!;
+      const first = await loadTaskRecord(systemFs, dispatched.taskPath);
+      const firstId = first.executionSessionId!;
       const firstRow = await svc.runtime.registry.read(firstId);
       assert.equal(firstRow?.connectionId, "fake-resumable");
       assert.equal(firstRow?.connectionSnapshot?.connectionId, "fake-resumable");
@@ -355,11 +355,11 @@ test("same exact Task resumes native Session; replaceSession is the only explici
       });
       assert.ok(!resumed.error, JSON.stringify(resumed.error));
       assert.equal(
-        (resumed.result as { session: { sessionId: string; contextRestored?: boolean } }).session
+        (resumed.result as { session: { sessionId: string; providerContextRestored?: boolean } }).session
           .sessionId,
         firstId
       );
-      assert.equal((await svc.runtime.registry.read(firstId))?.contextRestored, true);
+      assert.equal((await svc.runtime.registry.read(firstId))?.providerContextRestored, true);
 
       await svc.runtime.stopSession(firstId, "user");
       const replaced = await rpc(svc, "task.replaceSession", {
@@ -368,12 +368,12 @@ test("same exact Task resumes native Session; replaceSession is the only explici
         callerKind: "user",
       });
       assert.ok(!replaced.error, JSON.stringify(replaced.error));
-      const after = await loadTaskEnvelope(systemFs, first.path);
-      assert.notEqual(after.sessionId, firstId);
-      const replacement = await svc.runtime.registry.read(after.sessionId!);
-      assert.equal(replacement?.contextRestored, false);
+      const after = await loadTaskRecord(systemFs, first.path);
+      assert.notEqual(after.executionSessionId, firstId);
+      const replacement = await svc.runtime.registry.read(after.executionSessionId!);
+      assert.equal(replacement?.providerContextRestored, false);
       assert.equal(replacement?.replacedSessionId, firstId);
-      assert.equal((await svc.runtime.registry.read(firstId))?.replacedBySessionId, after.sessionId);
+      assert.equal((await svc.runtime.registry.read(firstId))?.replacedBySessionId, after.executionSessionId);
     });
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -388,11 +388,11 @@ test("contextGeneration patch cannot mutate frozen Node snapshots", async () => 
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
       const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "freeze context");
-      const before = await loadTaskEnvelope(systemFs, dispatched.taskPath);
+      const before = await loadTaskRecord(systemFs, dispatched.taskPath);
       const snapshots = structuredClone(before.contextCard.nodeSnapshots);
       const generation = `cg-v1-${"b".repeat(64)}`;
-      await patchTaskEnvelope(systemFs, before.path, { contextGeneration: generation });
-      const after = await loadTaskEnvelope(systemFs, before.path);
+      await patchTaskRecord(systemFs, before.path, { contextGeneration: generation });
+      const after = await loadTaskRecord(systemFs, before.path);
       assert.equal(after.contextGeneration, generation);
       assert.deepEqual(after.contextCard.nodeSnapshots, snapshots);
       assert.deepEqual(after.contextCard.workNodeIds, before.contextCard.workNodeIds);
@@ -402,23 +402,23 @@ test("contextGeneration patch cannot mutate frozen Node snapshots", async () => 
   }
 });
 
-test("writeTaskEnvelope persists no dispatch-time generation and keeps exact Node snapshots", async () => {
+test("writeTaskRecord persists no dispatch-time generation and keeps exact Node snapshots", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-no-dispatch-gen-"));
   try {
     const systemFs = new NodeFs(root);
     const write = (id: string, nodeId: string, prompt: string) =>
-      writeTaskEnvelope(systemFs, new SystemClock(), {
+      writeTaskRecord(systemFs, new SystemClock(), {
         id,
-        sessionId: id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb",
+        executionSessionId: id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb",
         ...taskNodeContext(nodeId, `nodes/${nodeId}`),
         manifestPath: `temp/sessions/${id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb"}/manifests/${id}.yml`,
-        userPrompt: prompt,
-        parentActor: { kind: "role", id: "rl-orchestrator" },
+        prompt: prompt,
+        requester: { kind: "role", id: "rl-orchestrator" },
       });
     const aPath = await write("tk-aaaaaaa1", "cx-contexta", "objective A");
     const bPath = await write("tk-bbbbbbb2", "cx-contextb", "objective B");
-    const a = await loadTaskEnvelope(systemFs, aPath);
-    const b = await loadTaskEnvelope(systemFs, bPath);
+    const a = await loadTaskRecord(systemFs, aPath);
+    const b = await loadTaskRecord(systemFs, bPath);
     assert.equal(a.contextGeneration, undefined);
     assert.equal(b.contextGeneration, undefined);
     assert.notDeepEqual(a.contextCard.nodeSnapshots, b.contextCard.nodeSnapshots);
@@ -437,8 +437,8 @@ test("Connection dispatch captures immutable Connection and adapter provenance w
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
       const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "capture Connection");
-      const after = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-      const row = await svc.runtime.registry.read(after.sessionId!);
+      const after = await loadTaskRecord(systemFs, dispatched.taskPath);
+      const row = await svc.runtime.registry.read(after.executionSessionId!);
       assert.ok(isContextGenerationId(after.contextGeneration!));
       assert.equal(row?.contextGeneration, after.contextGeneration);
       assert.equal(row?.connectionId, "fake-resumable");
@@ -466,11 +466,11 @@ test("a different Agent Connection produces an independent Session and generatio
         "Connection two",
         "fake-other"
       );
-      const a = await loadTaskEnvelope(systemFs, first.taskPath);
-      const b = await loadTaskEnvelope(systemFs, second.taskPath);
-      assert.notEqual(a.sessionId, b.sessionId);
+      const a = await loadTaskRecord(systemFs, first.taskPath);
+      const b = await loadTaskRecord(systemFs, second.taskPath);
+      assert.notEqual(a.executionSessionId, b.executionSessionId);
       assert.notEqual(a.contextGeneration, b.contextGeneration);
-      assert.equal((await svc.runtime.registry.read(b.sessionId!))?.connectionId, "fake-other");
+      assert.equal((await svc.runtime.registry.read(b.executionSessionId!))?.connectionId, "fake-other");
     });
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -514,11 +514,10 @@ test("Connection launch digest covers model, endpoint key, Skill, MCP, and crede
     adapterId: "grok-acp",
     command: "node",
     args: ["agent.js"],
-    executable: "/usr/bin/grok",
     model: "grok-4",
     envKey: "XAI_API_KEY",
     launchSecretRef: "cred-main",
-    baseUrlEnvKey: "XAI_BASE_URL",
+    endpoint: "https://example.invalid/v1",
     permissionPolicy: "deny",
     promptTimeoutMs: 60_000,
     skills: [{ name: "extra-skill", path: "/skills/extra", enabled: true }],
@@ -539,7 +538,7 @@ test("Connection launch digest covers model, endpoint key, Skill, MCP, and crede
   const digest = calculateAgentConnectionLaunchDigest(base);
   const variants: AgentConnectionConfig[] = [
     { ...base, model: "grok-4-fast" },
-    { ...base, baseUrlEnvKey: "XAI_BASE_URL_ALT" },
+    { ...base, endpoint: "https://other.invalid/v1" },
     { ...base, launchSecretRef: "cred-main-alt" },
     { ...base, skills: [{ name: "extra-skill", path: "/skills/v2", enabled: true }] },
     {
@@ -567,8 +566,9 @@ test("AGENTS and Skill drift resumes the same Session with refreshed full stable
         const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
         const systemFs = new NodeFs(path.join(workspace, ".tent"));
         const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "drift task");
-        const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-        const sessionId = first.sessionId!;
+        const first = await loadTaskRecord(systemFs, dispatched.taskPath);
+        const executionSessionId = first.executionSessionId!;
+        const sessionId = executionSessionId;
         const generation = first.contextGeneration!;
         await svc.runtime.stopSession(sessionId, "user");
 
@@ -584,8 +584,8 @@ test("AGENTS and Skill drift resumes the same Session with refreshed full stable
           callerKind: "user",
         });
         assert.ok(!resumed.error, JSON.stringify(resumed.error));
-        const after = await loadTaskEnvelope(systemFs, first.path);
-        assert.equal(after.sessionId, sessionId, "context drift must not replace conversation identity");
+        const after = await loadTaskRecord(systemFs, first.path);
+        assert.equal(after.executionSessionId, executionSessionId, "context drift must not replace conversation identity");
         assert.notEqual(after.contextGeneration, generation);
         assert.equal((await svc.runtime.registry.read(sessionId))?.contextGeneration, after.contextGeneration);
         const bootstrap = await findFakeBootstrapPrompt(sessionId);
@@ -610,8 +610,9 @@ test("bootstrapPrompt appends on resumed same-Task start while stable prefix ded
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
       const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "bootstrap task");
-      const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-      const sessionId = first.sessionId!;
+      const first = await loadTaskRecord(systemFs, dispatched.taskPath);
+      const executionSessionId = first.executionSessionId!;
+      const sessionId = executionSessionId;
       const fresh = await findFakeBootstrapPrompt(sessionId);
       assert.ok(fresh);
       assert.match(fresh!, /Tent managed session bootstrap/);
@@ -625,7 +626,7 @@ test("bootstrapPrompt appends on resumed same-Task start while stable prefix ded
         bootstrapPrompt: "RESUME_CUSTOM_APPEND",
       });
       assert.ok(!resumed.error, JSON.stringify(resumed.error));
-      assert.equal((await loadTaskEnvelope(systemFs, first.path)).sessionId, sessionId);
+      assert.equal((await loadTaskRecord(systemFs, first.path)).executionSessionId, executionSessionId);
       const delta = await findFakeBootstrapPrompt(sessionId);
       assert.ok(delta);
       assert.match(delta!, /Tent managed session delta/);
@@ -646,8 +647,9 @@ test("empty Session contextGeneration is not resume authority when token and Con
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
       const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "resume without prior gen");
-      const task = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-      const sessionId = task.sessionId!;
+      const task = await loadTaskRecord(systemFs, dispatched.taskPath);
+      const executionSessionId = task.executionSessionId!;
+      const sessionId = executionSessionId;
       await svc.runtime.stopSession(sessionId, "user");
       await svc.runtime.registry.update(sessionId, { contextGeneration: "" });
 
@@ -661,7 +663,7 @@ test("empty Session contextGeneration is not resume authority when token and Con
         (resumed.result as { session: { sessionId: string } }).session.sessionId,
         sessionId
       );
-      const after = await loadTaskEnvelope(systemFs, task.path);
+      const after = await loadTaskRecord(systemFs, task.path);
       assert.ok(isContextGenerationId(after.contextGeneration!));
       assert.equal((await svc.runtime.registry.read(sessionId))?.contextGeneration, after.contextGeneration);
       assert.match((await findFakeBootstrapPrompt(sessionId))!, /Tent managed session bootstrap/);
@@ -687,9 +689,9 @@ test("collector failure on exact-Task resume fails loud without launching a fres
           nodeId,
           "missing skill"
         );
-        const beforeFailure = await loadTaskEnvelope(systemFs, missingSkill.taskPath);
-        assert.ok(beforeFailure.sessionId);
-        await svc.runtime.stopSession(beforeFailure.sessionId!, "user");
+        const beforeFailure = await loadTaskRecord(systemFs, missingSkill.taskPath);
+        assert.ok(beforeFailure.executionSessionId);
+        await svc.runtime.stopSession(beforeFailure.executionSessionId!, "user");
         await fs.rm(path.join(skillRoot, "skills", "tent-task", "SKILL.md"));
         const skillFailure = await rpc(svc, "task.startSession", {
           workspaceId,
@@ -701,8 +703,8 @@ test("collector failure on exact-Task resume fails loud without launching a fres
           (skillFailure.error as { data?: { code?: string } }).data?.code,
           "CONTEXT_GENERATION_COLLECT_FAILED"
         );
-        const afterSkillFailure = await loadTaskEnvelope(systemFs, missingSkill.taskPath);
-        assert.equal(afterSkillFailure.sessionId, beforeFailure.sessionId);
+        const afterSkillFailure = await loadTaskRecord(systemFs, missingSkill.taskPath);
+        assert.equal(afterSkillFailure.executionSessionId, beforeFailure.executionSessionId);
         assert.equal(afterSkillFailure.contextGeneration, beforeFailure.contextGeneration);
       },
       { packageRoot: skillRoot }

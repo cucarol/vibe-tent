@@ -24,7 +24,7 @@ import {
   TaskLifecycleError,
   type TaskActorRef,
 } from "./task-model.js";
-import type { TaskEnvelope } from "./task.js";
+import type { TaskRecord } from "./task.js";
 
 export { canonicalJson, sha256Hex } from "./canonical-digest.js";
 export {
@@ -46,7 +46,7 @@ export const CONTEXT_GENERATION_VERSION = "v1" as const;
 export const MANAGED_BOOTSTRAP_INVARIANT =
   "Tent managed bootstrap invariant v1: Core is authoritative. " +
   "Fetch by durable id before answering. Never invent missing Context Card fields, " +
-  "Task authority, Node context, or chat-memory continuity. Final report goes through Delivery only.";
+  "Task authority, Node context, or chat-memory continuity. Final report goes through TaskResult only.";
 
 /**
  * Git mutator for ordinary Task lanes. Always Local Service —
@@ -92,7 +92,7 @@ export const CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
   "taskPath",
   "objective",
   "acceptance",
-  "userPrompt",
+  "prompt",
   "taskInputDelta",
 ] as const;
 
@@ -377,7 +377,7 @@ export type ManagedPromptAssemblyInput = {
   /** Task envelope path / id pointers for the dynamic section. */
   taskPointers?: string;
   /** Near-field user prompt. */
-  userPrompt?: string;
+  prompt?: string;
   /** TaskInput / review-feedback delta text. */
   taskInputDelta?: string;
   /**
@@ -424,12 +424,12 @@ function formatDynamicDelta(input: ManagedPromptAssemblyInput): string {
   if (input.taskPointers?.trim()) {
     parts.push("", input.taskPointers.trim());
   }
-  const userPrompt = input.userPrompt?.trim();
+  const prompt = input.prompt?.trim();
   parts.push(
     "",
     "## User Prompt",
     "",
-    userPrompt || "(no user prompt on envelope)"
+    prompt || "(no user prompt on envelope)"
   );
   if (input.taskInputDelta?.trim()) {
     parts.push("", input.taskInputDelta.trim());
@@ -629,8 +629,7 @@ export function canonicalStringMap(
  *
  * Hashes the exact canonical launch configuration that can change provider/MCP/Skill
  * context — never resolved secret values:
- * - ACP: executable, model, envKey, launchSecretRef, baseUrlEnvKey, baseUrl,
- *   permissionPolicy, promptTimeoutMs, permissionTimeoutMs
+ * - ACP: model, envKey, launchSecretRef, permissionPolicy and timeouts
  * - generic: command, args, Connection env *key names* only
  * - enabled Skills: name + path identity
  * - enabled MCP: name, transport, command, args, url, and every env/header
@@ -648,12 +647,9 @@ export function routeLaunchCompatibilityDigest(input: {
   envKeyNames?: readonly string[];
   /** ACP options — ids, names, paths, timeouts only. */
   acp?: {
-    executable?: string;
     model?: string;
     envKey?: string;
     launchSecretRef?: string;
-    baseUrlEnvKey?: string;
-    baseUrl?: string;
     permissionPolicy?: string;
     promptTimeoutMs?: number;
     permissionTimeoutMs?: number;
@@ -724,12 +720,9 @@ export function routeLaunchCompatibilityDigest(input: {
       args,
       envKeyNames,
       acp: {
-        executable: acp?.executable?.trim() || "",
         model: acp?.model?.trim() || "",
         envKey: acp?.envKey?.trim() || "",
         launchSecretRef: acp?.launchSecretRef?.trim() || "",
-        baseUrlEnvKey: acp?.baseUrlEnvKey?.trim() || "",
-        baseUrl: acp?.baseUrl?.trim() || "",
         permissionPolicy: acp?.permissionPolicy?.trim() || "",
         promptTimeoutMs:
           typeof acp?.promptTimeoutMs === "number" && Number.isFinite(acp.promptTimeoutMs)
@@ -758,7 +751,7 @@ export function routeLaunchCompatibilityDigest(input: {
 // Truth lives on Task workspaceLane; Context Card only projects.
 // ---------------------------------------------------------------------------
 
-/** Integration authority: actor equals parentActor; mutator is always service. */
+/** Integration authority: actor equals requester; mutator is always service. */
 export type IntegrationAuthority = {
   /** Exact parent actor — ordinary accept authority. */
   actor: TaskActorRef;
@@ -779,23 +772,23 @@ export type ExecutionLaneProjection = {
 };
 
 /**
- * Derive integrationAuthority from persisted Task parentActor only.
+ * Derive integrationAuthority from persisted Task requester only.
  * mutator is always `service`.
  * Never accepts an arbitrary Task-supplied authority object as truth.
  */
 export function deriveIntegrationAuthority(input: {
-  parentActor: TaskActorRef;
+  requester: TaskActorRef;
 }): IntegrationAuthority {
   try {
-    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+    const requester = parseTaskActorRef(input.requester, "requester");
     return {
-      actor: { kind: parentActor.kind, id: parentActor.id },
+      actor: { kind: requester.kind, id: requester.id },
       mutator: INTEGRATION_MUTATOR_SERVICE,
     };
   } catch (err) {
     if (err instanceof TaskLifecycleError) {
       throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor: input.parentActor,
+        requester: input.requester,
       });
     }
     throw err;
@@ -807,7 +800,7 @@ export function deriveIntegrationAuthority(input: {
  * Single-actor helper still fail-loud-parses the actor; mutator is always service.
  */
 export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAuthority {
-  const parsed = parseTaskActorRef(actor, "parentActor");
+  const parsed = parseTaskActorRef(actor, "requester");
   return {
     actor: { kind: parsed.kind, id: parsed.id },
     mutator: INTEGRATION_MUTATOR_SERVICE,
@@ -815,18 +808,18 @@ export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAutho
 }
 
 /**
- * Assert a projected/persisted authority bag matches derived parentActor + service.
+ * Assert a projected/persisted authority bag matches derived requester + service.
  * Fail loud on actor mismatch or non-service mutator — never trust executor-supplied bags.
  */
 export function assertIntegrationAuthorityMatchesParent(
   authority: IntegrationAuthority | unknown,
-  parentActor: TaskActorRef
+  requester: TaskActorRef
 ): IntegrationAuthority {
-  const derived = deriveIntegrationAuthority({ parentActor });
+  const derived = deriveIntegrationAuthority({ requester });
   if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from parentActor.",
+      "integrationAuthority must be { actor, mutator: service } derived from requester.",
       { authority }
     );
   }
@@ -840,7 +833,7 @@ export function assertIntegrationAuthorityMatchesParent(
   }
   let actor: TaskActorRef;
   try {
-    actor = parseTaskActorRef(raw.actor, "parentActor");
+    actor = parseTaskActorRef(raw.actor, "requester");
   } catch (err) {
     if (err instanceof TaskLifecycleError) {
       throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
@@ -850,7 +843,7 @@ export function assertIntegrationAuthorityMatchesParent(
   if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
     throw new TaskContextCardError(
       "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task parentActor ` +
+      `integrationAuthority.actor must equal Task requester ` +
         `(${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
       { authority, derived }
     );
@@ -861,13 +854,13 @@ export function assertIntegrationAuthorityMatchesParent(
 /**
  * Derive executionLane projection from Task lane truth.
  * - baseCommit: exact workspaceLane.baseCommit only (never roleBranchBase substitution).
- * - integrationAuthority: always re-derived from parentActor + service mutator.
- * Invalid parentActor fails loud — never silently drop authority.
+ * - integrationAuthority: always re-derived from requester + service mutator.
+ * Invalid requester fails loud — never silently drop authority.
  */
 export function projectExecutionLaneFromTask(
   task: Pick<
-    TaskEnvelope,
-    "targetBranch" | "branch" | "worktree" | "parentActor" | "baseCommit"
+    TaskRecord,
+    "targetBranch" | "branch" | "worktree" | "requester" | "baseCommit"
   >
 ): ExecutionLaneProjection | undefined {
   const baseCommit =
@@ -880,8 +873,8 @@ export function projectExecutionLaneFromTask(
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
 
   let integrationAuthority: IntegrationAuthority | undefined;
-  if (task.parentActor) {
-    integrationAuthority = deriveIntegrationAuthority({ parentActor: task.parentActor });
+  if (task.requester) {
+    integrationAuthority = deriveIntegrationAuthority({ requester: task.requester });
   }
 
   if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
@@ -917,7 +910,7 @@ export function formatExecutionLanePrompt(
 }
 
 // ---------------------------------------------------------------------------
-// Pre-ready Delivery history gate (ordinary executor lanes) — pure Core
+// Pre-ready TaskResult history gate (ordinary executor lanes) — pure Core
 // ---------------------------------------------------------------------------
 
 export type ExecutorLaneCommitInfo = {
@@ -964,7 +957,7 @@ export class ExecutorLaneHistoryError extends Error {
 }
 
 /**
- * Pure pre-ready Delivery history gate for ordinary executor lanes.
+ * Pure pre-ready TaskResult history gate for ordinary executor lanes.
  *
  * Rules (cx-5q6za6):
  * 1. recorded baseCommit must be the exact first parent of the first Task commit
@@ -973,7 +966,7 @@ export class ExecutorLaneHistoryError extends Error {
  * 3. the chain is linear tip-contiguous: each commit's first parent is the prior
  *    commit (or base for the first). Foreign ancestry / multi-parent fails loud.
  *
- * Does **not** publish Delivery; callers refuse ready Delivery and preserve lane/audit.
+ * Does **not** publish TaskResult; callers refuse ready TaskResult and preserve lane/audit.
  * No generic allowMerge switch — authorized integration is parent accept + Service only.
  */
 export function assertOrdinaryExecutorLaneHistory(
@@ -984,13 +977,13 @@ export function assertOrdinaryExecutorLaneHistory(
   if (!base) {
     throw new ExecutorLaneHistoryError(
       "MISSING_BASE",
-      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready TaskResult)."
     );
   }
   if (!tip) {
     throw new ExecutorLaneHistoryError(
       "MISSING_TIP",
-      "Executor lane history gate requires tip commit (fail-loud; no ready Delivery)."
+      "Executor lane history gate requires tip commit (fail-loud; no ready TaskResult)."
     );
   }
   const commits = input.commits ?? [];
@@ -1023,14 +1016,14 @@ export function assertOrdinaryExecutorLaneHistory(
   if (first.parents.length !== 1) {
     throw new ExecutorLaneHistoryError(
       "MERGE_COMMIT",
-      `Unauthorized merge commit on ordinary executor lane: ${first.sha} has ${first.parents.length} parents (no ready Delivery; lane/audit preserved).`,
+      `Unauthorized merge commit on ordinary executor lane: ${first.sha} has ${first.parents.length} parents (no ready TaskResult; lane/audit preserved).`,
       { sha: first.sha, parents: first.parents }
     );
   }
   if (first.parents[0] !== base) {
     throw new ExecutorLaneHistoryError(
       "BASE_NOT_FIRST_PARENT",
-      `Recorded baseCommit ${base} is not the exact first parent of the first Task commit ${first.sha} (parent=${first.parents[0]}). Unauthorized foreign ancestry; no ready Delivery.`,
+      `Recorded baseCommit ${base} is not the exact first parent of the first Task commit ${first.sha} (parent=${first.parents[0]}). Unauthorized foreign ancestry; no ready TaskResult.`,
       { base, firstSha: first.sha, firstParent: first.parents[0] }
     );
   }
@@ -1057,14 +1050,14 @@ export function assertOrdinaryExecutorLaneHistory(
     if (parents.length !== 1) {
       throw new ExecutorLaneHistoryError(
         "MERGE_COMMIT",
-        `Unauthorized merge commit on ordinary executor lane: ${sha} has ${parents.length} parents (executor must not merge parent/target/dependency; no ready Delivery).`,
+        `Unauthorized merge commit on ordinary executor lane: ${sha} has ${parents.length} parents (executor must not merge parent/target/dependency; no ready TaskResult).`,
         { sha, parents, index: i }
       );
     }
     if (i > 0 && parents[0] !== prev) {
       throw new ExecutorLaneHistoryError(
         "FOREIGN_ANCESTRY",
-        `Executor lane commit ${sha} first parent ${parents[0]} is not prior tip ${prev} (foreign ancestry / non-linear history; no ready Delivery).`,
+        `Executor lane commit ${sha} first parent ${parents[0]} is not prior tip ${prev} (foreign ancestry / non-linear history; no ready TaskResult).`,
         { sha, firstParent: parents[0], expectedParent: prev, index: i }
       );
     }

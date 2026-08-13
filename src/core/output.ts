@@ -1,19 +1,18 @@
-// Output Node helpers: V0.2 provenance through one exact Delivery id.
-// Authoritative link is Output frontmatter `deliveryId` only — no taskId/sourceNodeId denorm,
+// Output Node helpers: provenance through one exact accepted TaskResult id.
+// Authoritative link is Output frontmatter `resultId` only — no taskId/source Node denorm,
 // artifactRefs copy, or generic relation substitute (Canvas P0 / cx-f2kxd4).
 
 import type { FsAdapter } from "./adapter.js";
 import type { ArtifactRef } from "./artifact.js";
-import { loadDeliveries, type DeliveryRecord } from "./delivery.js";
+import { loadTaskResults, type TaskResultRecord } from "./task-result.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { loadTaskEnvelopes, type TaskEnvelope } from "./task.js";
-import { isDeliveryId } from "./task-model.js";
+import { loadTaskRecords, type TaskRecord } from "./task.js";
+import { isTaskResultId } from "./task-model.js";
 import { nodeNotePath, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
-import { splitType } from "./typeRegistry.js";
 
-/** Reserved Output provenance field — only formal accept/bind may write. */
-export const OUTPUT_PROVENANCE_FIELD = "deliveryId" as const;
+/** Reserved Output provenance field — not writable through generic Node edits. */
+export const OUTPUT_PROVENANCE_FIELD = "resultId" as const;
 
 export type OutputProvenanceErrorCode =
   | "OUTPUT_NOT_FOUND"
@@ -21,9 +20,9 @@ export type OutputProvenanceErrorCode =
   | "OUTPUT_ARCHIVED"
   | "OUTPUT_NOT_OUTPUT_TYPE"
   | "OUTPUT_ALREADY_BOUND"
-  | "INVALID_DELIVERY_ID"
+  | "INVALID_RESULT_ID"
   | "INVALID_SELECTOR"
-  /** Compensating restore of Output raw snapshots failed after a bind/accept error. */
+  /** Compensating restore of Output raw snapshots failed after a provenance-bind error. */
   | "BIND_ROLLBACK_FAILED";
 
 export class OutputProvenanceError extends Error {
@@ -41,13 +40,12 @@ export class OutputProvenanceError extends Error {
   }
 }
 
-/** Live join half of Output → Delivery → Task → sourceNode (ids only; never path inference). */
+/** Live join half of Output → TaskResult → Task → its first work Node. */
 export type OutputProvenanceLive = {
-  delivery: {
+  result: {
     id: string;
     status: string;
     taskId: string;
-    sourceNodeId: string;
     artifactRefs: ArtifactRef[];
   } | null;
   task: { id: string; state: string; path?: string } | null;
@@ -55,15 +53,15 @@ export type OutputProvenanceLive = {
 };
 
 export type OutputProvenanceIncompleteReason =
-  | "delivery_missing"
+  | "result_missing"
   | "task_missing"
   | "source_missing"
   | "mismatch";
 
 /**
  * Read model for `output.provenance`.
- * Unbound Output: bound=false, deliveryId=null, live halves null, incomplete empty.
- * Bound + missing heat records: FM deliveryId kept; live null + incomplete reasons.
+ * Unbound Output: bound=false, resultId=null, live halves null, incomplete empty.
+ * Bound + missing heat records: FM resultId kept; live null + incomplete reasons.
  */
 export type OutputProvenance = {
   workspaceId?: string;
@@ -71,21 +69,20 @@ export type OutputProvenance = {
   path: string;
   bound: boolean;
   /** Authoritative FM link; null when unbound. */
-  deliveryId: string | null;
-  delivery: OutputProvenanceLive["delivery"];
+  resultId: string | null;
+  result: OutputProvenanceLive["result"];
   task: OutputProvenanceLive["task"];
   sourceNode: OutputProvenanceLive["sourceNode"];
   incomplete: OutputProvenanceIncompleteReason[];
 };
 
-/** True when primary type base is `output` (including `output-asset`, …). */
-export function isOutputPrimaryType(type: string | undefined | null): boolean {
-  if (!type || typeof type !== "string") return false;
-  return splitType(type).base === "output";
+/** Nodes use one ordinary optional type; Output provenance is exact `output`. */
+export function isOutputNodeType(type: string | undefined | null): boolean {
+  return typeof type === "string" && type.trim() === "output";
 }
 
-/** Read authoritative deliveryId from Output frontmatter; undefined when unbound / empty. */
-export function readOutputDeliveryId(fm: Record<string, unknown>): string | undefined {
+/** Read authoritative resultId from Output frontmatter; undefined when unbound / empty. */
+export function readOutputTaskResultId(fm: Record<string, unknown>): string | undefined {
   const raw = fm[OUTPUT_PROVENANCE_FIELD];
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
@@ -93,26 +90,26 @@ export function readOutputDeliveryId(fm: Record<string, unknown>): string | unde
 }
 
 /**
- * Collect every non-empty deliveryId on Output Nodes (including archived).
- * Used by operational retention to pin referenced Delivery + Task groups.
+ * Collect every non-empty resultId on Output Nodes (including archived).
+ * Used by operational retention to pin referenced TaskResult + Task groups.
  */
-export function collectReferencedDeliveryIds(tent: LoadedTent): Set<string> {
+export function collectReferencedTaskResultIds(tent: LoadedTent): Set<string> {
   const out = new Set<string>();
   for (const node of tent.byId.values()) {
-    const deliveryId = readOutputDeliveryId(node.fm as Record<string, unknown>);
-    if (deliveryId && isDeliveryId(deliveryId)) out.add(deliveryId);
+    const resultId = readOutputTaskResultId(node.fm as Record<string, unknown>);
+    if (resultId && isTaskResultId(resultId)) out.add(resultId);
   }
   return out;
 }
 
 /**
- * Validate one Output for binding to `deliveryId` without writing.
+ * Validate one Output for binding to `resultId` without writing.
  * Unbound or already bound to the same id → ok (idempotent).
  * Bound to a different id → OUTPUT_ALREADY_BOUND.
  */
 export function assertOutputBindable(
   node: Node,
-  deliveryId: string
+  resultId: string
 ): { alreadyBound: boolean } {
   if (!node.id) {
     throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${node.path}`);
@@ -131,46 +128,46 @@ export function assertOutputBindable(
       { outputId: node.id }
     );
   }
-  if (!isOutputPrimaryType(node.type)) {
+  if (!isOutputNodeType(node.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output to bind provenance (got ${node.type}): ${node.id}`,
+      `Node type must be output to bind provenance (got ${node.type}): ${node.id}`,
       { outputId: node.id, type: node.type }
     );
   }
-  if (!isDeliveryId(deliveryId)) {
+  if (!isTaskResultId(resultId)) {
     throw new OutputProvenanceError(
-      "INVALID_DELIVERY_ID",
-      `Invalid delivery id for provenance bind: ${deliveryId}`
+      "INVALID_RESULT_ID",
+      `Invalid result id for provenance bind: ${resultId}`
     );
   }
-  const existing = readOutputDeliveryId(node.fm as Record<string, unknown>);
-  if (existing && existing !== deliveryId) {
+  const existing = readOutputTaskResultId(node.fm as Record<string, unknown>);
+  if (existing && existing !== resultId) {
     throw new OutputProvenanceError(
       "OUTPUT_ALREADY_BOUND",
-      `Output ${node.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
-      { outputId: node.id, existingDeliveryId: existing, deliveryId }
+      `Output ${node.id} is already bound to ${existing}; cannot rebind to ${resultId}`,
+      { outputId: node.id, existingTaskResultId: existing, resultId }
     );
   }
-  return { alreadyBound: existing === deliveryId };
+  return { alreadyBound: existing === resultId };
 }
 
 /**
- * All-or-nothing validate of outputNodeIds for accept binding.
+ * All-or-nothing validation for an explicit Result-to-Output update.
  * Dedupes ids; empty/undefined → no-op list.
  */
-export function validateOutputBindingsForAccept(
+export function validateOutputResultBinding(
   tent: LoadedTent,
   outputNodeIds: readonly string[] | undefined,
-  deliveryId: string
+  resultId: string
 ): { outputIds: string[]; nodes: Node[] } {
   if (!outputNodeIds || outputNodeIds.length === 0) {
     return { outputIds: [], nodes: [] };
   }
-  if (!isDeliveryId(deliveryId)) {
+  if (!isTaskResultId(resultId)) {
     throw new OutputProvenanceError(
-      "INVALID_DELIVERY_ID",
-      `Invalid delivery id for provenance bind: ${deliveryId}`
+      "INVALID_RESULT_ID",
+      `Invalid result id for provenance bind: ${resultId}`
     );
   }
   const seen = new Set<string>();
@@ -199,7 +196,7 @@ export function validateOutputBindingsForAccept(
         outputId: id,
       });
     }
-    assertOutputBindable(node, deliveryId);
+    assertOutputBindable(node, resultId);
     outputIds.push(id);
     nodes.push(node);
   }
@@ -215,7 +212,7 @@ export type OutputBindSnapshot = {
   notePath: string;
   raw: string;
   node: Node;
-  previousDeliveryId: string | undefined;
+  previousTaskResultId: string | undefined;
 };
 
 /**
@@ -233,7 +230,7 @@ export async function restoreOutputBindSnapshots(
     const snap = snapshots[i];
     try {
       await fs.writeFile(snap.notePath, snap.raw);
-      const prev = snap.previousDeliveryId;
+      const prev = snap.previousTaskResultId;
       if (prev === undefined) {
         delete (snap.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD];
       } else {
@@ -257,41 +254,41 @@ export async function restoreOutputBindSnapshots(
 }
 
 /**
- * Bind many Outputs to one Delivery after full validation (accept final mutation).
+ * Bind many Outputs to one accepted TaskResult after full validation.
  *
  * Cross-file atomicity via compensating rollback:
  * 1) validate all
  * 2) snapshot original raw for every file that will change
- * 3) write each deliveryId
+ * 3) write each resultId
  * 4) on any write failure, restore all prior snapshots (fail loud if restore fails)
  *
- * Idempotent same-delivery binds do not write and are not snapshotted.
- * `snapshots` is returned so outer accept can roll back if Delivery/Task persistence fails later.
+ * Idempotent same-result binds do not write and are not snapshotted.
+ * `snapshots` is returned so outer accept can roll back if TaskResult/Task persistence fails later.
  */
-export async function bindOutputsToDeliveryUnlocked(
+export async function bindOutputsToTaskResultUnlocked(
   fs: FsAdapter,
   tent: LoadedTent,
   outputNodeIds: readonly string[] | undefined,
-  deliveryId: string
+  resultId: string
 ): Promise<{
   boundIds: string[];
   changedIds: string[];
   snapshots: OutputBindSnapshot[];
 }> {
-  const { outputIds, nodes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
+  const { outputIds, nodes } = validateOutputResultBinding(tent, outputNodeIds, resultId);
 
   type Planned = {
     node: Node;
     outputId: string;
     notePath: string;
     raw: string;
-    previousDeliveryId: string | undefined;
+    previousTaskResultId: string | undefined;
   };
   const planned: Planned[] = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     const outputId = outputIds[i];
-    const { alreadyBound } = assertOutputBindable(node, deliveryId);
+    const { alreadyBound } = assertOutputBindable(node, resultId);
     if (alreadyBound) continue;
     const notePath = nodeNotePath(node.path);
     const raw = await fs.readFile(notePath);
@@ -300,7 +297,7 @@ export async function bindOutputsToDeliveryUnlocked(
       outputId,
       notePath,
       raw,
-      previousDeliveryId: readOutputDeliveryId(node.fm as Record<string, unknown>),
+      previousTaskResultId: readOutputTaskResultId(node.fm as Record<string, unknown>),
     });
   }
 
@@ -310,7 +307,7 @@ export async function bindOutputsToDeliveryUnlocked(
   try {
     for (const item of planned) {
       const { data, body, keyOrder } = parseFrontmatter(item.raw);
-      data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      data[OUTPUT_PROVENANCE_FIELD] = resultId;
       const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
       await fs.writeFile(item.notePath, nextRaw);
       // Only record snapshot after a successful write so rollback targets real changes.
@@ -319,9 +316,9 @@ export async function bindOutputsToDeliveryUnlocked(
         notePath: item.notePath,
         raw: item.raw,
         node: item.node,
-        previousDeliveryId: item.previousDeliveryId,
+        previousTaskResultId: item.previousTaskResultId,
       });
-      (item.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      (item.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = resultId;
       changedIds.push(item.outputId);
     }
   } catch (err) {
@@ -352,8 +349,8 @@ export async function bindOutputsToDeliveryUnlocked(
 export function projectOutputProvenance(
   node: Node,
   indexes: {
-    deliveriesById: Map<string, DeliveryRecord>;
-    tasksById: Map<string, TaskEnvelope>;
+    resultsById: Map<string, TaskResultRecord>;
+    tasksById: Map<string, TaskRecord>;
     tent: LoadedTent;
   }
 ): OutputProvenance {
@@ -364,54 +361,53 @@ export function projectOutputProvenance(
       { outputId: node.id, detail: node.invalidReason }
     );
   }
-  if (!isOutputPrimaryType(node.type)) {
+  if (!isOutputNodeType(node.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output for provenance query (got ${node.type}): ${node.id}`,
+      `Node type must be output for provenance query (got ${node.type}): ${node.id}`,
       { outputId: node.id, type: node.type }
     );
   }
 
-  const deliveryId = readOutputDeliveryId(node.fm as Record<string, unknown>) ?? null;
+  const resultId = readOutputTaskResultId(node.fm as Record<string, unknown>) ?? null;
   const base: OutputProvenance = {
     outputId: node.id,
     path: node.path,
     bound: false,
-    deliveryId: null,
-    delivery: null,
+    resultId: null,
+    result: null,
     task: null,
     sourceNode: null,
     incomplete: [],
   };
 
-  if (!deliveryId) {
+  if (!resultId) {
     return base;
   }
 
   base.bound = true;
-  base.deliveryId = deliveryId;
+  base.resultId = resultId;
 
-  if (!isDeliveryId(deliveryId)) {
-    base.incomplete.push("delivery_missing");
+  if (!isTaskResultId(resultId)) {
+    base.incomplete.push("result_missing");
     return base;
   }
 
-  const delivery = indexes.deliveriesById.get(deliveryId);
-  if (!delivery) {
-    base.incomplete.push("delivery_missing");
-    // Without live Delivery we cannot walk Task/source by id-only authority.
+  const result = indexes.resultsById.get(resultId);
+  if (!result) {
+    base.incomplete.push("result_missing");
+    // Without live TaskResult we cannot walk Task/source by id-only authority.
     return base;
   }
 
-  base.delivery = {
-    id: delivery.id,
-    status: delivery.status,
-    taskId: delivery.taskId,
-    sourceNodeId: delivery.sourceNodeId,
-    artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
+  base.result = {
+    id: result.id,
+    status: result.status,
+    taskId: result.taskId,
+    artifactRefs: result.artifactRefs.map((ref) => ({ ...ref })),
   };
 
-  const task = indexes.tasksById.get(delivery.taskId);
+  const task = indexes.tasksById.get(result.taskId);
 
   if (!task) {
     base.incomplete.push("task_missing");
@@ -421,20 +417,16 @@ export function projectOutputProvenance(
       state: task.state,
       path: task.path,
     };
-    // Lightweight consistency: delivery.taskId should match task identity when both exist.
+    // Lightweight consistency: result.taskId should match task identity when both exist.
     const taskKey = task.id || task.path;
-    if (delivery.taskId && taskKey && delivery.taskId !== taskKey && delivery.taskId !== task.path) {
+    if (result.taskId && taskKey && result.taskId !== taskKey && result.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
     }
-    if (!task.workNodeIds.includes(delivery.sourceNodeId)) {
-      if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
+    const sourceId = task.workNodeIds[0];
+    if (!sourceId) {
+      base.incomplete.push("source_missing");
+      return base;
     }
-  }
-
-  const sourceId = delivery.sourceNodeId.trim();
-  if (!sourceId) {
-    base.incomplete.push("source_missing");
-  } else {
     const source = indexes.tent.byId.get(sourceId);
     if (!source) {
       base.incomplete.push("source_missing");
@@ -458,19 +450,19 @@ export async function loadProvenanceIndexes(
   tent?: LoadedTent
 ): Promise<{
   tent: LoadedTent;
-  deliveriesById: Map<string, DeliveryRecord>;
-  tasksById: Map<string, TaskEnvelope>;
+  resultsById: Map<string, TaskResultRecord>;
+  tasksById: Map<string, TaskRecord>;
 }> {
   const loadedTent = tent ?? (await loadTent(fs));
-  const deliveries = await loadDeliveries(fs);
-  const tasks = await loadTaskEnvelopes(fs);
-  const deliveriesById = new Map<string, DeliveryRecord>();
-  for (const d of deliveries) deliveriesById.set(d.id, d);
-  const tasksById = new Map<string, TaskEnvelope>();
+  const results = await loadTaskResults(fs);
+  const tasks = await loadTaskRecords(fs);
+  const resultsById = new Map<string, TaskResultRecord>();
+  for (const result of results) resultsById.set(result.id, result);
+  const tasksById = new Map<string, TaskRecord>();
   for (const t of tasks) {
     if (t.id) tasksById.set(t.id, t);
   }
-  return { tent: loadedTent, deliveriesById, tasksById };
+  return { tent: loadedTent, resultsById, tasksById };
 }
 
 /**
@@ -482,8 +474,8 @@ export async function resolveOutputProvenance(
   selector: { nodeId: string },
   preloaded?: {
     tent: LoadedTent;
-    deliveriesById: Map<string, DeliveryRecord>;
-    tasksById: Map<string, TaskEnvelope>;
+    resultsById: Map<string, TaskResultRecord>;
+    tasksById: Map<string, TaskRecord>;
   }
 ): Promise<OutputProvenance> {
   const indexes = preloaded ?? (await loadProvenanceIndexes(fs));

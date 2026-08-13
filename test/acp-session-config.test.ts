@@ -590,7 +590,7 @@ test("ACP Session config scrubs launch secrets before Registry and Service proje
     await svc.runtime.reserveSession({
       sessionId,
       connectionId: "fake-default",
-      lastTaskId: "tk-configsecretprojection",
+      currentTaskId: "tk-configsecretprojection",
       workspace: "ws-configsecretprojection",
       runtimeWorkspace: { cwd: dataDir },
       cwd: dataDir,
@@ -798,7 +798,7 @@ test("Service session.get/list expose the typed bounded ACP Session snapshot", a
     await svc.runtime.reserveSession({
       sessionId,
       connectionId: "fake-default",
-      lastTaskId: "tk-configprojection",
+      currentTaskId: "tk-configprojection",
       workspace: "ws-configprojection",
       runtimeWorkspace: { cwd: dataDir },
       cwd: dataDir,

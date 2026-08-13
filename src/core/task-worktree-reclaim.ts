@@ -2,17 +2,17 @@
 // Role worktrees stay durable. Code Task lanes (tent-task/<id>) are temporary.
 // Auto-remove only when Task is terminal, required integrate/settle is done,
 // the lane is clean, and ownership/path/branch are unambiguous.
-// Never deletes Git commits, branches, or Tent Task/Session/Delivery records.
+// Never deletes Git commits, branches, or Tent Task/Session/TaskResult records.
 // Idempotent, restart-safe, fail-closed with diagnostics. No historical mass-clean.
 
 import type { FsAdapter } from "./adapter.js";
-import { loadDeliveries, type DeliveryRecord } from "./delivery.js";
+import { loadTaskResults, type TaskResultRecord } from "./task-result.js";
 import {
   isActiveTaskState,
   TERMINAL_TASK_STATES,
   type TaskState,
 } from "./task-model.js";
-import { type TaskEnvelope } from "./task.js";
+import { type TaskRecord } from "./task.js";
 import {
   expectedTaskWorktreePath,
   findIntegratedCommit,
@@ -66,12 +66,12 @@ export type TaskWorktreeReclaimResult = TaskWorktreeReclaimDiagnostic & {
 export type EvaluateTaskWorktreeReclaimInput = {
   /** Mounted Git workspace root (not a nested path). */
   workspaceRoot: string;
-  task: TaskEnvelope;
+  task: TaskRecord;
   /**
-   * Optional deliveries for settle checks. When omitted and the Task is
+   * Optional results for settle checks. When omitted and the Task is
    * `accepted` with an id, callers should load via FsAdapter (see evaluate with fs).
    */
-  deliveries?: DeliveryRecord[];
+  results?: TaskResultRecord[];
 };
 
 export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
@@ -100,7 +100,7 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
   /**
    * Service settle re-probe: called immediately before any git worktree remove
    * (and before force metadata drop). Fail-closed → map to SESSION_ACTIVE so a
-   * late turnBusy/alive/open Session after evaluate still defers remove.
+   * late isTurnActive/isAlive/open Session after evaluate still defers remove.
    * Production auto-reclaim always supplies this under the per-Task lifecycle lock.
    */
   assertSessionSettledBeforeRemove?: () =>
@@ -114,7 +114,7 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
 
 /**
  * True when Task state is collaboration-terminal and no longer occupies a node.
- * `delivered` is intentionally excluded (still active occupation / review).
+ * `submitted` is intentionally excluded (still active occupation / review).
  */
 export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {
   return TERMINAL_TASK_STATES.has(state) && !isActiveTaskState(state);
@@ -125,7 +125,7 @@ export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {
  * are not lane identity: a Role Task may also have a Session. Only an actual
  * `tent-task/*` branch is a reclaimable Task-scoped lane.
  */
-export function isTaskScopedWorktreeLane(task: TaskEnvelope): boolean {
+export function isTaskScopedWorktreeLane(task: TaskRecord): boolean {
   return task.branch?.startsWith("tent-task/") === true;
 }
 
@@ -415,19 +415,19 @@ export async function evaluateTaskWorktreeReclaim(
     }
   }
 
-  // Accepted + commit-bearing deliveries must be fully settled into targetBranch.
+  // Accepted + commit-bearing results must be fully settled into targetBranch.
   // Also fail-closed on any unintegrated tip still exclusive to the Task branch
-  // (even when a Delivery omitted those commits).
+  // (even when a TaskResult omitted those commits).
   if (task.state === "accepted") {
     const targetBranch = (task.targetBranch || "").trim();
-    const deliveries = input.deliveries ?? [];
+    const results = input.results ?? [];
     const settle = await evaluateAcceptedSettle({
       workspaceRoot,
       targetBranch,
       taskId,
       taskBranch: expectedBranch,
       roleBranchBase: task.roleBranchBase,
-      deliveries,
+      results,
     });
     if (!settle.ok) {
       return {
@@ -443,17 +443,17 @@ export async function evaluateTaskWorktreeReclaim(
     }
   }
 
-  // Ready deliveries must never accompany a reclaimable terminal task.
-  const ready = (input.deliveries ?? []).filter((d) => d.status === "ready" || d.status === "draft");
+  // Ready results must never accompany a reclaimable terminal task.
+  const ready = (input.results ?? []).filter((d) => d.status === "ready");
   if (ready.length > 0) {
     return {
       ...base,
       eligible: false,
       code: "UNINTEGRATED",
-      reason: `Task still has ${ready.length} non-terminal delivery record(s); refusing worktree reclaim.`,
+      reason: `Task still has ${ready.length} non-terminal result record(s); refusing worktree reclaim.`,
       worktree: resolvedWorktree,
       branch: expectedBranch,
-      details: { deliveryIds: ready.map((d) => d.id) },
+      details: { resultIds: ready.map((d) => d.id) },
     };
   }
 
@@ -837,13 +837,13 @@ export async function reclaimTaskWorktree(
 }
 
 /**
- * Convenience: load deliveries for the task then evaluate/reclaim.
+ * Convenience: load results for the task then evaluate/reclaim.
  * Used by Service auto-reclaim and restart recovery.
  */
 export async function reclaimTaskWorktreeForEnvelope(
   fs: FsAdapter,
   workspaceRoot: string,
-  task: TaskEnvelope,
+  task: TaskRecord,
   options: {
     preview?: boolean;
     beforeRemoveForTests?: () => void | Promise<void>;
@@ -853,11 +853,11 @@ export async function reclaimTaskWorktreeForEnvelope(
   } = {}
 ): Promise<TaskWorktreeReclaimResult> {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs, { taskId }) : [];
+  const results = taskId ? await loadTaskResults(fs, { taskId }) : [];
   return reclaimTaskWorktree({
     workspaceRoot,
     task,
-    deliveries,
+    results,
     preview: options.preview,
     beforeRemoveForTests: options.beforeRemoveForTests,
     rmLaneDirectoryForTests: options.rmLaneDirectoryForTests,
@@ -892,11 +892,11 @@ async function probeSessionSettledBeforeRemove(
 export async function evaluateTaskWorktreeReclaimForEnvelope(
   fs: FsAdapter,
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskRecord
 ): Promise<TaskWorktreeReclaimDiagnostic> {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs, { taskId }) : [];
-  return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
+  const results = taskId ? await loadTaskResults(fs, { taskId }) : [];
+  return evaluateTaskWorktreeReclaim({ workspaceRoot, task, results });
 }
 
 // ---- internals ----
@@ -971,7 +971,7 @@ async function evaluateAcceptedSettle(input: {
   taskId: string;
   taskBranch: string;
   roleBranchBase?: string;
-  deliveries: DeliveryRecord[];
+  results: TaskResultRecord[];
 }): Promise<
   | { ok: true }
   | {
@@ -990,43 +990,43 @@ async function evaluateAcceptedSettle(input: {
     };
   }
 
-  const related = input.deliveries.filter((d) => d.taskId === input.taskId);
-  const open = related.filter((d) => d.status === "ready" || d.status === "draft");
+  const related = input.results.filter((d) => d.taskId === input.taskId);
+  const open = related.filter((d) => d.status === "ready");
   if (open.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Accepted Task still has ${open.length} open delivery(ies); refuse reclaim.`,
-      details: { deliveryIds: open.map((d) => d.id) },
+      reason: `Accepted Task still has ${open.length} open result(ies); refuse reclaim.`,
+      details: { resultIds: open.map((d) => d.id) },
     };
   }
 
   const accepted = related.filter((d) => d.status === "accepted");
-  const missingFromDelivery: string[] = [];
+  const missingFromTaskResult: string[] = [];
   for (const d of accepted) {
     for (const ref of d.commits) {
       const sha = ref.trim();
       if (!sha) continue;
       const integrated = await findIntegratedCommit(input.workspaceRoot, sha, target);
-      if (!integrated) missingFromDelivery.push(sha);
+      if (!integrated) missingFromTaskResult.push(sha);
     }
   }
-  if (missingFromDelivery.length > 0) {
+  if (missingFromTaskResult.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Accepted Delivery commit(s) are not integrated into ${target}; refusing reclaim.`,
+      reason: `Accepted TaskResult commit(s) are not integrated into ${target}; refusing reclaim.`,
       details: {
-        missingCommits: missingFromDelivery.slice(0, 12),
-        missingCount: missingFromDelivery.length,
+        missingCommits: missingFromTaskResult.slice(0, 12),
+        missingCount: missingFromTaskResult.length,
         targetBranch: target,
-        source: "delivery",
+        source: "result",
       },
     };
   }
 
   // Fail-closed: any commit still exclusive to the Task branch (vs target),
-  // even when omitted from Delivery.commits — use ancestor / -x semantics.
+  // even when omitted from TaskResult.commits — use ancestor / -x semantics.
   const branchMissing = await listUnintegratedTaskBranchCommits({
     workspaceRoot: input.workspaceRoot,
     taskBranch: input.taskBranch,
@@ -1037,7 +1037,7 @@ async function evaluateAcceptedSettle(input: {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Task branch ${input.taskBranch} still has ${branchMissing.length} commit(s) not integrated into ${target} (including Delivery-omitted tips); refusing reclaim.`,
+      reason: `Task branch ${input.taskBranch} still has ${branchMissing.length} commit(s) not integrated into ${target} (including TaskResult-omitted tips); refusing reclaim.`,
       details: {
         missingCommits: branchMissing.slice(0, 12),
         missingCount: branchMissing.length,

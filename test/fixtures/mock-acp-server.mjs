@@ -10,7 +10,7 @@
  *   MOCK_ACP_OUTPUT_BYTES — generate an exact-size ASCII assistant message (tests output limits)
  *   MOCK_ACP_INTERMEDIATE_TEXT — optional pre-tool assistant narration; when set,
  *     stream this agent_message_chunk before tool_call, then PROMPT_TEXT after tools
- *     (regression: Delivery.summary must keep only the final segment)
+ *     (regression: TaskResult.report must keep only the final segment)
  *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer", "## User Input", or "## Review Feedback" (default MOCK_ACP_PROMPT_TEXT)
  *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing bootstrap session/prompt (default 0)
  *   MOCK_ACP_FOLLOWUP_DELAY_MS — delay before completing U2A follow-up prompts (default 0)
@@ -85,7 +85,7 @@ const mockStderrExtra = process.env.MOCK_ACP_STDERR || "";
 const mockStderrEnvKey = process.env.MOCK_ACP_STDERR_ENV_KEY || "";
 const mockErrorEnvKey = process.env.MOCK_ACP_ERROR_ENV_KEY || "";
 const echoMcpSecret = process.env.MOCK_ACP_ECHO_MCP_SECRET === "1";
-/** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
+/** empty | error | interrupt — special prompt outcomes for managed-result tests */
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
 const logPath = process.env.MOCK_ACP_LOG || "";
@@ -112,7 +112,7 @@ const knownSessionId =
   process.env.MOCK_ACP_KNOWN_SESSION_ID || "mock-acp-session-1";
 /**
  * After session/prompt JSON-RPC result is written, optionally schedule a late
- * worktree mutation (write marker file). Used to prove Delivery is sealed only
+ * worktree mutation (write marker file). Used to prove Result publication occurs only
  * after the process can no longer mutate — not on a sleep. If the bridge is
  * killed first, the timer dies with the process and the marker never appears.
  */
@@ -577,7 +577,7 @@ rl.on("line", (line) => {
       textParts.includes("## User Answer") ||
       textParts.includes("## User Input") ||
       textParts.includes("## Review Feedback");
-    // Follow-up continuation uses a distinct report so delivery is exercised
+    // Follow-up continuation uses a distinct report so Result publication is exercised
     // even when the bootstrap prompt was empty / non-delivering.
     const activePromptText = isUserFollowUp ? followupText : generatedPromptText;
 
@@ -602,7 +602,7 @@ rl.on("line", (line) => {
 
       // Realistic multi-burst turn:
       // thought → optional intermediate assistant update → tool → final assistant reply.
-      // Delivery.summary must use only the last non-empty agent_message segment.
+      // TaskResult.report must use only the last non-empty agent_message segment.
       notifyUpdate({
         sessionUpdate: "agent_thought_chunk",
         content: { type: "text", text: "thinking..." },
@@ -685,8 +685,8 @@ rl.on("line", (line) => {
         id: msg.id,
         result: { stopReason: stopReasonEnv },
       });
-      // Visible Delivery trigger (prompt result) is already on the wire; any
-      // further tool/write must not be allowed to race a published Delivery.
+      // Visible Result trigger (prompt result) is already on the wire; any
+      // further tool/write must not be allowed to race a published Result.
       schedulePostResponseTail();
       flushLog();
       if (!keepAlive) {

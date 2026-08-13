@@ -325,10 +325,10 @@ test("workspace integration:second cherry-pick conflict rolls the whole batch ba
 
   const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
   const contract = await ensureRoleWorkspace(workspace, "reviewer");
-  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first result");
   await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
   await git(contract.worktree, "add", "conflict.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "conflicting delivery");
+  await git(contract.worktree, "commit", "-q", "-m", "conflicting result");
   const secondRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
 
   await fs.writeFile(path.join(workspace, "conflict.txt"), "main\n");
@@ -352,8 +352,8 @@ test("workspace integration:complete descendant interval fast-forwards without c
   const workspace = await makeGitWorkspace("tent-workspace-ff-");
   const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
   const contract = await ensureRoleWorkspace(workspace, "reviewer");
-  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
-  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last delivery");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first result");
+  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last result");
 
   const integrated = await integrateWorkspaceCommits(contract, [firstRef, lastRef]);
 
@@ -369,9 +369,9 @@ test("workspace integration:commit gaps keep the cherry-pick path", async () => 
   const workspace = await makeGitWorkspace("tent-workspace-gap-");
   const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
   const contract = await ensureRoleWorkspace(workspace, "reviewer");
-  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
-  await commitFile(contract.worktree, "middle.txt", "middle\n", "middle delivery");
-  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last delivery");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first result");
+  await commitFile(contract.worktree, "middle.txt", "middle\n", "middle result");
+  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last result");
 
   const integrated = await integrateWorkspaceCommits(contract, [firstRef, lastRef]);
   const mainRef = (await git(workspace, "rev-parse", "main")).trim();

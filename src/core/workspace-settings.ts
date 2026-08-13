@@ -49,7 +49,7 @@ export function normalizeWorkspaceSettings(value: unknown): WorkspaceSettings {
       "Workspace settings must be an object"
     );
   }
-  if ("defaultDeliveryPolicy" in value || "deliveryPolicy" in value) {
+  if ("defaultTaskResultPolicy" in value || "resultPolicy" in value) {
     throw new WorkspaceSettingsError(
       "INVALID_ACCEPT_MODE",
       "Workspace settings contain a retired acceptance-policy field; use defaultAcceptMode"

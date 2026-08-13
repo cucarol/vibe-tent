@@ -44,7 +44,7 @@ test("loadWorkspaceAgents: missing file projects empty not-present", async () =>
 
 test("writeWorkspaceAgents: creates file atomically; no-op when unchanged", async () => {
   const root = await makeWorkspaceRoot();
-  const body = "# Agents\n\nUse tent task deliver.\n";
+  const body = "# Agents\n\nUse tent task submit.\n";
   const created = await writeWorkspaceAgents(root, body);
   assert.equal(created.changed, true);
   assert.equal(created.file.exists, true);

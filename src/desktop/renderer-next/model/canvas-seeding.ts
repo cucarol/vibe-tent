@@ -27,7 +27,7 @@ export function seedCanvasDocumentFromGraph(graph: GraphProjection): CanvasDocum
         name: node.name,
         ...(node.title ? { title: node.title } : {}),
         path: node.path,
-        type: node.type,
+        type: node.type ?? "",
         tags: node.tags,
         mode: node.mode,
         archived: node.archived,

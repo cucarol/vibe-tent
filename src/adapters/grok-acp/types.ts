@@ -27,7 +27,7 @@ export type GrokAcpPermissionPolicy = AcpPermissionPolicy;
  * these fields into the provider-neutral in-memory ACP launch bag.
  */
 export interface GrokAcpRouteOptions extends AcpRouteOptions {
-  // Shared fields (executable / model / envKey / baseUrl* / timeouts / permissionPolicy)
+  // Shared fields (model / envKey / endpoint / timeouts / permissionPolicy)
   // are defined on AcpRouteOptions. Grok defaults (model/env keys) live in constants below
   // and are applied by the Grok adapter + product create path — not invented for other adapters.
 }

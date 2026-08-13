@@ -102,7 +102,7 @@ export function workbenchNodesFromResources(
         path: node.path,
         name: node.name,
         title: node.title,
-        type: node.type,
+        type: node.type ?? "",
         tags: node.tags,
         mode: node.mode,
         archived: node.archived,

@@ -1,6 +1,6 @@
 /**
  * Local Service proposal RPC: list / submit / resolve + events + CLI routing.
- * Separate from task delivery review (task-api §3).
+ * Separate from task result review (task-api §3).
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";

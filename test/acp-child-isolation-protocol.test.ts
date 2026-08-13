@@ -60,16 +60,16 @@ function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("test start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
   return runtime.reserveSession({
     sessionId: start.sessionId,
     connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace,
     workspaceLane: start.workspaceLane,
     runtimeWorkspace: start.runtimeWorkspace,
     cwd: start.cwd,
-  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
+  }).then(() => runtime.startSession({ ...start, currentTaskId, workspace }));
 }
 
 // ── 1) Minimal host env allowlist ──────────────────────────────────────────
@@ -927,7 +927,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy protocol 7 fails after the protocol 8 hard cut and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 8 fails after the protocol 9 hard cut and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;
@@ -939,7 +939,7 @@ test("tryAttachService: healthy protocol 7 fails after the protocol 8 hard cut a
       const request = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
       if (url.includes("/rpc") && request?.method === "service.health") {
         const body = (await res.json()) as { result?: Record<string, unknown> };
-        if (body.result) body.result.protocolVersion = 7;
+        if (body.result) body.result.protocolVersion = 8;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -995,7 +995,7 @@ test("tryAttachService: ordinary network/health failure still returns null (not 
 
 // ── 4) Load replay + bootstrap image one-shot ──────────────────────────────
 
-test("load replay (incl. late) never becomes prompt_complete / delivery text", async () => {
+test("load replay (incl. late) never becomes prompt_complete / result text", async () => {
   const cwd = await tempDir("tent-late-replay-");
   const logPath = path.join(cwd, "mock-acp-log.json");
   const events: RuntimeEvent[] = [];

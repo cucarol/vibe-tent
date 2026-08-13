@@ -74,7 +74,7 @@ function collaboration() {
   return {
     workspaceId,
     selectedNode: null,
-    inbox: { items: [], counts: { delivery: 0, decision: 0, total: 0 } },
+    inbox: { items: [], counts: { result: 0, decision: 0, total: 0 } },
   };
 }
 
@@ -84,9 +84,9 @@ function provenance() {
     outputId: "cx-output",
     path: "Output/Output.md",
     bound: true,
-    deliveryId: "dl-1",
-    delivery: {
-      id: "dl-1",
+    resultId: "rs-1",
+    result: {
+      id: "rs-1",
       status: "accepted",
       taskId: "tk-1",
       sourceNodeId: "cx-source",
@@ -224,7 +224,7 @@ test("output provenance validates explicit joins and never infers a chain", () =
   const ready = normalizeOutputProvenance(provenance(), workspaceId, "cx-output");
   assert.equal(ready.state, "ready");
   if (ready.state === "ready") {
-    assert.deepEqual(ready.value.delivery?.artifactRefs, provenance().delivery.artifactRefs);
+    assert.deepEqual(ready.value.result?.artifactRefs, provenance().result.artifactRefs);
   }
 
   const mismatch = provenance();
@@ -256,9 +256,9 @@ test("output provenance fails closed on non-canonical artifact refs", () => {
   ];
   for (const artifactRefs of badRefs) {
     const payload = structuredClone(provenance()) as unknown as {
-      delivery: Record<string, unknown>;
+      result: Record<string, unknown>;
     };
-    payload.delivery.artifactRefs = artifactRefs;
+    payload.result.artifactRefs = artifactRefs;
     assert.equal(
       normalizeOutputProvenance(payload, workspaceId, "cx-output").state,
       "error",

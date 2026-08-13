@@ -1,7 +1,7 @@
 import type { LoadedTent } from "./tree.js";
 import type { FsAdapter } from "./adapter.js";
-import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
-import { envelopeIsActiveOccupation, occupiedNodesFromTasks } from "./claim.js";
+import { loadTaskRecords, taskExecutionLabel } from "./task.js";
+import { taskIsActiveOccupation, occupiedNodesFromTasks } from "./claim.js";
 import { taskDirectlyReferencesNode } from "./task-node-refs.js";
 
 /**
@@ -23,13 +23,13 @@ export async function buildInbox(
     // Structural-only callers (no task oracle): empty inbox — do not scan fm.owner.
     return [];
   }
-  const tasks = await loadTaskEnvelopes(fs);
+  const tasks = await loadTaskRecords(fs);
   const occupied = occupiedNodesFromTasks(tent as LoadedTent, tasks);
   const items: InboxItem[] = [];
   for (const node of occupied) {
     if (node.invalid || node.archived) continue;
     const task = tasks.find(
-      (t) => envelopeIsActiveOccupation(t) && taskDirectlyReferencesNode(t, node.id)
+      (t) => taskIsActiveOccupation(t) && taskDirectlyReferencesNode(t, node.id)
     );
     if (!task) continue;
     items.push({

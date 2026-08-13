@@ -1,8 +1,7 @@
 // tent-core 公开面。插件和 CLI 都从这里 import。
 export * from "./types.js";
 export * from "./paths.js";
-export * from "./typeRegistry.js";
-export * from "./typeManagement.js";
+export * from "./node-type.js";
 export * from "./skillRoleRegistry.js";
 export * from "./managed-skill-compose.js";
 export * from "./tags.js";
@@ -25,7 +24,7 @@ export * from "./ops.js";
 export * from "./workspace.js";
 export * from "./task-model.js";
 export * from "./task.js";
-export * from "./delivery.js";
+export * from "./task-result.js";
 export * from "./task-lifecycle.js";
 export * from "./retention.js";
 export * from "./task-worktree-reclaim.js";

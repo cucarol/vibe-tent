@@ -1,6 +1,6 @@
-import type { DeliveryRecord } from "../core/delivery.js";
+import type { TaskResultRecord } from "../core/task-result.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
-import type { TaskEnvelope } from "../core/task.js";
+import type { TaskRecord } from "../core/task.js";
 import { isTaskId } from "../core/task-model.js";
 import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
 import type { DecisionRequestRecord } from "./decision-request-store.js";
@@ -14,7 +14,7 @@ import type {
 
 type SessionBinding = {
   workspace?: string;
-  lastTaskId?: string;
+  currentTaskId?: string;
   connectionId?: string;
   open: boolean;
 };
@@ -27,8 +27,8 @@ type ConnectionIdentity = {
 export type WorkspaceCollaborationInput = {
   workspaceId: string;
   nodeId?: string;
-  tasks: readonly TaskEnvelope[];
-  deliveries: readonly DeliveryRecord[];
+  tasks: readonly TaskRecord[];
+  results: readonly TaskResultRecord[];
   pendingDecisions: readonly DecisionRequestRecord[];
   roles: readonly RoleDefinition[];
   readSession: (sessionId: string) => Promise<SessionBinding | null>;
@@ -45,9 +45,9 @@ export async function buildWorkspaceCollaborationProjection(
   const tasksById = indexCanonicalTasks(input.tasks);
   const { byTaskId: decisionsByTaskId, actionable: actionableDecisions } =
     await selectActionableUserDecisions(input, tasksById);
-  const deliveriesById = indexDeliveriesById(input.deliveries);
-  const readyDeliveriesByTaskId = indexReadyDeliveries(input.deliveries);
-  const inboxItems = selectUserInboxDeliveries(input.tasks, deliveriesById, tasksById);
+  const resultsById = indexTaskResultsById(input.results);
+  const readyResultsByTaskId = indexReadyTaskResults(input.results);
+  const inboxItems = selectUserInboxResults(input.tasks, resultsById, tasksById);
 
   for (const { request, task } of actionableDecisions) {
     inboxItems.push({
@@ -85,9 +85,9 @@ export async function buildWorkspaceCollaborationProjection(
       ? await projectActiveTask({
           ...input,
           task: selectedTask,
-          deliveriesById,
-          readyDeliveries: selectedTask.id
-            ? readyDeliveriesByTaskId.get(selectedTask.id) ?? []
+          resultsById,
+          readyResults: selectedTask.id
+            ? readyResultsByTaskId.get(selectedTask.id) ?? []
             : [],
           decisionByTaskId: decisionsByTaskId,
         })
@@ -95,11 +95,11 @@ export async function buildWorkspaceCollaborationProjection(
     selectedNode = {
       nodeId: input.nodeId,
       activeTask,
-      lastReturn: selectNodeLastReturn(input.nodeId, input.tasks),
+      statusDetail: selectNodeStatusDetail(input.nodeId, input.tasks),
     };
   }
 
-  const counts = { delivery: 0, decision: 0, total: inboxItems.length };
+  const counts = { result: 0, decision: 0, total: inboxItems.length };
   for (const item of inboxItems) counts[item.kind] += 1;
   return {
     workspaceId: input.workspaceId,
@@ -108,10 +108,10 @@ export async function buildWorkspaceCollaborationProjection(
   };
 }
 
-function selectNodeLastReturn(
+function selectNodeStatusDetail(
   nodeId: string,
-  tasks: readonly TaskEnvelope[]
-): NonNullable<WorkspaceCollaborationProjection["selectedNode"]>["lastReturn"] {
+  tasks: readonly TaskRecord[]
+): NonNullable<WorkspaceCollaborationProjection["selectedNode"]>["statusDetail"] {
   const candidates = tasks.filter((task) => task.workNodeIds.includes(nodeId));
   const ids = new Set<string>();
   for (const task of candidates) {
@@ -137,15 +137,15 @@ function selectNodeLastReturn(
     left.id!.localeCompare(right.id!)
   );
   const selected = candidates[0];
-  return selected?.lastReturn
-    ? { taskId: selected.id!, ...selected.lastReturn }
+  return selected?.statusDetail
+    ? { taskId: selected.id!, ...selected.statusDetail }
     : null;
 }
 
 function indexCanonicalTasks(
-  tasks: readonly TaskEnvelope[]
-): Map<string, TaskEnvelope[]> {
-  const tasksById = new Map<string, TaskEnvelope[]>();
+  tasks: readonly TaskRecord[]
+): Map<string, TaskRecord[]> {
+  const tasksById = new Map<string, TaskRecord[]>();
   for (const task of tasks) {
     // An unrelated historical synthetic envelope has no public identity and is
     // ignored unless it occupies the selected Node (validated in projectActiveTask).
@@ -159,18 +159,18 @@ function indexCanonicalTasks(
 
 async function selectActionableUserDecisions(
   input: Pick<WorkspaceCollaborationInput, "workspaceId" | "pendingDecisions" | "readSession">,
-  tasksById: ReadonlyMap<string, readonly TaskEnvelope[]>
+  tasksById: ReadonlyMap<string, readonly TaskRecord[]>
 ): Promise<{
   byTaskId: Map<string, DecisionRequestRecord>;
   actionable: Array<{
     request: DecisionRequestRecord;
-    task: TaskEnvelope & { id: string };
+    task: TaskRecord & { id: string };
   }>;
 }> {
   const byTaskId = new Map<string, DecisionRequestRecord>();
   const actionable: Array<{
     request: DecisionRequestRecord;
-    task: TaskEnvelope & { id: string };
+    task: TaskRecord & { id: string };
   }> = [];
   for (const request of input.pendingDecisions) {
     if (request.target.kind !== "user") continue;
@@ -181,7 +181,7 @@ async function selectActionableUserDecisions(
         candidate.state === "waiting" &&
         candidate.wait?.reason === "user-input" &&
         candidate.wait.code === `decision_request:${request.id}` &&
-        candidate.sessionId === request.requester.id
+        candidate.executionSessionId === request.requester.id
     );
     // A stale pending row is historical, not an actionable Inbox fact.
     if (candidates.length === 0) continue;
@@ -196,13 +196,13 @@ async function selectActionableUserDecisions(
         taskId: request.taskId,
       });
     }
-    const task = candidates[0] as TaskEnvelope & { id: string };
+    const task = candidates[0] as TaskRecord & { id: string };
     const session = await input.readSession(request.requester.id);
     if (
       !session ||
       !session.open ||
       session.workspace !== input.workspaceId ||
-      session.lastTaskId !== task.id
+      session.currentTaskId !== task.id
     ) {
       // A once-actionable request whose requester is no longer the exact open
       // Task binding is historical inventory, not a workspace-wide failure.
@@ -214,47 +214,47 @@ async function selectActionableUserDecisions(
   return { byTaskId, actionable };
 }
 
-function indexReadyDeliveries(
-  deliveries: readonly DeliveryRecord[]
-): Map<string, DeliveryRecord[]> {
-  const result = new Map<string, DeliveryRecord[]>();
-  for (const delivery of deliveries) {
-    if (delivery.status !== "ready") continue;
-    const sameTask = result.get(delivery.taskId) ?? [];
-    sameTask.push(delivery);
-    result.set(delivery.taskId, sameTask);
+function indexReadyTaskResults(
+  results: readonly TaskResultRecord[]
+): Map<string, TaskResultRecord[]> {
+  const index = new Map<string, TaskResultRecord[]>();
+  for (const result of results) {
+    if (result.status !== "ready") continue;
+    const sameTask = index.get(result.taskId) ?? [];
+    sameTask.push(result);
+    index.set(result.taskId, sameTask);
   }
-  return result;
+  return index;
 }
 
-function indexDeliveriesById(
-  deliveries: readonly DeliveryRecord[]
-): Map<string, DeliveryRecord[]> {
-  const result = new Map<string, DeliveryRecord[]>();
-  for (const delivery of deliveries) {
-    const sameId = result.get(delivery.id) ?? [];
-    sameId.push(delivery);
-    result.set(delivery.id, sameId);
+function indexTaskResultsById(
+  results: readonly TaskResultRecord[]
+): Map<string, TaskResultRecord[]> {
+  const index = new Map<string, TaskResultRecord[]>();
+  for (const result of results) {
+    const sameId = index.get(result.id) ?? [];
+    sameId.push(result);
+    index.set(result.id, sameId);
   }
-  return result;
+  return index;
 }
 
-function selectUserInboxDeliveries(
-  tasks: readonly TaskEnvelope[],
-  deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>,
-  tasksById: ReadonlyMap<string, readonly TaskEnvelope[]>
+function selectUserInboxResults(
+  tasks: readonly TaskRecord[],
+  resultsById: ReadonlyMap<string, readonly TaskResultRecord[]>,
+  tasksById: ReadonlyMap<string, readonly TaskRecord[]>
 ): WorkspaceUserInboxItem[] {
   const items: WorkspaceUserInboxItem[] = [];
   for (const task of tasks) {
-    if (task.state !== "delivered") continue;
-    if (!task.parentActor) {
-      throw consistencyError("Delivered Task lacks responsibility", {
+    if (task.state !== "submitted") continue;
+    if (!task.requester) {
+      throw consistencyError("Submitted Task lacks responsibility", {
         taskId: task.id ?? null,
       });
     }
-    if (task.parentActor.kind !== "user") continue;
-    if (task.parentActor.id !== "user") {
-      throw consistencyError("Delivered Task has invalid user responsibility", {
+    if (task.requester.kind !== "user") continue;
+    if (task.requester.id !== "user") {
+      throw consistencyError("Submitted Task has invalid user responsibility", {
         taskId: task.id ?? null,
       });
     }
@@ -267,37 +267,35 @@ function selectUserInboxDeliveries(
         taskId: task.id,
       });
     }
-    const sameDeliveryId = task.activeDeliveryId
-      ? deliveriesById.get(task.activeDeliveryId) ?? []
+    const sameResultId = task.currentResultId
+      ? resultsById.get(task.currentResultId) ?? []
       : [];
-    if (sameDeliveryId.length !== 1) {
-      throw consistencyError("User-reviewable Delivery identity is not unique", {
+    if (sameResultId.length !== 1) {
+      throw consistencyError("User-reviewable Task Result identity is not unique", {
         taskId: task.id,
-        deliveryId: task.activeDeliveryId ?? null,
-        matches: sameDeliveryId.length,
+        resultId: task.currentResultId ?? null,
+        matches: sameResultId.length,
       });
     }
-    const delivery = sameDeliveryId[0]!;
+    const result = sameResultId[0]!;
     if (
-      !delivery ||
-      delivery.status !== "ready" ||
-      delivery.taskId !== task.id ||
-      !task.workNodeIds.includes(delivery.sourceNodeId)
+      !result ||
+      result.status !== "ready" ||
+      result.taskId !== task.id
     ) {
-      throw consistencyError("User-reviewable Delivery identity is stale", {
-        deliveryId: task.activeDeliveryId ?? null,
+      throw consistencyError("User-reviewable Task Result identity is stale", {
+        resultId: task.currentResultId ?? null,
         taskId: task.id,
         taskState: task.state,
-        activeDeliveryId: task.activeDeliveryId ?? null,
+        currentResultId: task.currentResultId ?? null,
       });
     }
     items.push({
-      kind: "delivery",
-      deliveryId: delivery.id,
-      taskId: delivery.taskId,
-      sourceNodeId: delivery.sourceNodeId,
-      summary: delivery.summary,
-      createdAt: requireDeliveryCreatedAt(delivery, task.id),
+      kind: "result",
+      resultId: result.id,
+      taskId: result.taskId,
+      summary: result.report,
+      createdAt: requireTaskResultCreatedAt(result, task.id),
     });
   }
   return items;
@@ -305,9 +303,9 @@ function selectUserInboxDeliveries(
 
 async function projectActiveTask(
   input: WorkspaceCollaborationInput & {
-    task: TaskEnvelope;
-    deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>;
-    readyDeliveries: readonly DeliveryRecord[];
+    task: TaskRecord;
+    resultsById: ReadonlyMap<string, readonly TaskResultRecord[]>;
+    readyResults: readonly TaskResultRecord[];
     decisionByTaskId: ReadonlyMap<string, DecisionRequestRecord>;
   }
 ): Promise<WorkspaceCollaborationActiveTask> {
@@ -317,73 +315,73 @@ async function projectActiveTask(
   }
   const responsibility = projectResponsibility(input.task, input.roles);
   const execution = await projectExecution(input, taskId);
-  const readyDelivery = projectSelectedReadyDelivery(input, taskId);
+  const readyResult = projectSelectedReadyResult(input, taskId);
   const decision = input.decisionByTaskId.get(taskId);
   return {
     taskId,
     state: input.task.state,
     responsibility,
     execution,
-    readyDelivery,
+    readyResult,
     pendingDecision: decision ? projectDecision(decision) : null,
   };
 }
 
 function projectResponsibility(
-  task: TaskEnvelope,
+  task: TaskRecord,
   roles: readonly RoleDefinition[]
 ): WorkspaceCollaborationActiveTask["responsibility"] {
   const taskId = task.id!;
-  if (!task.parentActor) {
+  if (!task.requester) {
     throw consistencyError("Selected Task lacks parent responsibility", { taskId });
   }
-  if (task.parentActor.kind === "user") {
-    if (task.parentActor.id !== "user") {
+  if (task.requester.kind === "user") {
+    if (task.requester.id !== "user") {
       throw consistencyError("Task has invalid user responsibility", {
         taskId,
-        parentActorId: task.parentActor.id,
+        requesterId: task.requester.id,
       });
     }
     return { kind: "user" };
   }
-  const role = roles.find((candidate) => candidate.id === task.parentActor!.id);
+  const role = roles.find((candidate) => candidate.id === task.requester!.id);
   if (!role) {
     throw consistencyError("Task parent responsibility Role is missing", {
       taskId,
-      roleId: task.parentActor.id,
+      roleId: task.requester.id,
     });
   }
   return {
     kind: "role",
-    roleId: task.parentActor.id,
+    roleId: task.requester.id,
     displayName: role.displayName?.trim() || role.name,
   };
 }
 
 async function projectExecution(
-  input: WorkspaceCollaborationInput & { task: TaskEnvelope },
+  input: WorkspaceCollaborationInput & { task: TaskRecord },
   taskId: string
 ): Promise<WorkspaceCollaborationActiveTask["execution"]> {
-  if (input.task.roleId) {
-    const role = input.roles.find((candidate) => candidate.id === input.task.roleId);
+  if (input.task.assigneeRoleId) {
+    const role = input.roles.find((candidate) => candidate.id === input.task.assigneeRoleId);
     if (!role) {
       throw consistencyError("Task assignee Role is missing", {
         taskId,
-        roleId: input.task.roleId,
+        roleId: input.task.assigneeRoleId,
       });
     }
     return {
       kind: "role",
-      roleId: input.task.roleId,
+      roleId: input.task.assigneeRoleId,
       displayName: role.displayName?.trim() || role.name,
     };
   }
-  if (input.task.sessionId) {
-    const session = await input.readSession(input.task.sessionId);
+  if (input.task.executionSessionId) {
+    const session = await input.readSession(input.task.executionSessionId);
     if (
       !session ||
       session.workspace !== input.workspaceId ||
-      session.lastTaskId !== taskId
+      session.currentTaskId !== taskId
     ) {
       throw consistencyError("Selected Task Session binding is stale", { taskId });
     }
@@ -407,95 +405,88 @@ async function projectExecution(
   throw consistencyError("Active Task has no exact assignee", { taskId });
 }
 
-function projectSelectedReadyDelivery(
+function projectSelectedReadyResult(
   input: {
-    task: TaskEnvelope;
-    deliveriesById: ReadonlyMap<string, readonly DeliveryRecord[]>;
-    readyDeliveries: readonly DeliveryRecord[];
+    task: TaskRecord;
+    resultsById: ReadonlyMap<string, readonly TaskResultRecord[]>;
+    readyResults: readonly TaskResultRecord[];
   },
   taskId: string
-): WorkspaceCollaborationActiveTask["readyDelivery"] {
-  if (input.readyDeliveries.length > 1) {
-    throw consistencyError("Selected Task has multiple ready Deliveries", {
+): WorkspaceCollaborationActiveTask["readyResult"] {
+  if (input.readyResults.length > 1) {
+    throw consistencyError("Selected Task has multiple ready Task Results", {
       taskId,
-      deliveryIds: input.readyDeliveries.map((delivery) => delivery.id),
+      resultIds: input.readyResults.map((result) => result.id),
     });
   }
-  let readyDelivery: WorkspaceCollaborationActiveTask["readyDelivery"] = null;
-  if (input.task.activeDeliveryId) {
-    const sameDeliveryId = input.deliveriesById.get(input.task.activeDeliveryId) ?? [];
-    if (sameDeliveryId.length !== 1) {
-      throw consistencyError("Selected Task Delivery identity is not unique", {
+  let readyResult: WorkspaceCollaborationActiveTask["readyResult"] = null;
+  if (input.task.currentResultId) {
+    const sameResultId = input.resultsById.get(input.task.currentResultId) ?? [];
+    if (sameResultId.length !== 1) {
+      throw consistencyError("Selected Task Result identity is not unique", {
         taskId,
-        deliveryId: input.task.activeDeliveryId,
-        matches: sameDeliveryId.length,
+        resultId: input.task.currentResultId,
+        matches: sameResultId.length,
       });
     }
-    const delivery = sameDeliveryId[0]!;
-    if (delivery.taskId !== taskId) {
-      throw consistencyError("Selected Task Delivery binding is stale", {
+    const result = sameResultId[0]!;
+    if (result.taskId !== taskId) {
+      throw consistencyError("Selected Task Result binding is stale", {
         taskId,
-        deliveryId: input.task.activeDeliveryId,
+        resultId: input.task.currentResultId,
       });
     }
-    if (delivery.status === "ready") {
-      if (!input.task.workNodeIds.includes(delivery.sourceNodeId)) {
-        throw consistencyError("Selected Task ready Delivery has foreign source Node", {
-          taskId,
-          deliveryId: delivery.id,
-          sourceNodeId: delivery.sourceNodeId,
-        });
-      }
-      if (input.task.state !== "delivered") {
-        throw consistencyError("Selected Task has a ready Delivery outside delivered state", {
+    if (result.status === "ready") {
+      if (input.task.state !== "submitted") {
+        throw consistencyError("Selected Task has a ready Result outside submitted state", {
           taskId,
           taskState: input.task.state,
-          deliveryId: delivery.id,
+          resultId: result.id,
         });
       }
-      readyDelivery = {
-        deliveryId: delivery.id,
-        summary: delivery.summary,
-        createdAt: requireDeliveryCreatedAt(delivery, taskId),
+      readyResult = {
+        resultId: result.id,
+        summary: result.report,
+        createdAt: requireTaskResultCreatedAt(result, taskId),
       };
     }
   }
-  if (input.task.state === "delivered") {
-    if (!readyDelivery) {
-      throw consistencyError("Delivered selected Task lacks its exact ready Delivery", {
+  if (input.task.state === "submitted") {
+    if (!readyResult) {
+      throw consistencyError("Submitted selected Task lacks its exact ready Result", {
         taskId,
-        activeDeliveryId: input.task.activeDeliveryId ?? null,
+        currentResultId: input.task.currentResultId ?? null,
       });
     }
     if (
-      input.readyDeliveries.length !== 1 ||
-      input.readyDeliveries[0]!.id !== readyDelivery.deliveryId
+      input.readyResults.length !== 1 ||
+      input.readyResults[0]!.id !== readyResult.resultId
     ) {
-      throw consistencyError("Delivered selected Task has inconsistent ready Delivery authority", {
+      throw consistencyError("Submitted selected Task has inconsistent ready Result authority", {
         taskId,
-        activeDeliveryId: readyDelivery.deliveryId,
+        currentResultId: readyResult.resultId,
       });
     }
-  } else if (input.readyDeliveries.length > 0) {
-    throw consistencyError("Selected Task has an unbound ready Delivery", {
+  } else if (input.readyResults.length > 0) {
+    throw consistencyError("Selected Task has an unbound ready Result", {
       taskId,
       taskState: input.task.state,
-      deliveryId: input.readyDeliveries[0]!.id,
+      resultId: input.readyResults[0]!.id,
     });
   }
-  return readyDelivery;
+  return readyResult;
 }
 
-function requireDeliveryCreatedAt(delivery: DeliveryRecord, taskId: string): string {
-  const createdAt = delivery.createdAt;
+function requireTaskResultCreatedAt(result: TaskResultRecord, taskId: string): string {
+  const createdAt = result.createdAt;
   if (
     typeof createdAt !== "string" ||
     createdAt.trim() !== createdAt ||
     !Number.isFinite(Date.parse(createdAt))
   ) {
-    throw consistencyError("Current ready Delivery lacks durable createdAt", {
+    throw consistencyError("Current ready Task Result lacks durable createdAt", {
       taskId,
-      deliveryId: delivery.id,
+      resultId: result.id,
     });
   }
   return createdAt;
@@ -518,8 +509,8 @@ function compareWorkspaceUserInboxItem(
   if (byTime !== 0) return byTime;
   const byKind = a.kind.localeCompare(b.kind);
   if (byKind !== 0) return byKind;
-  const aId = a.kind === "delivery" ? a.deliveryId : a.requestId;
-  const bId = b.kind === "delivery" ? b.deliveryId : b.requestId;
+  const aId = a.kind === "result" ? a.resultId : a.requestId;
+  const bId = b.kind === "result" ? b.resultId : b.requestId;
   return aId.localeCompare(bId);
 }
 

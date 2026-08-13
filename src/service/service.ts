@@ -27,7 +27,7 @@ import {
 } from "./tool-approval-store.js";
 import { DecisionRequestStore } from "./decision-request-store.js";
 import { TaskInputStore } from "./task-input-store.js";
-import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
+import { ManagedTaskResultReportDraftStore } from "./managed-result-report-draft-store.js";
 import { ensureDefaultAgentConnections } from "./connections.js";
 import { AgentConnectionCatalog } from "./connection-catalog.js";
 import type { LaunchSecretProtector } from "./launch-secret-protector.js";
@@ -45,7 +45,7 @@ import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import { createPiAcpAdapter } from "../adapters/pi-acp/index.js";
 import type { AcpPermissionAskHooks } from "../adapters/acp/index.js";
 import { createFakeAdapter } from "../adapters/fake/index.js";
-import { loadTaskEnvelopes } from "../core/task.js";
+import { loadTaskRecords } from "../core/task.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,8 +162,8 @@ async function startOwnedLocalTentService(
   await decisionRequests.ensureLoaded();
   const taskInputs = new TaskInputStore(dataDir);
   await taskInputs.ensureLoaded();
-  const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
-  await managedDeliveryReportDrafts.ensureLoaded();
+  const managedTaskResultReportDrafts = new ManagedTaskResultReportDraftStore(dataDir);
+  await managedTaskResultReportDrafts.ensureLoaded();
   // Process-local: previous in-process stop may have drained background U2A.
   enableManagedTaskInputBackgroundAccept();
 
@@ -205,17 +205,17 @@ async function startOwnedLocalTentService(
       try {
         const mount = workspaceHost.get(workspaceId);
         if (mount) {
-          const tasks = await loadTaskEnvelopes(mount.env.fs);
+          const tasks = await loadTaskRecords(mount.env.fs);
           const task = tasks.find(
             (t) =>
-              t.sessionId === info.sessionId ||
-              (!!rec?.lastTaskId &&
-                (t.id === rec.lastTaskId || t.path === rec.lastTaskId))
+              t.executionSessionId === info.sessionId ||
+              (!!rec?.currentTaskId &&
+                (t.id === rec.currentTaskId || t.path === rec.currentTaskId))
           );
           if (task) {
             taskPath = task.path;
             taskId = task.id || task.path;
-            role = task.parentActor?.kind === "role" ? task.parentActor.id : role;
+            role = task.requester?.kind === "role" ? task.requester.id : role;
           }
         }
       } catch {
@@ -345,7 +345,7 @@ async function startOwnedLocalTentService(
     toolApprovals,
     decisionRequests,
     taskInputs,
-    managedDeliveryReportDrafts,
+    managedTaskResultReportDrafts,
     launchSecrets,
     dataDir,
     connectionCatalog,
@@ -451,7 +451,7 @@ async function startOwnedLocalTentService(
         await attempt(() => taskInputs.shutdown(), true);
         // Report drafts are durable operational state (not process-bound); close
         // after runtime projections so a late clear() from deliver can still land.
-        await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
+        await attempt(() => managedTaskResultReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
         await attempt(() => workspaceHost.dispose());

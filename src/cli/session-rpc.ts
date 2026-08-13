@@ -1,7 +1,7 @@
 // Host integration binding via Local Service RPC.
 // Surface: tent session enter|status|leave — machine-callable JSON, idempotent.
 // Hook aliases: tent session session-start|session-end [--host <agent>]
-// Does not start ACP; leave never deliver/accept.
+// Does not start ACP; leave never submit/accept.
 
 import type { ServiceClient } from "../service/client.js";
 import { attachOrBootstrapService, type CliAttachOptions } from "./service-attach.js";
@@ -191,7 +191,7 @@ export async function runSessionCommand(
         const tentSessionId =
           sessionId && isTentSessionId(sessionId) ? sessionId : undefined;
         const roleId = flags["role-id"] || flags.roleId || process.env.TENT_ROLE_ID;
-        const lastTaskId =
+        const currentTaskId =
           flags.task ||
           flags["task-id"] ||
           flags.taskId ||
@@ -201,7 +201,7 @@ export async function runSessionCommand(
           sessionId: tentSessionId,
           roleId,
           externalKey,
-          lastTaskId,
+          currentTaskId,
           cwd: ctx.workspaceRoot,
         });
         return okPrint(result, json, (r) => formatEnter(r));
@@ -294,7 +294,7 @@ Semantics:
   enter   Register or reuse the host's SessionRegistry binding.
           Does not start ACP or any provider process. Idempotent.
   status  Probe session + list incomplete (active) tasks bound to it.
-  leave   End the host binding only. Never deliver or accept.
+  leave   End the host binding only. Never submit or accept.
           Reports incompleteTasks still open for the caller to handle.
 
 Hook aliases (host integration contract):
@@ -536,8 +536,6 @@ function silentOutsideResult(
             left: false,
             alreadyLeft: true,
             incompleteTasks: [],
-            delivered: false,
-            accepted: false,
           };
   if (json) {
     return { exitCode: 0, stdout: JSON.stringify(payload) + "\n", stderr: "" };
@@ -553,7 +551,7 @@ function formatEnter(result: unknown): string {
       state?: string;
       connectionId?: string;
       roleId?: string;
-      alive?: boolean;
+      isAlive?: boolean;
       externalKey?: string;
     };
     reused?: boolean;
@@ -575,10 +573,10 @@ function formatStatus(result: unknown): string {
     session?: {
       sessionId?: string;
       state?: string;
-      alive?: boolean;
+      isAlive?: boolean;
       connectionId?: string;
       roleId?: string;
-      lastTaskId?: string;
+      currentTaskId?: string;
       externalKey?: string;
     };
     sessions?: Array<{
@@ -591,8 +589,8 @@ function formatStatus(result: unknown): string {
     incompleteTasks?: Array<{
       path?: string;
       state?: string;
-      roleId?: string;
-      sessionId?: string;
+      assigneeRoleId?: string;
+      executionSessionId?: string;
       id?: string;
     }>;
     open?: boolean;
@@ -603,11 +601,11 @@ function formatStatus(result: unknown): string {
     lines.push(
       `sessionId: ${s.sessionId ?? "?"}`,
       `state: ${s.state ?? "?"}`,
-      `alive: ${s.alive ?? false}`,
+      `isAlive: ${s.isAlive ?? false}`,
       ...(s.externalKey ? [`externalKey: ${s.externalKey}`] : []),
       ...(s.connectionId ? [`connectionId: ${s.connectionId}`] : []),
       ...(s.roleId ? [`roleId: ${s.roleId}`] : []),
-      ...(s.lastTaskId ? [`lastTaskId: ${s.lastTaskId}`] : []),
+      ...(s.currentTaskId ? [`currentTaskId: ${s.currentTaskId}`] : []),
       ...(row.open != null ? [`open: ${row.open}`] : [])
     );
   } else if (row.sessions) {
@@ -626,8 +624,8 @@ function formatStatus(result: unknown): string {
   for (const t of tasks) {
     lines.push(
       `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"}` +
-        (t.roleId ? ` role=${t.roleId}` : "") +
-        (t.sessionId ? ` session=${t.sessionId}` : "")
+        (t.assigneeRoleId ? ` assigneeRole=${t.assigneeRoleId}` : "") +
+        (t.executionSessionId ? ` executionSession=${t.executionSessionId}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -643,11 +641,9 @@ function formatLeave(result: unknown): string {
     incompleteTasks?: Array<{
       path?: string;
       state?: string;
-      roleId?: string;
-      sessionId?: string;
+      assigneeRoleId?: string;
+      executionSessionId?: string;
     }>;
-    delivered?: boolean;
-    accepted?: boolean;
   };
   const tasks = row.incompleteTasks ?? [];
   const lines = [
@@ -657,22 +653,20 @@ function formatLeave(result: unknown): string {
     `state: ${row.state ?? "stopped"}`,
     `left: ${row.left ?? false}`,
     ...(row.alreadyLeft ? [`alreadyLeft: true`] : []),
-    `delivered: ${row.delivered ?? false}`,
-    `accepted: ${row.accepted ?? false}`,
     "",
     `incompleteTasks: ${tasks.length}`,
   ];
   for (const t of tasks) {
     lines.push(
       `- ${t.path ?? "?"} state=${t.state ?? "?"}` +
-        (t.roleId ? ` role=${t.roleId}` : "") +
-        (t.sessionId ? ` session=${t.sessionId}` : "")
+        (t.assigneeRoleId ? ` assigneeRole=${t.assigneeRoleId}` : "") +
+        (t.executionSessionId ? ` executionSession=${t.executionSessionId}` : "")
     );
   }
   if (tasks.length > 0) {
     lines.push(
       "",
-      "Note: leave did not deliver/accept. Finish incomplete tasks with tent task deliver / accept as needed."
+      "Note: leave did not submit/accept. Finish incomplete tasks with tent task submit / accept as needed."
     );
   }
   return lines.join("\n") + "\n";

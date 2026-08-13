@@ -1,5 +1,5 @@
 /**
- * parentActor single-source review authority + explicit Task outcome.
+ * requester single-source review authority + explicit Task outcome.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -15,10 +15,10 @@ import {
   TaskLifecycleError,
 } from "../src/core/task-model.js";
 import {
-  loadTaskEnvelope,
-  patchTaskEnvelope,
-  resolveDispatchParentActor,
-  writeTaskEnvelope,
+  loadTaskRecord,
+  patchTaskRecord,
+  resolveDispatchRequester,
+  writeTaskRecord,
 } from "../src/core/task.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 
@@ -26,19 +26,13 @@ function nodeSnapshot(id: string, nodePath: string, body = "") {
   return { id, path: nodePath, type: "prompt", tags: [], body, etag: contentEtag(body) };
 }
 
-test("parseTaskOutcomeReport: valid control headers parse; missing or malformed return null", () => {
-  assert.deepEqual(parseTaskOutcomeReport("outcome: delivered\n\nAll good"), {
-    outcome: "delivered",
-    report: "All good",
-  });
+test("parseTaskOutcomeReport: only blocked is a control; normal and decision-shaped reports remain content", () => {
+  assert.equal(parseTaskOutcomeReport("outcome: delivered\n\nAll good"), null);
   assert.deepEqual(
     parseTaskOutcomeReport("---\noutcome: blocked\n---\nCannot proceed"),
     { outcome: "blocked", report: "Cannot proceed" }
   );
-  assert.deepEqual(parseTaskOutcomeReport("outcome: needs-input\nWhich API?"), {
-    outcome: "needs-input",
-    report: "Which API?",
-  });
+  assert.equal(parseTaskOutcomeReport("outcome: needs-input\nWhich API?"), null);
   assert.equal(parseTaskOutcomeReport("Just a free-form report"), null);
   assert.equal(parseTaskOutcomeReport("outcome: weird\nnope"), null);
   assert.equal(parseTaskOutcomeReport(""), null);
@@ -46,16 +40,16 @@ test("parseTaskOutcomeReport: valid control headers parse; missing or malformed 
 
 test("allowsNonReviewAcceptMode: only user parent responsibility may elevate", () => {
   assert.equal(
-    allowsNonReviewAcceptMode({ parentActor: { kind: "user", id: "user" } }),
+    allowsNonReviewAcceptMode({ requester: { kind: "user", id: "user" } }),
     true
   );
   assert.equal(
-    allowsNonReviewAcceptMode({ parentActor: { kind: "role", id: "rl-planner" } }),
+    allowsNonReviewAcceptMode({ requester: { kind: "role", id: "rl-planner" } }),
     false
   );
 });
 
-test("assertReviewAuthority derives exact reviewer authority from parentActor", () => {
+test("assertReviewAuthority derives exact reviewer authority from requester", () => {
   assert.throws(
     () =>
       assertReviewAuthority({
@@ -71,7 +65,7 @@ test("assertReviewAuthority derives exact reviewer authority from parentActor", 
     assertReviewAuthority({
       actor: "rl-planner",
       executorRoleId: "rl-helper",
-      parentActor: roleParent,
+      requester: roleParent,
       action: "accept",
     })
   );
@@ -80,7 +74,7 @@ test("assertReviewAuthority derives exact reviewer authority from parentActor", 
       assertReviewAuthority({
         actor: "user",
         executorRoleId: "rl-helper",
-        parentActor: roleParent,
+        requester: roleParent,
         action: "reject",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -90,7 +84,7 @@ test("assertReviewAuthority derives exact reviewer authority from parentActor", 
       assertReviewAuthority({
         actor: "rl-helper",
         executorRoleId: "rl-helper",
-        parentActor: roleParent,
+        requester: roleParent,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
@@ -99,32 +93,30 @@ test("assertReviewAuthority derives exact reviewer authority from parentActor", 
     assertReviewAuthority({
       actor: "user",
       executorRoleId: "rl-helper",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       action: "accept",
     })
   );
 });
 
-test("writeTaskEnvelope persists parentActor only and rejects legacy reviewer on reload", async () => {
+test("writeTaskRecord persists requester only and rejects legacy reviewer on reload", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-wire-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir("temp/helper/tasks");
-  const taskPath = await writeTaskEnvelope(fsa, new SystemClock(), {
-    roleId: "rl-helper",
+  const taskPath = await writeTaskRecord(fsa, new SystemClock(), {
+    assigneeRoleId: "rl-helper",
     workNodeIds: ["cx-1"],
     contextNodeIds: [],
     nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
     manifestPath: "temp/helper/manifest.yml",
-    userPrompt: "do it",
-    parentActor: { kind: "role", id: "rl-orchestrator" },
-    asSub: true,
+    prompt: "do it",
+    requester: { kind: "role", id: "rl-orchestrator" },
   });
   const raw = await fsa.readFile(taskPath);
-  assert.match(raw, /^parentActor:/m);
+  assert.match(raw, /^requester:/m);
   assert.doesNotMatch(raw, /^reviewer:/m);
-  const task = await loadTaskEnvelope(fsa, taskPath);
-  assert.equal(task.parentActor?.id, "rl-orchestrator");
-  assert.equal(task.asSub, true);
+  const task = await loadTaskRecord(fsa, taskPath);
+  assert.equal(task.requester?.id, "rl-orchestrator");
 
   const persisted = parseFrontmatter(raw);
   persisted.data.reviewer = { kind: "role", id: "rl-orchestrator" };
@@ -133,13 +125,13 @@ test("writeTaskEnvelope persists parentActor only and rejects legacy reviewer on
     serializeFrontmatter(persisted.data, persisted.body, persisted.keyOrder)
   );
   await assert.rejects(
-    () => loadTaskEnvelope(fsa, taskPath),
-    /retired reviewer field; use parentActor/i
+    () => loadTaskRecord(fsa, taskPath),
+    /retired reviewer field; use requester/i
   );
   const corruptBytes = await fsa.readFile(taskPath);
   await assert.rejects(
-    () => patchTaskEnvelope(fsa, taskPath, { state: "running" }),
-    /retired reviewer field; use parentActor/i
+    () => patchTaskRecord(fsa, taskPath, { state: "running" }),
+    /retired reviewer field; use requester/i
   );
   assert.equal(await fsa.readFile(taskPath), corruptBytes);
 });
@@ -154,14 +146,14 @@ test("retired authority field presence fails loud on load and patch", async () =
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-retired-${field}-`));
     const fsa = new NodeFs(dir);
     await fsa.mkdir("temp/helper/tasks");
-    const taskPath = await writeTaskEnvelope(fsa, new SystemClock(), {
-      roleId: "rl-helper",
+    const taskPath = await writeTaskRecord(fsa, new SystemClock(), {
+      assigneeRoleId: "rl-helper",
       workNodeIds: ["cx-1"],
       contextNodeIds: [],
       nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
       manifestPath: "temp/helper/manifest.yml",
-      userPrompt: "do it",
-      parentActor: { kind: "user", id: "user" },
+      prompt: "do it",
+      requester: { kind: "user", id: "user" },
     });
     const persisted = parseFrontmatter(await fsa.readFile(taskPath));
     persisted.data[field] = value;
@@ -170,48 +162,48 @@ test("retired authority field presence fails loud on load and patch", async () =
       serializeFrontmatter(persisted.data, persisted.body, persisted.keyOrder)
     );
     const corruptBytes = await fsa.readFile(taskPath);
-    const expected = new RegExp(`retired ${field} field; use parentActor`, "i");
-    await assert.rejects(() => loadTaskEnvelope(fsa, taskPath), expected);
+    const expected = new RegExp(`retired ${field} field; use requester`, "i");
+    await assert.rejects(() => loadTaskRecord(fsa, taskPath), expected);
     await assert.rejects(
-      () => patchTaskEnvelope(fsa, taskPath, { state: "running" }),
+      () => patchTaskRecord(fsa, taskPath, { state: "running" }),
       expected
     );
     assert.equal(await fsa.readFile(taskPath), corruptBytes);
   }
 });
 
-test("dispatch parent authority requires one canonical parentActor", () => {
+test("dispatch parent authority requires one canonical requester", () => {
   assert.throws(
-    () => resolveDispatchParentActor({} as never),
-    /requires explicit parentActor/i
+    () => resolveDispatchRequester({} as never),
+    /requires explicit requester/i
   );
   assert.deepEqual(
-    resolveDispatchParentActor({ parentActor: { kind: "role", id: "rl-planner" } }),
+    resolveDispatchRequester({ requester: { kind: "role", id: "rl-planner" } }),
     { kind: "role", id: "rl-planner" }
   );
 });
 
-test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", async () => {
+test("writeTaskRecord refuses elevated policy for downstream Task Agent", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-policy-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir("temp/helper/tasks");
   await assert.rejects(
     () =>
-      writeTaskEnvelope(fsa, new SystemClock(), {
-        roleId: "rl-helper",
+      writeTaskRecord(fsa, new SystemClock(), {
+        assigneeRoleId: "rl-helper",
         workNodeIds: ["cx-1"],
         contextNodeIds: [],
         nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
         manifestPath: "temp/helper/manifest.yml",
-        userPrompt: "do it",
-        parentActor: { kind: "role", id: "rl-orchestrator" },
+        prompt: "do it",
+        requester: { kind: "role", id: "rl-orchestrator" },
         acceptMode: "auto-accept",
       }),
     /only legal for a user-facing Task|must use review-required/i
   );
 });
 
-test("task.dispatch hard-rejects reviewer input and projects parentActor only", async () => {
+test("task.dispatch hard-rejects reviewer input and projects requester only", async () => {
   const { scaffoldInWorkspace } = await import("../src/core/scaffold.js");
   const { startLocalTentService } = await import("../src/service/service.js");
   const { rpcCall } = await import("../src/service/http-server.js");
@@ -248,9 +240,9 @@ test("task.dispatch hard-rejects reviewer input and projects parentActor only", 
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "parent single source",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     };
     for (const [field, value] of [
       ["reviewer", { kind: "user", id: "user" }],
@@ -269,11 +261,11 @@ test("task.dispatch hard-rejects reviewer input and projects parentActor only", 
     const missingParent = await rpcCall(
       svc.url,
       "task.dispatch",
-      (({ parentActor: _parentActor, ...rest }) => rest)(dispatchBase),
+      (({ requester: _requester, ...rest }) => rest)(dispatchBase),
       { token: svc.token }
     );
     assert.equal(missingParent.error?.code, -32602);
-    assert.match(String(missingParent.error?.message), /requires explicit parentActor/i);
+    assert.match(String(missingParent.error?.message), /requires explicit requester/i);
 
     const result = await rpcCall(
       svc.url,
@@ -284,16 +276,16 @@ test("task.dispatch hard-rejects reviewer input and projects parentActor only", 
     assert.ok(!result.error, JSON.stringify(result.error));
     const projected = result.result as {
       taskPath: string;
-      parentActor?: { kind: string; id: string };
+      requester?: { kind: string; id: string };
       reviewer?: unknown;
     };
-    assert.deepEqual(projected.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(projected.requester, { kind: "user", id: "user" });
     assert.equal(projected.reviewer, undefined);
     const raw = await fs.readFile(path.join(dir, ".tent", projected.taskPath), "utf8");
     assert.doesNotMatch(raw, /^reviewer:/m);
 
     const parsed = parseFrontmatter(raw);
-    delete parsed.data.parentActor;
+    delete parsed.data.requester;
     await fsa.writeFile(
       path.join(dir, ".tent", projected.taskPath),
       serializeFrontmatter(parsed.data, parsed.body, parsed.keyOrder)
@@ -304,8 +296,8 @@ test("task.dispatch hard-rejects reviewer input and projects parentActor only", 
       { workspaceId, taskPath: projected.taskPath },
       { token: svc.token }
     );
-    assert.ok(corruptProjection.error, "public projection must fail loud without parentActor");
-    assert.match(String(corruptProjection.error?.message), /missing parentActor/i);
+    assert.ok(corruptProjection.error, "public projection must fail loud without requester");
+    assert.match(String(corruptProjection.error?.message), /missing requester/i);
   } finally {
     await svc.stop();
   }

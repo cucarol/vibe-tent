@@ -1,11 +1,6 @@
 import { FsAdapter } from "./adapter.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import {
-  assertValidNodeType,
-  DEFAULT_TYPE_REGISTRY,
-  TYPE_REGISTRY_PATH,
-} from "./typeRegistry.js";
-import type { TypeRegistry } from "./typeRegistry.js";
+import { normalizeOptionalNodeType } from "./node-type.js";
 import { ROLES_REGISTRY_PATH } from "./skillRoleRegistry.js";
 import type { RolesRegistry } from "./skillRoleRegistry.js";
 import { DEFAULT_TAG_REGISTRY, TAGS_REGISTRY_PATH } from "./tags.js";
@@ -23,7 +18,6 @@ import {
 
 /** Registry files that count as clear Tent evidence and may be default-filled on re-adopt. */
 const RECOGNIZED_REGISTRY_PATHS = [
-  TYPE_REGISTRY_PATH,
   ROLES_REGISTRY_PATH,
   TAGS_REGISTRY_PATH,
 ] as const;
@@ -31,7 +25,7 @@ const RECOGNIZED_REGISTRY_PATHS = [
 /** 顶层 Node: genesis grill 产生的具名节点（非强制通用顶层文件夹）。 */
 export interface ScaffoldNode {
   name: string;   // 文件夹名 = 框身份(真名)
-  type: string;   // OKF/Tent 单层 type
+  type?: string;  // optional direct Node type marker
   body?: string;  // 身份笔记正文
   id?: string;    // 缺省自动生成 cx-
 }
@@ -40,7 +34,6 @@ export interface ScaffoldTentOptions {
   name: string;
   /** 顶层节点;由 genesis grill 决定。缺省 = 空帐(不强制建顶层文件夹)。 */
   nodes?: ScaffoldNode[];
-  typeRegistry?: TypeRegistry;
   rolesRegistry?: RolesRegistry;
 }
 
@@ -52,24 +45,20 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
   const name = options.name.trim();
   if (!name) throw new Error("Tent name cannot be empty.");
 
-  const typeRegistry = options.typeRegistry ?? DEFAULT_TYPE_REGISTRY;
   const usedIds = new Set<string>();
   for (const node of options.nodes ?? []) {
     const nodeName = validateNodeName(node.name);
-    const type = node.type.trim();
-    if (!type) throw new Error(`Node ${nodeName} is missing a primary type.`);
-    assertValidNodeType(type, typeRegistry);
+    const type = normalizeOptionalNodeType(node.type, `Node ${nodeName} type`);
     const id = node.id?.trim() || makeUniqueNodeId(usedIds);
     if (!isNodeId(id)) throw new Error(`Scaffold Node id must use canonical cx-* form: ${id}`);
     usedIds.add(id);
-    const frontmatter: Record<string, unknown> = { id, type };
+    const frontmatter: Record<string, unknown> = { id, ...(type ? { type } : {}) };
     await writeNode(fs, nodeName, frontmatter, node.body ?? `# ${nodeName}\n`);
   }
 
   await fs.mkdir(TEMP_DIR);
   await fs.mkdir(ATTACHMENTS_DIR);
 
-  await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(typeRegistry, null, 2) + "\n");
   await fs.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
   await fs.writeFile(INDEX_PATH, tentIndexMarker());
@@ -92,17 +81,14 @@ export async function scaffoldInWorkspace(
   // Nested adapter-style paths under workspace root
   const nested = (p: string) => `${systemRelative}/${p}`.replace(/\\/g, "/");
 
-  const typeRegistry = options.typeRegistry ?? DEFAULT_TYPE_REGISTRY;
   const usedIds = new Set<string>();
   for (const node of options.nodes ?? []) {
     const nodeName = validateNodeName(node.name);
-    const type = node.type.trim();
-    if (!type) throw new Error(`Node ${nodeName} is missing a primary type.`);
-    assertValidNodeType(type, typeRegistry);
+    const type = normalizeOptionalNodeType(node.type, `Node ${nodeName} type`);
     const id = node.id?.trim() || makeUniqueNodeId(usedIds);
     if (!isNodeId(id)) throw new Error(`Scaffold Node id must use canonical cx-* form: ${id}`);
     usedIds.add(id);
-    const frontmatter: Record<string, unknown> = { id, type };
+    const frontmatter: Record<string, unknown> = { id, ...(type ? { type } : {}) };
     const path = nested(nodeName);
     await workspaceFs.mkdir(path);
     await workspaceFs.writeFile(
@@ -113,10 +99,6 @@ export async function scaffoldInWorkspace(
 
   await workspaceFs.mkdir(nested(TEMP_DIR));
   await workspaceFs.mkdir(nested(ATTACHMENTS_DIR));
-  await workspaceFs.writeFile(
-    nested(TYPE_REGISTRY_PATH),
-    JSON.stringify(typeRegistry, null, 2) + "\n"
-  );
   await workspaceFs.writeFile(
     nested(ROLES_REGISTRY_PATH),
     JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n"
@@ -154,7 +136,7 @@ export interface ReAdoptOrphanTentResult {
  * Preconditions (all checked before any write; failure → zero writes):
  * - `.tent/` exists
  * - `index.md` is **absent** (present valid index → already a Tent; present invalid/non-index → refuse overwrite)
- * - clear evidence: at least one recognized registry (`types.json` / `roles.json` / `tags.json`)
+ * - clear evidence: at least one recognized registry (`roles.json` / `tags.json`)
  *   **or** at least one Markdown Node whose frontmatter `id` is a durable `cx-` handle
  *
  * On success: preserve every existing file byte-for-byte; add only the current index marker,
@@ -309,9 +291,6 @@ async function hasDurableNodeView(
 }
 
 function defaultRegistryBody(reg: string): string {
-  if (reg === TYPE_REGISTRY_PATH) {
-    return JSON.stringify(DEFAULT_TYPE_REGISTRY, null, 2) + "\n";
-  }
   if (reg === ROLES_REGISTRY_PATH) {
     return JSON.stringify({ roles: [] }, null, 2) + "\n";
   }

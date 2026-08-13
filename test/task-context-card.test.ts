@@ -250,7 +250,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
     contextCard: card,
     contextGeneration: sampleGeneration(),
     taskPointers: "Task envelope: temp/x.md",
-    userPrompt: "Implement the seam",
+    prompt: "Implement the seam",
     taskInputDelta: "## Review Feedback\ntext: tighten tests",
     includeStablePrefix: true,
   });
@@ -313,7 +313,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
     contextGeneration: gen,
-    userPrompt: "first",
+    prompt: "first",
     includeStablePrefix: true,
   });
   const delta = assembleManagedPrompt({
@@ -323,7 +323,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
     contextGeneration: gen,
-    userPrompt: "second task",
+    prompt: "second task",
     includeStablePrefix: false,
   });
   assert.ok(full.text.includes(MANAGED_BOOTSTRAP_INVARIANT));
@@ -342,7 +342,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
     contextGeneration: gen,
-    userPrompt: "other user text",
+    prompt: "other user text",
     includeStablePrefix: true,
   });
   assert.equal(full.stablePrefix, full2.stablePrefix);
@@ -357,7 +357,7 @@ test("prompt-only managed context emits the immutable user prompt once", () => {
     agentsPointer: "AGENTS.md",
     contextCard: card,
     contextGeneration: sampleGeneration(),
-    userPrompt: marker,
+    prompt: marker,
   });
   assert.equal(assembled.text.split(marker).length - 1, 1);
   assert.match(assembled.dynamicDelta, /workNodeIds: cx-5q6za6/);
@@ -399,13 +399,13 @@ test("decideStablePrefixInjection omits only on exact valid generation match", (
   );
 });
 
-test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority from parentActor", () => {
+test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority from requester", () => {
   const lane = projectExecutionLaneFromTask({
     baseCommit: "abc123base",
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
     worktree: "C:/wt",
-    parentActor: { kind: "role", id: "规划" },
+    requester: { kind: "role", id: "规划" },
   });
   assert.equal(lane?.baseCommit, "abc123base");
   assert.equal(lane?.targetBranch, "tent-role/规划");
@@ -415,24 +415,24 @@ test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority
   const noBase = projectExecutionLaneFromTask({
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
-    parentActor: { kind: "role", id: "规划" },
+    requester: { kind: "role", id: "规划" },
   });
   assert.equal(noBase?.baseCommit, undefined);
   assert.equal(noBase?.integrationAuthority?.mutator, "service");
   assert.deepEqual(
     deriveIntegrationAuthority({
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     }),
     { actor: { kind: "user", id: "user" }, mutator: "service" }
   );
 });
 
-test("projectExecutionLaneFromTask fails loud on invalid parentActor", () => {
+test("projectExecutionLaneFromTask fails loud on invalid requester", () => {
   assert.throws(
     () =>
       projectExecutionLaneFromTask({
         baseCommit: "abc",
-        parentActor: { kind: "user", id: "not-user" },
+        requester: { kind: "user", id: "not-user" },
       }),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
@@ -520,7 +520,7 @@ test("assertOrdinaryExecutorLaneHistory fails when base is not first parent", ()
   );
 });
 
-// ---- real git: executor merges parent must fail Delivery history gate ----
+// ---- real git: executor merges parent must fail TaskResult history gate ----
 
 function gitRun(cwd: string, args: string[]): string {
   const r = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -569,7 +569,7 @@ test("real git: executor-merges-parent regression fails history gate", async () 
         }),
       (err: unknown) =>
         // Merge tip brings foreign parent-branch commits into base..tip and/or a
-        // multi-parent commit — both must refuse ready Delivery (no allowMerge).
+        // multi-parent commit — both must refuse ready TaskResult (no allowMerge).
         err instanceof ExecutorLaneHistoryError &&
         (err.code === "MERGE_COMMIT" || err.code === "FOREIGN_ANCESTRY")
     );

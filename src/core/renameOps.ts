@@ -10,7 +10,7 @@ import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateNodeName } from "./scaffold.js";
 import { ACTIVE_TASK_STATES } from "./task-model.js";
-import { loadTaskEnvelopes } from "./task.js";
+import { loadTaskRecords } from "./task.js";
 
 import type { Node } from "./types.js";
 import {
@@ -274,7 +274,7 @@ export async function assertNoActiveTaskRefsInSubtree(
   operation: "move" | "rename"
 ): Promise<void> {
   const subtreeIds = new Set(collectSubtree(root).map((node) => node.id));
-  const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
+  const blockers = (await loadTaskRecords(env.fs)).filter((task) => {
     if (!ACTIVE_TASK_STATES.has(task.state)) return false;
     return task.workNodeIds.some((nodeId) => subtreeIds.has(nodeId));
   });

@@ -1,4 +1,4 @@
-// Task / delivery domain model + pure state machine (B0 task-api.md).
+// Task / Result domain model + pure state machine.
 // Operational records only — not OKF Nodes.
 
 import { makeNodeId, type RandomSource } from "./id.js";
@@ -8,7 +8,7 @@ export type TaskState =
   | "queued"
   | "running"
   | "waiting"
-  | "delivered"
+  | "submitted"
   | "accepted"
   | "rejected"
   | "interrupted"
@@ -20,23 +20,23 @@ export type AcceptMode = "review-required" | "auto-accept" | "agent-decide";
 /** Default for new Tasks and workspace settings. */
 export const DEFAULT_ACCEPT_MODE: AcceptMode = "review-required";
 
-export type DeliverDecision = "integrate" | "request-review";
+export type SubmitDecision = "integrate" | "request-review";
 export type WaitReason = "user-input" | "review" | "external";
 
 /**
  * Explicit Task execution terminal outcome (V0.2).
- * Service may publish a ready Delivery only for `delivered`.
+ * Service may publish a ready Task Result only for `submitted`.
  */
-export type TaskOutcome = "delivered" | "blocked" | "needs-input";
+export type TaskOutcome = "blocked";
 
-/** Latest formal Task return that has not been superseded by a Delivery. */
-export type TaskLastReturn = {
-  kind: "blocked" | "needs-input" | "failed";
+/** Formal blocked/failed detail that has not been superseded by a Task Result. */
+export type TaskStatusDetail = {
+  kind: "blocked" | "failed";
   report?: string;
   error?: string;
   code?: string;
   at?: string;
-  sessionId?: string;
+  executionSessionId?: string;
 };
 
 /** Parent actor on a Task; this is also the sole review authority. */
@@ -47,8 +47,8 @@ export type TaskActorRef = {
   id: string;
 };
 
-export type DeliveryStatus = "draft" | "ready" | "accepted" | "rejected";
-export type IntegrationMode = "manual-accept" | "auto-accept" | "agent-decided-integrate" | null;
+export type TaskResultStatus = "ready" | "accepted" | "rejected";
+export type IntegrationMode = "auto-accept" | "agent-decided-integrate" | null;
 
 export type TransitionErrorCode =
   | "INVALID_TRANSITION"
@@ -59,13 +59,10 @@ export type TransitionErrorCode =
   | "REVIEW_FORBIDDEN"
   | "INVALID_ACTOR"
   | "OUTCOME_REQUIRED"
-  | "OUTCOME_NOT_DELIVERED"
-  | "NO_ACTIVE_DELIVERY"
-  | "DELIVERY_CHANGED"
+  | "NO_ACTIVE_RESULT"
+  | "RESULT_CHANGED"
   | "TASK_NOT_ACTIVE"
-  | "DELIVERY_NOT_READY"
-  /** Compensating rollback after partial accept (Output bind + Delivery/Task) failed. */
-  | "ACCEPT_ROLLBACK_FAILED";
+  | "RESULT_NOT_READY";
 
 export class TaskLifecycleError extends Error {
   code: TransitionErrorCode;
@@ -77,13 +74,11 @@ export class TaskLifecycleError extends Error {
 }
 
 export const TASK_OUTCOMES: readonly TaskOutcome[] = [
-  "delivered",
   "blocked",
-  "needs-input",
 ] as const;
 
 export function isTaskOutcome(value: unknown): value is TaskOutcome {
-  return value === "delivered" || value === "blocked" || value === "needs-input";
+  return value === "blocked";
 }
 
 export function isTaskActorKind(value: unknown): value is TaskActorKind {
@@ -91,12 +86,12 @@ export function isTaskActorKind(value: unknown): value is TaskActorKind {
 }
 
 /**
- * Fail-loud parse of the parentActor wire object.
+ * Fail-loud parse of the requester wire object.
  * Accepts `{ kind, id }` only.
  */
 export function parseTaskActorRef(
   value: unknown,
-  label: "parentActor"
+  label: "requester"
 ): TaskActorRef {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TaskLifecycleError(
@@ -139,17 +134,14 @@ export function parseTaskActorRef(
  * Whether execution uses a Role, a Session, or both is orthogonal. Downstream
  * Task → parent Role remains review-required.
  */
-export function allowsNonReviewAcceptMode(input: { parentActor?: TaskActorRef }): boolean {
-  const parent = input.parentActor;
+export function allowsNonReviewAcceptMode(input: { requester?: TaskActorRef }): boolean {
+  const parent = input.requester;
   return Boolean(parent && parent.kind === "user" && parent.id === "user");
 }
 
 /**
- * Parse explicit outcome from a managed final assistant report.
- * Accepts a leading `outcome: delivered|blocked|needs-input` line, optionally
- * inside a leading `---` / `---` fence. Returns remainder as report body.
- * Missing/invalid outcome → null; Service preserves any non-empty natural report
- * and defaults it to delivered after the normal publication gates.
+ * Parse the explicit blocked control from a managed final assistant report.
+ * A normal non-empty report is submitted directly without an outcome wrapper.
  */
 export function parseTaskOutcomeReport(text: string): {
   outcome: TaskOutcome;
@@ -170,7 +162,7 @@ export function parseTaskOutcomeReport(text: string): {
   }
   if (i >= lines.length) return null;
 
-  const match = lines[i].trim().match(/^outcome\s*:\s*(delivered|blocked|needs-input)\s*$/i);
+  const match = lines[i].trim().match(/^outcome\s*:\s*(blocked)\s*$/i);
   if (!match) return null;
   const outcome = match[1].toLowerCase() as TaskOutcome;
   i += 1;
@@ -197,7 +189,7 @@ export function isAcceptMode(value: unknown): value is AcceptMode {
 export type { ArtifactRef } from "./artifact.js";
 
 /**
- * Task Git lane projection (operational truth on the envelope).
+ * Task Git lane projection (operational truth on the record).
  * baseCommit + targetBranch + integrationAuthority are authoritative;
  * Context Card executionLane is a derived dynamic view only (cx-5q6za6).
  */
@@ -212,7 +204,7 @@ export type WorkspaceLane = {
    */
   baseCommit?: string;
   /**
-   * Integration authority: actor equals parentActor; mutator is always service.
+   * Integration authority: actor equals requester; mutator is always service.
    * Ordinary executors do not hold Git integration authority.
    */
   integrationAuthority?: {
@@ -231,15 +223,15 @@ export type TaskWait = {
   code?: string;
 };
 
-export type DeliveryCheck = {
+export type TaskResultCheck = {
   name: string;
   command: string;
   exitCode: number;
 };
 
-export type DeliveryReview = {
-  by: string;
-  decision: "accept" | "reject";
+export type TaskResultReview = {
+  reviewer: string;
+  at: string;
   note?: string;
 };
 
@@ -252,7 +244,7 @@ export const ACTIVE_TASK_STATES: ReadonlySet<TaskState> = new Set([
   "queued",
   "running",
   "waiting",
-  "delivered",
+  "submitted",
 ]);
 
 export const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
@@ -272,17 +264,17 @@ export function makeTaskId(rand: RandomSource = Math.random, len = 8): string {
   return `tk-${stem}`;
 }
 
-export function makeDeliveryId(rand: RandomSource = Math.random, len = 8): string {
+export function makeTaskResultId(rand: RandomSource = Math.random, len = 8): string {
   const stem = makeNodeId(rand, len).slice(3);
-  return `dl-${stem}`;
+  return `rs-${stem}`;
 }
 
 export function isTaskId(id: string): boolean {
-  return /^tk-[a-z0-9]+$/i.test(id);
+  return /^tk-[a-z0-9]+$/.test(id);
 }
 
-export function isDeliveryId(id: string): boolean {
-  return /^dl-[a-z0-9]+$/.test(id);
+export function isTaskResultId(id: string): boolean {
+  return /^rs-[a-z0-9]+$/.test(id);
 }
 
 /** Pure transition table (task-api §2.2). */
@@ -307,7 +299,7 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
     case "running":
       return [
         { event: "wait", to: "waiting" },
-        { event: "deliver", to: "delivered" },
+        { event: "submit", to: "submitted" },
         { event: "interrupt", to: "interrupted" },
         { event: "fail", to: "failed" },
       ];
@@ -317,7 +309,7 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
         { event: "interrupt", to: "interrupted" },
         { event: "fail", to: "failed" },
       ];
-    case "delivered":
+    case "submitted":
       return [
         { event: "accept", to: "accepted" },
         { event: "reject-resume", to: "running" },
@@ -331,10 +323,10 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
   }
 }
 
-export function resolveDeliverRouting(
+export function resolveSubmitRouting(
   mode: AcceptMode,
-  decision?: DeliverDecision
-): { autoIntegrate: boolean; integrationMode: IntegrationMode; enterDelivered: boolean } {
+  decision?: SubmitDecision
+): { autoIntegrate: boolean; integrationMode: IntegrationMode; enterSubmitted: boolean } {
   if (!isAcceptMode(mode)) {
     throw new TaskLifecycleError(
       "INVALID_ACCEPT_MODE",
@@ -342,7 +334,7 @@ export function resolveDeliverRouting(
     );
   }
   if (mode === "auto-accept") {
-    return { autoIntegrate: true, integrationMode: "auto-accept", enterDelivered: false };
+    return { autoIntegrate: true, integrationMode: "auto-accept", enterSubmitted: false };
   }
   if (mode === "review-required") {
     if (decision === "integrate") {
@@ -351,7 +343,7 @@ export function resolveDeliverRouting(
         "acceptMode=review-required forbids decision=integrate; use request-review or change mode."
       );
     }
-    return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+    return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
   }
   // agent-decide
   if (!decision) {
@@ -364,10 +356,10 @@ export function resolveDeliverRouting(
     return {
       autoIntegrate: true,
       integrationMode: "agent-decided-integrate",
-      enterDelivered: false,
+      enterSubmitted: false,
     };
   }
-  return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+  return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
 }
 
 export function assertNotSelfAccept(actor: string, executorRoleId?: string): void {
@@ -381,20 +373,20 @@ export function assertNotSelfAccept(actor: string, executorRoleId?: string): voi
 
 /**
  * Review authority for task.accept / task.reject.
- * Ordinary accept/reject must equal the **exact** persisted Task.parentActor and
+ * Ordinary accept/reject must equal the **exact** persisted Task.requester and
  * never the submitter. There is no user root override on Role-reviewed Tasks.
  *
- * - `parentActor.kind=user` → only `actor=user`.
- * - `parentActor.kind=role` → only `actor === parentActor.id` (exact parent Role).
+ * - `requester.kind=user` → only `actor=user`.
+ * - `requester.kind=role` → only `actor === requester.id` (exact parent Role).
  * - Self-review (actor === submitter) always forbidden.
  * - Soft policy only — not cryptographic auth on the shared service token.
  *
- * This function never infers responsibility from the Git-lane `asSub` flag.
+ * Responsibility always comes from the exact requester record.
  */
 export function assertReviewAuthority(input: {
   actor: string;
   executorRoleId?: string;
-  parentActor?: TaskActorRef;
+  requester?: TaskActorRef;
   action?: "accept" | "reject";
 }): void {
   const actor = input.actor.trim();
@@ -412,25 +404,25 @@ export function assertReviewAuthority(input: {
       `task.${action} actor must not equal executing Role (${executorRoleId}).`
     );
   }
-  const parentActor = input.parentActor;
-  if (!parentActor) {
+  const requester = input.requester;
+  if (!requester) {
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
-      `task.${action} requires an explicit Task.parentActor.`
+      `task.${action} requires an explicit Task.requester.`
     );
   }
-  if (parentActor.kind === "user") {
+  if (requester.kind === "user") {
     // Exact match only: kind=user requires id "user" (enforced by parseTaskActorRef).
-    if (actor === parentActor.id && actor === "user") return;
+    if (actor === requester.id && actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
   // Role-reviewed: exact parent Role id only — never an ordinary user override.
-  if (actor === parentActor.id) return;
+  if (actor === requester.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} requires actor equal to parent role (${parentActor.id}); got ${actor}.`
+    `task.${action} requires actor equal to requester role (${requester.id}); got ${actor}.`
   );
 }

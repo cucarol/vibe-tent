@@ -115,8 +115,8 @@ function handleFrom(record: SessionRecord): SessionHandle {
     pid: record.pid,
     roleId: record.roleId,
     runtimeWorkspace: record.runtimeWorkspace,
-    ...(record.contextRestored !== undefined
-      ? { contextRestored: record.contextRestored }
+    ...(record.providerContextRestored !== undefined
+      ? { providerContextRestored: record.providerContextRestored }
       : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -414,9 +414,9 @@ export class AgentRuntime implements AgentRuntimePort {
     if (!isSessionId(req.sessionId)) {
       throw new Error(`Invalid session id: ${req.sessionId}`);
     }
-    const taskId = req.lastTaskId.trim();
+    const taskId = req.currentTaskId.trim();
     const workspace = req.workspace.trim();
-    if (!taskId) throw new Error("reserveSession requires lastTaskId");
+    if (!taskId) throw new Error("reserveSession requires currentTaskId");
     if (!workspace) throw new Error("reserveSession requires workspace");
     const connection = this.connections.get(req.connectionId);
     if (!connection) {
@@ -447,7 +447,7 @@ export class AgentRuntime implements AgentRuntimePort {
       workspaceLane: req.workspaceLane,
       createdAt: now,
       updatedAt: now,
-      lastTaskId: taskId,
+      currentTaskId: taskId,
     };
     await this.registry.create(record);
     return handleFrom(record);
@@ -487,8 +487,8 @@ export class AgentRuntime implements AgentRuntimePort {
           if (cwd && existing.runtimeWorkspace?.cwd !== cwd) {
             patch.runtimeWorkspace = { cwd };
           }
-          if (req.lastTaskId && existing.lastTaskId !== req.lastTaskId) {
-            patch.lastTaskId = req.lastTaskId;
+          if (req.currentTaskId && existing.currentTaskId !== req.currentTaskId) {
+            patch.currentTaskId = req.currentTaskId;
           }
           if (externalKey && existing.externalKey !== externalKey) {
             patch.externalKey = externalKey;
@@ -522,8 +522,8 @@ export class AgentRuntime implements AgentRuntimePort {
       });
       if (match) {
         const patch: Partial<SessionRecord> = {};
-        if (req.lastTaskId && match.lastTaskId !== req.lastTaskId) {
-          patch.lastTaskId = req.lastTaskId;
+        if (req.currentTaskId && match.currentTaskId !== req.currentTaskId) {
+          patch.currentTaskId = req.currentTaskId;
         }
         if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
           patch.runtimeWorkspace = { cwd };
@@ -551,7 +551,7 @@ export class AgentRuntime implements AgentRuntimePort {
       workspaceLane: req.workspaceLane,
       createdAt: now,
       updatedAt: now,
-      lastTaskId: req.lastTaskId,
+      currentTaskId: req.currentTaskId,
       ...(externalKey ? { externalKey } : {}),
     };
     await this.registry.create(record);
@@ -912,7 +912,7 @@ export class AgentRuntime implements AgentRuntimePort {
       exitCode: undefined,
       stopReason: undefined,
       runtimeWorkspace: { cwd },
-      lastTaskId: req.lastTaskId ?? record.lastTaskId,
+      currentTaskId: req.currentTaskId ?? record.currentTaskId,
       updatedAt: now,
     });
     this.emit({ type: "session.starting", sessionId: req.sessionId });
@@ -1084,7 +1084,7 @@ export class AgentRuntime implements AgentRuntimePort {
             }
           : {}),
         // Native resume reuses provider context — honest continuity claim.
-        contextRestored: true,
+        providerContextRestored: true,
         lastError: undefined,
         exitCode: undefined,
         stopReason: undefined,
@@ -1265,8 +1265,8 @@ export class AgentRuntime implements AgentRuntimePort {
       return {
         sessionId,
         state: "failed",
-        alive: false,
-        resumeCapable: false,
+        isAlive: false,
+        canResume: false,
         lastError: "session not found",
       };
     }
@@ -1276,42 +1276,42 @@ export class AgentRuntime implements AgentRuntimePort {
       return {
         sessionId,
         state: "external",
-        alive: true,
-        resumeCapable: false,
+        isAlive: true,
+        canResume: false,
         lastError: record.lastError,
         exitCode: record.exitCode,
       };
     }
 
     const managed = this.managed.get(sessionId);
-    const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
-    const turnBusy =
-      typeof managed?.isTurnBusy === "function" ? managed.isTurnBusy() : false;
+    const isAlive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
+    const isTurnActive =
+      typeof managed?.isTurnActive === "function" ? managed.isTurnActive() : false;
     const adapter = record.adapterId ? this.adapters.get(record.adapterId) : undefined;
-    const resumeCapable = Boolean(
+    const canResume = Boolean(
       record.connectionSnapshot && record.resumeToken && adapter?.capabilities().canResume
     );
 
     // Reconcile disk state with process reality (service restart / crash).
-    if (SessionRegistry.isNonTerminal(record.state) && !alive) {
+    if (SessionRegistry.isNonTerminal(record.state) && !isAlive) {
       // Managed process exited outside stopSession — clear handle.
       if (managed) this.managed.delete(sessionId);
-      const nextState = resumeCapable ? "stopped" : "failed";
+      const nextState = canResume ? "stopped" : "failed";
       const updated = await this.registry.update(sessionId, {
         state: nextState,
         pid: undefined,
         lastError:
           record.lastError ??
-          (resumeCapable
+          (canResume
             ? "process not alive; resume token retained"
             : "process not alive and not resume-capable"),
       });
       return {
         sessionId,
         state: updated.state,
-        alive: false,
-        resumeCapable,
-        turnBusy: false,
+        isAlive: false,
+        canResume,
+        isTurnActive: false,
         lastError: updated.lastError,
         exitCode: updated.exitCode,
       };
@@ -1320,10 +1320,10 @@ export class AgentRuntime implements AgentRuntimePort {
     return {
       sessionId,
       state: record.state,
-      alive,
-      resumeCapable,
-      turnBusy,
-      pid: alive ? record.pid : undefined,
+      isAlive,
+      canResume,
+      isTurnActive,
+      pid: isAlive ? record.pid : undefined,
       lastError: record.lastError,
       exitCode: record.exitCode,
     };
@@ -1678,21 +1678,11 @@ export class AgentRuntime implements AgentRuntimePort {
       }
       out[envKey] = secret;
     }
-    const endpointEnvKey = route.baseUrlEnvKey?.trim() || "";
-    if (endpointEnvKey) {
-      const endpoint = process.env[endpointEnvKey];
-      if (typeof endpoint !== "string" || !endpoint.trim()) {
-        throw new Error(`Agent Connection ${route.connectionId} endpoint env is missing: ${endpointEnvKey}`);
-      }
-      out[endpointEnvKey] = endpoint;
-    }
     return out;
   }
 
   private effectiveEndpointDigest(route: AgentConnectionConfig): string | undefined {
-    const raw = route.baseUrlEnvKey
-      ? process.env[route.baseUrlEnvKey]
-      : route.baseUrl;
+    const raw = route.endpoint;
     const normalized = raw?.trim();
     if (!normalized) return undefined;
     return `sha256:${createHash("sha256").update(normalized).digest("hex")}`;
@@ -1700,12 +1690,10 @@ export class AgentRuntime implements AgentRuntimePort {
 
   private acpOptionsForRoute(route: AgentConnectionConfig) {
     return {
-      executable: route.executable,
       model: route.model,
       envKey: route.envKey,
       launchSecretRef: route.launchSecretRef,
-      baseUrlEnvKey: route.baseUrlEnvKey,
-      baseUrl: route.baseUrl,
+      endpoint: route.endpoint,
       permissionPolicy: route.permissionPolicy,
       promptTimeoutMs: route.promptTimeoutMs,
       permissionTimeoutMs: route.permissionTimeoutMs,

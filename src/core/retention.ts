@@ -1,15 +1,15 @@
 // Operational retention (task-api §6 MVP).
-// Safe purge of terminal tasks + non-ready deliveries; never touches active work.
-// Paths are always under temp/<role>/{tasks,deliveries}/ via FsAdapter — no free-form paths.
+// Safe purge of terminal tasks + non-ready results; never touches active work.
+// Paths are always under temp/<role>/{tasks,results}/ via FsAdapter — no free-form paths.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { loadDelivery, type DeliveryRecord } from "./delivery.js";
-import { collectReferencedDeliveryIds } from "./output.js";
-import { loadTaskEnvelope, type TaskEnvelope } from "./task.js";
+import { loadTaskResult, type TaskResultRecord } from "./task-result.js";
+import { collectReferencedTaskResultIds } from "./output.js";
+import { loadTaskRecord, type TaskRecord } from "./task.js";
 import {
   isActiveTaskState,
   TERMINAL_TASK_STATES,
-  type DeliveryStatus,
+  type TaskResultStatus,
   type TaskState,
 } from "./task-model.js";
 import { join, loadTent } from "./tree.js";
@@ -22,12 +22,12 @@ export const MAX_KEEP_TERMINAL_DAYS = 3650;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const TERMINAL_DELIVERY_STATUSES: ReadonlySet<DeliveryStatus> = new Set([
+const TERMINAL_RESULT_STATUSES: ReadonlySet<TaskResultStatus> = new Set([
   "accepted",
   "rejected",
 ]);
 
-export type RetentionCandidateKind = "task-group" | "orphan-delivery";
+export type RetentionCandidateKind = "task-group" | "orphan-result";
 
 export type RetentionCandidate = {
   kind: RetentionCandidateKind;
@@ -35,8 +35,8 @@ export type RetentionCandidate = {
   taskId?: string;
   taskPath?: string;
   taskState?: TaskState;
-  /** Delivery paths that would be removed with this candidate. */
-  deliveryPaths: string[];
+  /** TaskResult paths that would be removed with this candidate. */
+  resultPaths: string[];
   /** Whole days since last activity (updatedAt || createdAt). */
   ageDays: number;
   reason: string;
@@ -66,13 +66,13 @@ export type RetentionPreviewResult = {
   warnings: string[];
   /** Aggregate counts for clients. */
   candidateTaskCount: number;
-  candidateDeliveryCount: number;
+  candidateTaskResultCount: number;
 };
 
 export type RetentionPurgeResult = RetentionPreviewResult & {
   purged: {
     taskPaths: string[];
-    deliveryPaths: string[];
+    resultPaths: string[];
   };
   deletedCount: number;
 };
@@ -116,8 +116,8 @@ export function isTerminalTaskState(state: TaskState): boolean {
   return TERMINAL_TASK_STATES.has(state);
 }
 
-export function isPurgeableDeliveryStatus(status: DeliveryStatus): boolean {
-  return TERMINAL_DELIVERY_STATUSES.has(status);
+export function isPurgeableTaskResultStatus(status: TaskResultStatus): boolean {
+  return TERMINAL_RESULT_STATUSES.has(status);
 }
 
 /**
@@ -138,14 +138,14 @@ export async function previewOperationalRetention(
 
   const { tasks, skipped: taskSkipped } = await scanTasks(fs);
   skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs);
-  skipped.push(...deliverySkipped);
+  const { results, skipped: resultSkipped } = await scanResults(fs);
+  skipped.push(...resultSkipped);
 
   for (const s of skipped) {
     warnings.push(`skipped ${s.path}: ${s.reason}`);
   }
 
-  const tasksById = new Map<string, TaskEnvelope>();
+  const tasksById = new Map<string, TaskRecord>();
   const taskIdCounts = new Map<string, number>();
   for (const t of tasks) {
     if (t.id) {
@@ -154,24 +154,24 @@ export async function previewOperationalRetention(
     }
   }
 
-  const deliveriesByTaskId = new Map<string, DeliveryRecord[]>();
-  for (const d of deliveries) {
-    const list = deliveriesByTaskId.get(d.taskId) ?? [];
+  const resultsByTaskId = new Map<string, TaskResultRecord[]>();
+  for (const d of results) {
+    const list = resultsByTaskId.get(d.taskId) ?? [];
     list.push(d);
-    deliveriesByTaskId.set(d.taskId, list);
+    resultsByTaskId.set(d.taskId, list);
   }
 
   const candidates: RetentionCandidate[] = [];
-  const claimedDeliveryPaths = new Set<string>();
+  const claimedTaskResultPaths = new Set<string>();
 
-  // Output provenance pin: any live Output.deliveryId (including archived Outputs)
-  // protects that Delivery and its Task group. Not a general permanent history system.
+  // Output provenance pin: any live Output.resultId (including archived Outputs)
+  // protects that TaskResult and its Task group. Not a general permanent history system.
   // Fail closed: if pin scan cannot load the tent, refuse all destructive selection
-  // rather than purge without knowing which Deliveries are still referenced.
-  let pinnedDeliveryIds: Set<string>;
+  // rather than purge without knowing which Results are still referenced.
+  let pinnedTaskResultIds: Set<string>;
   try {
     const tent = await loadTent(fs);
-    pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
+    pinnedTaskResultIds = collectReferencedTaskResultIds(tent);
   } catch (err) {
     throw new RetentionError(
       "PROVENANCE_PIN_SCAN_FAILED",
@@ -181,11 +181,11 @@ export async function previewOperationalRetention(
     );
   }
   const pinnedTaskIds = new Set<string>();
-  for (const d of deliveries) {
-    if (pinnedDeliveryIds.has(d.id) && d.taskId) pinnedTaskIds.add(d.taskId);
+  for (const d of results) {
+    if (pinnedTaskResultIds.has(d.id) && d.taskId) pinnedTaskIds.add(d.taskId);
   }
 
-  // 1) Terminal tasks past retention → purge as a group with their deliveries.
+  // 1) Terminal tasks past retention → purge as a group with their results.
   for (const task of tasks) {
     if (!isTerminalTaskState(task.state)) continue;
     if (isActiveTaskState(task.state)) continue; // belt-and-suspenders
@@ -196,8 +196,8 @@ export async function previewOperationalRetention(
       continue;
     }
 
-    const related = task.id ? deliveriesByTaskId.get(task.id) ?? [] : [];
-    const activityValues = [taskActivityMs(task), ...related.map(deliveryActivityMs)];
+    const related = task.id ? resultsByTaskId.get(task.id) ?? [] : [];
+    const activityValues = [taskActivityMs(task), ...related.map(resultActivityMs)];
     if (activityValues.some((value) => value === undefined)) {
       if (keepTerminalTasksDays > 0) {
         skipped.push({
@@ -214,61 +214,61 @@ export async function previewOperationalRetention(
     const activityMs = Math.max(...activityValues.map((value) => value ?? 0));
     if (activityMs > cutoffMs) continue;
 
-    const protectedDeliveries = related.filter((d) => !isPurgeableDeliveryStatus(d.status));
-    if (protectedDeliveries.length > 0) {
+    const protectedResults = related.filter((d) => !isPurgeableTaskResultStatus(d.status));
+    if (protectedResults.length > 0) {
       warnings.push(
-        `task-group ${task.path} has ${protectedDeliveries.length} non-terminal delivery(ies); refusing group purge`
+        `task-group ${task.path} has ${protectedResults.length} non-terminal result(ies); refusing group purge`
       );
       continue;
     }
 
-    // Pin: Output.deliveryId references any related Delivery, or task id is pinned via Delivery.
-    const pinnedRelated = related.filter((d) => pinnedDeliveryIds.has(d.id));
+    // Pin: Output.resultId references any related TaskResult, or task id is pinned via TaskResult.
+    const pinnedRelated = related.filter((d) => pinnedTaskResultIds.has(d.id));
     if (
       pinnedRelated.length > 0 ||
       (task.id !== undefined && pinnedTaskIds.has(task.id))
     ) {
       const pinIds = pinnedRelated.map((d) => d.id).join(",") || task.id || "";
       warnings.push(
-        `task-group ${task.path} pinned by Output.deliveryId (${pinIds}); refusing group purge`
+        `task-group ${task.path} pinned by Output.resultId (${pinIds}); refusing group purge`
       );
       continue;
     }
 
     const ageDays = ageDaysFrom(activityMs, nowMs);
-    const deliveryPaths = related.map((d) => d.path);
-    for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
+    const resultPaths = related.map((d) => d.path);
+    for (const p of resultPaths) claimedTaskResultPaths.add(p);
 
     candidates.push({
       kind: "task-group",
       taskId: task.id,
       taskPath: task.path,
       taskState: task.state,
-      deliveryPaths,
+      resultPaths,
       ageDays,
       reason: `terminal task state=${task.state} ageDays=${ageDays} ≥ keep=${keepTerminalTasksDays}`,
     });
   }
 
-  // 2) Orphan non-ready deliveries (task missing or unknown taskId) past retention.
-  for (const d of deliveries) {
-    if (claimedDeliveryPaths.has(d.path)) continue;
-    if (!isPurgeableDeliveryStatus(d.status)) continue;
+  // 2) Orphan non-ready results (task missing or unknown taskId) past retention.
+  for (const d of results) {
+    if (claimedTaskResultPaths.has(d.path)) continue;
+    if (!isPurgeableTaskResultStatus(d.status)) continue;
 
     const parent = tasksById.get(d.taskId);
     if (parent) {
-      // Delivery still attached to a known task — only purged with that task group.
+      // TaskResult still attached to a known task — only purged with that task group.
       continue;
     }
 
-    if (pinnedDeliveryIds.has(d.id)) {
+    if (pinnedTaskResultIds.has(d.id)) {
       warnings.push(
-        `orphan delivery ${d.path} pinned by Output.deliveryId; refusing purge`
+        `orphan result ${d.path} pinned by Output.resultId; refusing purge`
       );
       continue;
     }
 
-    const activity = deliveryActivityMs(d);
+    const activity = resultActivityMs(d);
     if (activity === undefined) {
       if (keepTerminalTasksDays > 0) {
         skipped.push({
@@ -286,25 +286,25 @@ export async function previewOperationalRetention(
 
     const ageDays = ageDaysFrom(activityMs, nowMs);
     candidates.push({
-      kind: "orphan-delivery",
+      kind: "orphan-result",
       taskId: d.taskId,
-      deliveryPaths: [d.path],
+      resultPaths: [d.path],
       ageDays,
-      reason: `orphan non-ready delivery status=${d.status} ageDays=${ageDays} ≥ keep=${keepTerminalTasksDays}`,
+      reason: `orphan non-ready result status=${d.status} ageDays=${ageDays} ≥ keep=${keepTerminalTasksDays}`,
     });
   }
 
   candidates.sort((a, b) => {
-    const ap = a.taskPath || a.deliveryPaths[0] || "";
-    const bp = b.taskPath || b.deliveryPaths[0] || "";
+    const ap = a.taskPath || a.resultPaths[0] || "";
+    const bp = b.taskPath || b.resultPaths[0] || "";
     return ap.localeCompare(bp);
   });
 
-  let candidateDeliveryCount = 0;
+  let candidateTaskResultCount = 0;
   let candidateTaskCount = 0;
   for (const c of candidates) {
     if (c.kind === "task-group") candidateTaskCount += 1;
-    candidateDeliveryCount += c.deliveryPaths.length;
+    candidateTaskResultCount += c.resultPaths.length;
   }
 
   return {
@@ -314,14 +314,14 @@ export async function previewOperationalRetention(
     skipped,
     warnings,
     candidateTaskCount,
-    candidateDeliveryCount,
+    candidateTaskResultCount,
   };
 }
 
 /**
  * Purge candidates selected by the same rules as preview.
- * Deletes task + its deliveries as a group; orphan terminal deliveries independently.
- * Never deletes active tasks or ready deliveries.
+ * Deletes task + its results as a group; orphan terminal results independently.
+ * Never deletes active tasks or ready results.
  */
 export async function purgeOperationalRetention(
   fs: FsAdapter,
@@ -330,13 +330,13 @@ export async function purgeOperationalRetention(
   return withTentMutation(fs, async () => {
     const preview = await previewOperationalRetention(fs, options);
     const purgedTaskPaths: string[] = [];
-    const purgedDeliveryPaths: string[] = [];
+    const purgedTaskResultPaths: string[] = [];
 
     for (const c of preview.candidates) {
       if (c.kind === "task-group" && c.taskPath) {
         // Re-validate immediately before delete (TOCTOU safety within mutation lock).
         try {
-          const live = await loadTaskEnvelope(fs, c.taskPath);
+          const live = await loadTaskRecord(fs, c.taskPath);
           if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
             preview.warnings.push(
               `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
@@ -350,28 +350,28 @@ export async function purgeOperationalRetention(
           continue;
         }
 
-        let deliveryValidationFailed = false;
-        for (const dp of c.deliveryPaths) {
+        let resultValidationFailed = false;
+        for (const dp of c.resultPaths) {
           try {
-            const liveD = await loadDelivery(fs, dp);
-            if (!isPurgeableDeliveryStatus(liveD.status)) {
+            const liveD = await loadTaskResult(fs, dp);
+            if (!isPurgeableTaskResultStatus(liveD.status)) {
               preview.warnings.push(
-                `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
+                `refused purge of task group ${c.taskPath}: result ${dp} status=${liveD.status}`
               );
-              deliveryValidationFailed = true;
+              resultValidationFailed = true;
               break;
             }
           } catch (err) {
             preview.warnings.push(
               `refused purge of task group ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
             );
-            deliveryValidationFailed = true;
+            resultValidationFailed = true;
             break;
           }
         }
-        if (deliveryValidationFailed) continue;
+        if (resultValidationFailed) continue;
 
-        // Delete the parent first. If a later delivery delete fails, the remaining
+        // Delete the parent first. If a later result delete fails, the remaining
         // record is an orphan that a future retention pass can safely retry.
         // The inverse order could leave a surviving task pointing at missing history.
         try {
@@ -386,50 +386,50 @@ export async function purgeOperationalRetention(
           continue;
         }
 
-        for (const dp of c.deliveryPaths) {
+        for (const dp of c.resultPaths) {
           try {
             if (await fs.exists(dp)) {
               await fs.remove(dp);
-              purgedDeliveryPaths.push(dp);
+              purgedTaskResultPaths.push(dp);
             }
           } catch (err) {
             preview.warnings.push(
-              `failed to purge orphaned delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+              `failed to purge orphaned result ${dp}: ${err instanceof Error ? err.message : String(err)}`
             );
           }
         }
         continue;
       }
 
-      if (c.kind === "orphan-delivery") {
-        for (const dp of c.deliveryPaths) {
+      if (c.kind === "orphan-result") {
+        for (const dp of c.resultPaths) {
           try {
-            const liveD = await loadDelivery(fs, dp);
-            if (!isPurgeableDeliveryStatus(liveD.status)) {
+            const liveD = await loadTaskResult(fs, dp);
+            if (!isPurgeableTaskResultStatus(liveD.status)) {
               preview.warnings.push(
-                `refused purge of delivery ${dp}: status=${liveD.status}`
+                `refused purge of result ${dp}: status=${liveD.status}`
               );
               continue;
             }
             if (await fs.exists(dp)) {
               await fs.remove(dp);
-              purgedDeliveryPaths.push(dp);
+              purgedTaskResultPaths.push(dp);
             }
           } catch (err) {
             preview.warnings.push(
-              `failed to purge delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+              `failed to purge result ${dp}: ${err instanceof Error ? err.message : String(err)}`
             );
           }
         }
       }
     }
 
-    const deletedCount = purgedTaskPaths.length + purgedDeliveryPaths.length;
+    const deletedCount = purgedTaskPaths.length + purgedTaskResultPaths.length;
     return {
       ...preview,
       purged: {
         taskPaths: purgedTaskPaths,
-        deliveryPaths: purgedDeliveryPaths,
+        resultPaths: purgedTaskResultPaths,
       },
       deletedCount,
     };
@@ -440,8 +440,8 @@ export async function purgeOperationalRetention(
 
 async function scanTasks(
   fs: FsAdapter
-): Promise<{ tasks: TaskEnvelope[]; skipped: RetentionSkipped[] }> {
-  const tasks: TaskEnvelope[] = [];
+): Promise<{ tasks: TaskRecord[]; skipped: RetentionSkipped[] }> {
+  const tasks: TaskRecord[] = [];
   const skipped: RetentionSkipped[] = [];
   if (!(await fs.exists("temp"))) return { tasks, skipped };
 
@@ -466,7 +466,7 @@ async function scanTasks(
 async function scanTaskDir(
   fs: FsAdapter,
   taskDir: string,
-  tasks: TaskEnvelope[],
+  tasks: TaskRecord[],
   skipped: RetentionSkipped[]
 ): Promise<void> {
   if (!(await fs.exists(taskDir))) return;
@@ -474,7 +474,7 @@ async function scanTaskDir(
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs, path));
+      tasks.push(await loadTaskRecord(fs, path));
     } catch (err) {
       skipped.push({
         path,
@@ -484,12 +484,12 @@ async function scanTaskDir(
   }
 }
 
-async function scanDeliveries(
+async function scanResults(
   fs: FsAdapter
-): Promise<{ deliveries: DeliveryRecord[]; skipped: RetentionSkipped[] }> {
-  const deliveries: DeliveryRecord[] = [];
+): Promise<{ results: TaskResultRecord[]; skipped: RetentionSkipped[] }> {
+  const results: TaskResultRecord[] = [];
   const skipped: RetentionSkipped[] = [];
-  if (!(await fs.exists("temp"))) return { deliveries, skipped };
+  if (!(await fs.exists("temp"))) return { results, skipped };
 
   for (const namespace of await fs.listDir("temp")) {
     if (!namespace.isDir || (namespace.name !== "roles" && namespace.name !== "sessions")) continue;
@@ -503,21 +503,21 @@ async function scanDeliveries(
       });
       continue;
     }
-      await scanDeliveryDir(
+      await scanTaskResultDir(
         fs,
-        join(namespaceRoot, ownerEntry.name, "deliveries"),
-        deliveries,
+        join(namespaceRoot, ownerEntry.name, "results"),
+        results,
         skipped
       );
     }
   }
-  return { deliveries, skipped };
+  return { results, skipped };
 }
 
-async function scanDeliveryDir(
+async function scanTaskResultDir(
   fs: FsAdapter,
   dir: string,
-  deliveries: DeliveryRecord[],
+  results: TaskResultRecord[],
   skipped: RetentionSkipped[]
 ): Promise<void> {
   if (!(await fs.exists(dir))) return;
@@ -525,7 +525,7 @@ async function scanDeliveryDir(
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path = join(dir, entry.name);
     try {
-      deliveries.push(await loadDelivery(fs, path));
+      results.push(await loadTaskResult(fs, path));
     } catch (err) {
       skipped.push({
         path,
@@ -542,12 +542,12 @@ function isSafeRoleSegment(name: string): boolean {
   return true;
 }
 
-function taskActivityMs(task: TaskEnvelope): number | undefined {
+function taskActivityMs(task: TaskRecord): number | undefined {
   return parseIsoMs(task.updatedAt) ?? parseIsoMs(task.createdAt);
 }
 
-function deliveryActivityMs(d: DeliveryRecord): number | undefined {
-  return parseIsoMs(d.updatedAt) ?? parseIsoMs(d.createdAt);
+function resultActivityMs(d: TaskResultRecord): number | undefined {
+  return parseIsoMs(d.createdAt);
 }
 
 function parseIsoMs(value: string | undefined): number | undefined {

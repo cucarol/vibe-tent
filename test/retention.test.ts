@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
-import { createDelivery } from "../src/core/delivery.js";
+import { createTaskResult, writeTaskResult } from "../src/core/task-result.js";
 import {
   DEFAULT_KEEP_TERMINAL_DAYS,
   MAX_KEEP_TERMINAL_DAYS,
@@ -14,7 +14,7 @@ import {
   purgeOperationalRetention,
   RetentionError,
 } from "../src/core/retention.js";
-import { writeTaskEnvelope, loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { writeTaskRecord, loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { makeTent } from "./helpers.js";
 import { contentEtag } from "../src/core/etag.js";
 
@@ -28,6 +28,18 @@ function clock(iso: string) {
 
 function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
   return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
+}
+
+async function createReviewedResult(
+  fs: NodeFs,
+  input: Parameters<typeof createTaskResult>[2] & { status: "accepted" | "rejected" },
+  at: string
+) {
+  const result = await createTaskResult(fs, clock(at), { ...input, status: "ready" });
+  result.status = input.status;
+  result.review = { reviewer: "user", at };
+  await writeTaskResult(fs, result);
+  return result;
 }
 
 class FailTaskRemoveFs extends NodeFs {
@@ -54,27 +66,27 @@ async function writeTerminalTask(
 ) {
   const role = opts.role ?? "executor";
   const sessionId = `ss-${role.replace(/[^a-z0-9]/gi, "").toLowerCase()}`;
-  const path = await writeTaskEnvelope(fs, clock(opts.createdAt ?? OLD), {
-    parentActor: { kind: "user", id: "user" },
-    sessionId,
+  const path = await writeTaskRecord(fs, clock(opts.createdAt ?? OLD), {
+    requester: { kind: "user", id: "user" },
+    executionSessionId: sessionId,
     workNodeIds: [opts.claimId ?? "cx-p1"],
     contextNodeIds: [],
     nodeSnapshots: [nodeSnapshot(opts.claimId ?? "cx-p1", "prompt/表达式任务书")],
     manifestPath: `temp/sessions/${sessionId}/manifests/m.md`,
-    userPrompt: "retention fixture",
+    prompt: "retention fixture",
     id: opts.id,
   });
-  await patchTaskEnvelope(fs, path, {
+  await patchTaskRecord(fs, path, {
     state: opts.state,
     updatedAt: opts.updatedAt ?? opts.createdAt ?? OLD,
   });
-  // writeTaskEnvelope stamps createdAt from clock; ensure both old when needed
+  // writeTaskRecord stamps createdAt from clock; ensure both old when needed
   const raw = await fs.readFile(path);
   const patched = raw
     .replace(/createdAt: .*/, `createdAt: ${opts.createdAt ?? OLD}`)
     .replace(/updatedAt: .*/, `updatedAt: ${opts.updatedAt ?? opts.createdAt ?? OLD}`);
   await fs.writeFile(path, patched);
-  return loadTaskEnvelope(fs, path);
+  return loadTaskRecord(fs, path);
 }
 
 test("normalizeKeepTerminalTasksDays: default 30, 0 allowed, rejects invalid", () => {
@@ -104,14 +116,14 @@ test("preview: never selects active tasks or ready deliveries", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
 
-  const activePath = await writeTaskEnvelope(fs, clock(OLD), {
-    parentActor: { kind: "user", id: "user" },
-    sessionId: "ss-executor",
+  const activePath = await writeTaskRecord(fs, clock(OLD), {
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
     nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/表达式任务书")],
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
-    userPrompt: "still running work",
+    prompt: "still running work",
     id: "tk-active01",
   });
   // Force old timestamps but keep queued (active)
@@ -124,11 +136,10 @@ test("preview: never selects active tasks or ready deliveries", async () => {
 
   await writeTerminalTask(fs, { state: "accepted", id: "tk-oldacc1" });
 
-  const ready = await createDelivery(fs, clock(OLD), {
+  const ready = await createTaskResult(fs, clock(OLD), {
     taskId: "tk-missing",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "awaiting review",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "awaiting review",
     status: "ready",
   });
   await fs.writeFile(
@@ -144,7 +155,7 @@ test("preview: never selects active tasks or ready deliveries", async () => {
   });
 
   assert.ok(preview.candidates.every((c) => c.taskPath !== activePath));
-  assert.ok(preview.candidates.every((c) => !c.deliveryPaths.includes(ready.path)));
+  assert.ok(preview.candidates.every((c) => !c.resultPaths.includes(ready.path)));
   assert.ok(preview.candidates.some((c) => c.taskId === "tk-oldacc1"));
   assert.equal(await fs.exists(activePath), true);
   assert.equal(await fs.exists(ready.path), true);
@@ -154,16 +165,15 @@ test("preview: terminal task past retention is a task-group candidate", async ()
   const dir = await makeTent();
   const fs = new NodeFs(dir);
   const task = await writeTerminalTask(fs, { state: "failed", id: "tk-failold" });
-  const delivery = await createDelivery(fs, clock(OLD), {
+  const result = await createReviewedResult(fs, {
     taskId: "tk-failold",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "historical delivery",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "historical result",
     status: "rejected",
-  });
+  }, OLD);
   await fs.writeFile(
-    delivery.path,
-    (await fs.readFile(delivery.path))
+    result.path,
+    (await fs.readFile(result.path))
       .replace(/createdAt: .*/, `createdAt: ${OLD}`)
       .replace(/updatedAt: .*/, `updatedAt: ${OLD}`)
   );
@@ -175,9 +185,9 @@ test("preview: terminal task past retention is a task-group candidate", async ()
   const group = preview.candidates.find((c) => c.kind === "task-group" && c.taskId === "tk-failold");
   assert.ok(group);
   assert.equal(group!.taskPath, task.path);
-  assert.ok(group!.deliveryPaths.includes(delivery.path));
+  assert.ok(group!.resultPaths.includes(result.path));
   assert.equal(preview.candidateTaskCount, 1);
-  assert.equal(preview.candidateDeliveryCount, 1);
+  assert.equal(preview.candidateTaskResultCount, 1);
 });
 
 test("preview: recent terminal task within 30 days is not a candidate", async () => {
@@ -197,17 +207,16 @@ test("preview: recent terminal task within 30 days is not a candidate", async ()
   assert.ok(!preview.candidates.some((c) => c.taskId === "tk-recent1"));
 });
 
-test("preview: recent related delivery keeps the whole terminal task group hot", async () => {
+test("preview: recent related result keeps the whole terminal task group hot", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
   const task = await writeTerminalTask(fs, { state: "accepted", id: "tk-hotgroup" });
-  await createDelivery(fs, clock(RECENT), {
+  await createReviewedResult(fs, {
     taskId: "tk-hotgroup",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "recent accepted delivery",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "recent accepted result",
     status: "accepted",
-  });
+  }, RECENT);
 
   const preview = await previewOperationalRetention(fs, {
     keepTerminalTasksDays: 30,
@@ -270,31 +279,30 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   const fs = new NodeFs(dir);
 
   const oldTask = await writeTerminalTask(fs, { state: "accepted", id: "tk-group1" });
-  const oldDelivery = await createDelivery(fs, clock(OLD), {
+  const oldTaskResult = await createReviewedResult(fs, {
     taskId: "tk-group1",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "old accepted summary",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "old accepted summary",
     status: "accepted",
-  });
+  }, OLD);
   await fs.writeFile(
-    oldDelivery.path,
-    (await fs.readFile(oldDelivery.path))
+    oldTaskResult.path,
+    (await fs.readFile(oldTaskResult.path))
       .replace(/createdAt: .*/, `createdAt: ${OLD}`)
       .replace(/updatedAt: .*/, `updatedAt: ${OLD}`)
   );
 
-  const activePath = await writeTaskEnvelope(fs, clock(NOW), {
-    parentActor: { kind: "user", id: "user" },
-    sessionId: "ss-executor",
+  const activePath = await writeTaskRecord(fs, clock(NOW), {
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
     workNodeIds: ["cx-p2"],
     contextNodeIds: [],
     nodeSnapshots: [nodeSnapshot("cx-p2", "prompt/表达式任务书/草稿")],
     manifestPath: "temp/sessions/ss-executor/manifests/m2.md",
-    userPrompt: "do not purge me",
+    prompt: "do not purge me",
     id: "tk-live01",
   });
-  await patchTaskEnvelope(fs, activePath, { state: "running", updatedAt: NOW });
+  await patchTaskRecord(fs, activePath, { state: "running", updatedAt: NOW });
 
   const result = await purgeOperationalRetention(fs, {
     keepTerminalTasksDays: 30,
@@ -302,48 +310,46 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   });
 
   assert.ok(result.purged.taskPaths.includes(oldTask.path));
-  assert.ok(result.purged.deliveryPaths.includes(oldDelivery.path));
+  assert.ok(result.purged.resultPaths.includes(oldTaskResult.path));
   assert.equal(await fs.exists(oldTask.path), false);
-  assert.equal(await fs.exists(oldDelivery.path), false);
+  assert.equal(await fs.exists(oldTaskResult.path), false);
   assert.equal(await fs.exists(activePath), true);
-  assert.equal((await loadTaskEnvelope(fs, activePath)).state, "running");
+  assert.equal((await loadTaskRecord(fs, activePath)).state, "running");
 });
 
 test("purge: task removal failure preserves all related deliveries", async () => {
   const dir = await makeTent();
   const seedFs = new NodeFs(dir);
   const task = await writeTerminalTask(seedFs, { state: "accepted", id: "tk-failrm1" });
-  const delivery = await createDelivery(seedFs, clock(OLD), {
+  const oldResult = await createReviewedResult(seedFs, {
     taskId: "tk-failrm1",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "must survive parent delete failure",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "must survive parent delete failure",
     status: "accepted",
-  });
+  }, OLD);
   const failingFs = new FailTaskRemoveFs(dir, task.path);
 
-  const result = await purgeOperationalRetention(failingFs, {
+  const purged = await purgeOperationalRetention(failingFs, {
     keepTerminalTasksDays: 0,
     now: NOW,
   });
 
   assert.equal(await seedFs.exists(task.path), true);
-  assert.equal(await seedFs.exists(delivery.path), true);
-  assert.ok(!result.purged.taskPaths.includes(task.path));
-  assert.ok(!result.purged.deliveryPaths.includes(delivery.path));
-  assert.ok(result.warnings.some((warning) => warning.includes("injected task remove failure")));
+  assert.equal(await seedFs.exists(oldResult.path), true);
+  assert.ok(!purged.purged.taskPaths.includes(task.path));
+  assert.ok(!purged.purged.resultPaths.includes(oldResult.path));
+  assert.ok(purged.warnings.some((warning) => warning.includes("injected task remove failure")));
 });
 
-test("purge: orphan terminal delivery is cleaned independently", async () => {
+test("purge: orphan terminal result is cleaned independently", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
-  const orphan = await createDelivery(fs, clock(OLD), {
+  const orphan = await createReviewedResult(fs, {
     taskId: "tk-gonegone",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "orphan rejected",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "orphan rejected",
     status: "rejected",
-  });
+  }, OLD);
   await fs.writeFile(
     orphan.path,
     (await fs.readFile(orphan.path))
@@ -355,8 +361,8 @@ test("purge: orphan terminal delivery is cleaned independently", async () => {
     keepTerminalTasksDays: 30,
     now: NOW,
   });
-  assert.ok(result.candidates.some((c) => c.kind === "orphan-delivery"));
-  assert.ok(result.purged.deliveryPaths.includes(orphan.path));
+  assert.ok(result.candidates.some((c) => c.kind === "orphan-result"));
+  assert.ok(result.purged.resultPaths.includes(orphan.path));
   assert.equal(await fs.exists(orphan.path), false);
 });
 
@@ -364,42 +370,41 @@ test("preview: bad operational files stay on disk and appear in skipped/warnings
   const dir = await makeTent();
   const fs = new NodeFs(dir);
   const badTask = "temp/sessions/ss-executor/tasks/broken-task.md";
-  const badDelivery = "temp/sessions/ss-executor/deliveries/broken-dl.md";
+  const badTaskResult = "temp/sessions/ss-executor/results/broken-rs.md";
   await fs.mkdir("temp/sessions/ss-executor/tasks");
-  await fs.mkdir("temp/sessions/ss-executor/deliveries");
+  await fs.mkdir("temp/sessions/ss-executor/results");
   await fs.writeFile(badTask, "---\ntype: task\n---\nnot a valid envelope\n");
-  await fs.writeFile(badDelivery, "---\ntype: note\n---\nnot a delivery\n");
+  await fs.writeFile(badTaskResult, "---\ntype: note\n---\nnot a result\n");
 
   const preview = await previewOperationalRetention(fs, {
     keepTerminalTasksDays: 0,
     now: NOW,
   });
   assert.ok(preview.skipped.some((s) => s.path === badTask));
-  assert.ok(preview.skipped.some((s) => s.path === badDelivery));
+  assert.ok(preview.skipped.some((s) => s.path === badTaskResult));
   assert.ok(preview.warnings.some((w) => w.includes(badTask)));
-  assert.ok(preview.warnings.some((w) => w.includes(badDelivery)));
+  assert.ok(preview.warnings.some((w) => w.includes(badTaskResult)));
   assert.equal(await fs.exists(badTask), true);
-  assert.equal(await fs.exists(badDelivery), true);
+  assert.equal(await fs.exists(badTaskResult), true);
 
   const purged = await purgeOperationalRetention(fs, {
     keepTerminalTasksDays: 0,
     now: NOW,
   });
   assert.equal(await fs.exists(badTask), true);
-  assert.equal(await fs.exists(badDelivery), true);
+  assert.equal(await fs.exists(badTaskResult), true);
   assert.ok(purged.skipped.some((s) => s.path === badTask));
 });
 
-test("preview: refuses task-group when a related delivery is draft or ready", async () => {
+test("preview: refuses task-group when a related result is draft or ready", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
   const task = await writeTerminalTask(fs, { state: "rejected", id: "tk-readyblk" });
-  // Terminal rejected task but still has a ready delivery (inconsistent / review pending)
-  const ready = await createDelivery(fs, clock(OLD), {
+  // Terminal rejected task but still has a ready result (inconsistent / review pending)
+  const ready = await createTaskResult(fs, clock(OLD), {
     taskId: "tk-readyblk",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "still ready",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "still ready",
     status: "ready",
   });
   await fs.writeFile(
@@ -414,23 +419,10 @@ test("preview: refuses task-group when a related delivery is draft or ready", as
     now: NOW,
   });
   assert.ok(!preview.candidates.some((c) => c.taskPath === task.path));
-  assert.ok(preview.warnings.some((w) => w.includes("non-terminal delivery")));
+  assert.ok(preview.warnings.some((w) => w.includes("non-terminal result")));
   assert.equal(await fs.exists(task.path), true);
   assert.equal(await fs.exists(ready.path), true);
 
-  const draft = await createDelivery(fs, clock(OLD), {
-    taskId: "tk-orphan-draft",
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "unfinished draft",
-    status: "draft",
-  });
-  const draftPreview = await previewOperationalRetention(fs, {
-    keepTerminalTasksDays: 0,
-    now: NOW,
-  });
-  assert.ok(!draftPreview.candidates.some((c) => c.deliveryPaths.includes(draft.path)));
-  assert.equal(await fs.exists(draft.path), true);
 });
 
 test("preview is read-only (purge is the only mutator)", async () => {

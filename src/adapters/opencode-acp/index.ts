@@ -86,10 +86,17 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
       }
       env[opts.envKey] = value;
     }
+    const command = plan.command?.trim();
+    if (!command) {
+      throw new Error("Agent Connection is missing canonical command");
+    }
+    if (!Array.isArray(plan.args)) {
+      throw new Error("Agent Connection is missing canonical args");
+    }
 
     return {
-      command: plan.command?.trim() || opts.executable || defaultOpenCodeExecutable(),
-      args: plan.args ? [...plan.args] : ["acp"],
+      command,
+      args: [...plan.args],
       cwd: plan.cwd,
       env,
       stopSignal: "SIGTERM",

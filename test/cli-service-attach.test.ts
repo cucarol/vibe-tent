@@ -193,7 +193,7 @@ test("tryAttachService: forged public health cannot authenticate an endpoint", a
       publicHealthCalls += 1;
       return jsonResponse(200, {
         status: "ok",
-        protocolVersion: 8,
+        protocolVersion: 9,
         instanceId: endpoint.instanceId,
         pid: endpoint.pid,
         startedAt: endpoint.startedAt,
@@ -252,7 +252,7 @@ test("tryAttachService: hanging authenticated candidates are aborted without hid
       id: request.id,
       result: {
         status: "ok",
-        protocolVersion: 8,
+        protocolVersion: 9,
         instanceId: healthy.instanceId,
         pid: healthy.pid,
         startedAt: healthy.startedAt,
@@ -553,7 +553,7 @@ test("ensureMountedWorkspace mounts once and reuses", async () => {
   });
 });
 
-test("task RPC layer: claim → deliver; ServiceClient observes same state; service stays healthy", async () => {
+test("task RPC layer: claim → submit; ServiceClient observes same state; service stays healthy", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc, dataDir) => {
     const observer = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -570,9 +570,9 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "Ship CLI attach",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -600,20 +600,20 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     assert.ok(found);
     assert.equal(found!.state, "running");
 
-    // Zero-commit deliver: commit-bearing Delivery requires an honest Git
+    // Zero-commit submit: commit-bearing TaskResult requires an honest Git
     // integration target; non-Git fixtures must not invent deadbeef SHAs.
-    const deliver = await runTaskCommand(
-      "deliver",
-      [taskPath, "--summary", "Done via CLI RPC"],
+    const submit = await runTaskCommand(
+      "submit",
+      [taskPath, "--report", "Done via CLI RPC"],
       { client: role.client, cwd: ws, dataDir }
     );
-    assert.equal(deliver.exitCode, 0, deliver.stderr);
-    assert.match(deliver.stdout, /Delivered via service RPC/);
+    assert.equal(submit.exitCode, 0, submit.stderr);
+    assert.match(submit.stdout, /Submitted via service RPC/);
 
-    const afterDeliver = (await observer.taskGet(workspaceId, taskPath)) as {
-      task: { state: string; activeDeliveryId?: string };
+    const afterSubmit = (await observer.taskGet(workspaceId, taskPath)) as {
+      task: { state: string; currentResultId?: string };
     };
-    assert.equal(afterDeliver.task.state, "delivered");
+    assert.equal(afterSubmit.task.state, "submitted");
 
     // CLI "exit" does not stop service
     const health = await fetch(`${svc.url}/health`);
@@ -622,7 +622,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
   });
 });
 
-test("task claim/deliver via attach (not injected client) sees same ServiceClient state", async () => {
+test("task claim/submit via attach (not injected client) sees same ServiceClient state", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc, dataDir) => {
     const setup = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -634,9 +634,9 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
     })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
       workNodeIds: [created.nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "agent path",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
 
@@ -652,20 +652,20 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
     const claimJson = JSON.parse(claim.stdout) as { state: string };
     assert.equal(claimJson.state, "running");
 
-    const deliver = await runTaskCommand(
-      "deliver",
-      [dispatched.taskPath, "--summary", "agent delivery", "--json"],
+    const submit = await runTaskCommand(
+      "submit",
+      [dispatched.taskPath, "--report", "agent result", "--json"],
       { cwd: ws, dataDir, attachOnly: true, packageRoot: repoRoot, env: role.env }
     );
-    assert.equal(deliver.exitCode, 0, deliver.stderr);
-    const deliverJson = JSON.parse(deliver.stdout) as { state: string };
-    assert.equal(deliverJson.state, "delivered");
+    assert.equal(submit.exitCode, 0, submit.stderr);
+    const submitJson = JSON.parse(submit.stdout) as { state: string };
+    assert.equal(submitJson.state, "submitted");
 
     const observer = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const got = (await observer.taskGet(mount.workspaceId, dispatched.taskPath)) as {
       task: { state: string };
     };
-    assert.equal(got.task.state, "delivered");
+    assert.equal(got.task.state, "submitted");
 
     // Service still healthy after command layer finished
     const h = (await observer.health()) as { status: string };
@@ -673,7 +673,7 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
   });
 });
 
-test("task command errors: missing summary / unknown sub / attach-only miss", async () => {
+test("task command errors: missing report / unknown sub / attach-only miss", async () => {
   const missing = await runTaskCommand("nosuch", [], { attachOnly: true, dataDir: path.join(os.tmpdir(), "no-svc-" + Date.now()) });
   assert.equal(missing.exitCode, 1);
   assert.match(missing.stderr, /Unknown task subcommand|No healthy Local Tent Service/);
@@ -689,19 +689,19 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       workNodeIds: [created.nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "x",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
     await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);
 
-    const noSummary = await runTaskCommand("deliver", [dispatched.taskPath], {
+    const noReport = await runTaskCommand("submit", [dispatched.taskPath], {
       client,
       cwd: ws,
     });
-    assert.equal(noSummary.exitCode, 1);
-    assert.match(noSummary.stderr, /--summary/);
+    assert.equal(noReport.exitCode, 1);
+    assert.match(noReport.stderr, /--report/);
   });
 });
 
@@ -717,9 +717,9 @@ test("task list/get human output uses canonical assignee fields", async () => {
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       workNodeIds: [created.nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "list test",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const list = await runTaskCommand("list", [], { client, cwd: ws, dataDir });
@@ -730,7 +730,7 @@ test("task list/get human output uses canonical assignee fields", async () => {
     const get = await runTaskCommand("get", [dispatched.taskPath], { client, cwd: ws, dataDir });
     assert.equal(get.exitCode, 0, get.stderr);
     assert.match(get.stdout, /state: queued/);
-    assert.match(get.stdout, /roleId: rl-executor/);
+    assert.match(get.stdout, /assigneeRoleId: rl-executor/);
   });
 });
 
@@ -746,9 +746,9 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       workNodeIds: [created.nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "cli user ack",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const role = await enterRoleClient(svc, mount.workspaceId, ws);
     await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);

@@ -51,16 +51,16 @@ function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("test start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
   return runtime.reserveSession({
     sessionId: start.sessionId,
     connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace,
     workspaceLane: start.workspaceLane,
     runtimeWorkspace: start.runtimeWorkspace,
     cwd: start.cwd,
-  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
+  }).then(() => runtime.startSession({ ...start, currentTaskId, workspace }));
 }
 
 /** Subscribe before startSession so early prompt_complete is not missed. */
@@ -323,7 +323,7 @@ test("fileUriForSystemRelative: rejects escape and missing root", () => {
 
 test("collectBootstrapImageRefsFromTask: user prompt + claims only (not arbitrary notes)", async () => {
   const refs = await collectBootstrapImageRefsFromTask({
-    userPrompt: "see ![u](attachments/user.png)",
+    prompt: "see ![u](attachments/user.png)",
     claimBodies: [
       {
         body: "claimed ![c](attachments/claim.png)",

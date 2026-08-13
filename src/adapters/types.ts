@@ -104,7 +104,7 @@ export interface ManagedSession {
    * session/prompt (bootstrap or U2A follow-up) is in flight.
    * Session may stay live/idle between turns; missing impl → not busy.
    */
-  isTurnBusy?(): boolean;
+  isTurnActive?(): boolean;
   stop(reason: StopReason): Promise<void>;
   /**
    * Optional follow-up session/prompt on a live managed session (U2A resume).

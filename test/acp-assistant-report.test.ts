@@ -53,7 +53,7 @@ test("multi-segment simulation: intermediate + tools + final → last only", () 
 
   // Final report after tools (streamed chunks).
   current += "FINAL_";
-  current += "DELIVERY";
+  current += "RESULT";
   ({ segments, current } = sealAssistantMessageSegment(segments, current));
   assert.equal(current, "");
   assert.equal(selectFinalAssistantReport(segments), "FINAL_DELIVERY");

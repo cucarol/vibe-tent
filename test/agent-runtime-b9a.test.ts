@@ -35,16 +35,16 @@ function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("test start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
   return runtime.reserveSession({
     sessionId: start.sessionId,
     connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace,
     workspaceLane: start.workspaceLane,
     runtimeWorkspace: start.runtimeWorkspace,
     cwd: start.cwd,
-  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
+  }).then(() => runtime.startSession({ ...start, currentTaskId, workspace }));
 }
 
 function testConnection(connectionId: string, adapterId: string, extra: Omit<AgentConnectionConfig, "connectionId" | "provider" | "adapterId"> = {}): AgentConnectionConfig {
@@ -142,14 +142,14 @@ test("startSession / probe / stopSession with fake provider (no paid requests)",
   await waitFor(events, "session.live", sessionId);
 
   const probeLive = await runtime.probe(sessionId);
-  assert.equal(probeLive.alive, true);
+  assert.equal(probeLive.isAlive, true);
   assert.equal(probeLive.state, "live");
 
   await runtime.stopSession(sessionId, "user");
   await waitFor(events, "session.exited", sessionId);
 
   const probeStopped = await runtime.probe(sessionId);
-  assert.equal(probeStopped.alive, false);
+  assert.equal(probeStopped.isAlive, false);
   assert.ok(probeStopped.state === "stopped" || probeStopped.state === "failed");
 
   await runtime.shutdown();
@@ -178,7 +178,7 @@ test("launch failure records session.failed without spawning paid provider", asy
 
   await waitFor(events, "session.failed", sessionId);
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   assert.equal(probe.state, "failed");
   assert.match(probe.lastError ?? "", /missing binary/);
 
@@ -204,7 +204,7 @@ test("ProcessSupervisor rejects missing executables without an unhandled child e
   assert.equal(supervisor.get("ss-missingbin"), null);
 });
 
-test("runtime records missing provider executable as an ordinary failed session", async () => {
+test("runtime records missing provider command as an ordinary failed session", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const adapter: ProviderAdapter = {
@@ -304,7 +304,7 @@ test("managed terminal during startup cannot be overwritten back to live", async
   );
 
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   assert.equal(probe.state, "failed");
   assert.equal(
     events.filter((event) => event.type === "session.failed").length,
@@ -523,7 +523,7 @@ test("natural non-zero exit maps to session.failed", async () => {
   await waitFor(events, "session.failed", sessionId, 5000);
 
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   assert.equal(probe.state, "failed");
 
   await runtime.shutdown();
@@ -613,15 +613,15 @@ test("concurrent starts for one session launch exactly one managed provider", as
     connectionId: "single-flight-connection",
     cwd,
   };
-  const lastTaskId = "tk-startonce";
+  const currentTaskId = "tk-startonce";
   await runtime.reserveSession({
     sessionId: request.sessionId,
     connectionId: request.connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace: cwd,
     cwd,
   });
-  const start = { sessionId: request.sessionId, lastTaskId, workspace: cwd, cwd };
+  const start = { sessionId: request.sessionId, currentTaskId, workspace: cwd, cwd };
 
   const results = await Promise.allSettled([
     runtime.startSession(start),
@@ -645,15 +645,15 @@ test("concurrent starts cannot tear down the winning CLI process", async () => {
     connectionId: "fake-default",
     cwd,
   };
-  const lastTaskId = "tk-clistart1";
+  const currentTaskId = "tk-clistart1";
   await runtime.reserveSession({
     sessionId: request.sessionId,
     connectionId: request.connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace: cwd,
     cwd,
   });
-  const start = { sessionId: request.sessionId, lastTaskId, workspace: cwd, cwd };
+  const start = { sessionId: request.sessionId, currentTaskId, workspace: cwd, cwd };
 
   const results = await Promise.allSettled([
     runtime.startSession(start),
@@ -662,7 +662,7 @@ test("concurrent starts cannot tear down the winning CLI process", async () => {
 
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
-  assert.equal((await runtime.probe(request.sessionId)).alive, true);
+  assert.equal((await runtime.probe(request.sessionId)).isAlive, true);
   assert.deepEqual(runtime.supervisor.listLive(), [request.sessionId]);
   await runtime.shutdown();
 });
@@ -746,7 +746,7 @@ test("shutdown stops push children (service-stop policy)", async () => {
   runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const sessionId = "ss-shut001";
   await startConnection(runtime, { sessionId, connectionId: "fake-default", cwd });
-  assert.equal((await runtime.probe(sessionId)).alive, true);
+  assert.equal((await runtime.probe(sessionId)).isAlive, true);
 
   await runtime.shutdown();
   assert.equal(runtime.supervisor.listLive().length, 0);
@@ -754,7 +754,7 @@ test("shutdown stops push children (service-stop policy)", async () => {
   // New runtime on same disk sees non-alive process
   const runtime2 = createAgentRuntime({ dataDir });
   const probe = await runtime2.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   assert.ok(probe.state === "stopped" || probe.state === "failed");
   await runtime2.shutdown();
 });
@@ -790,7 +790,7 @@ test("reconcileOnBoot marks dead non-resume sessions failed/stopped", async () =
   assert.equal(results.length, 2);
   const zombie = results.find((result) => result.sessionId === "ss-zombie1");
   assert.ok(zombie);
-  assert.equal(zombie!.alive, false);
+  assert.equal(zombie!.isAlive, false);
   assert.ok(zombie!.state === "failed" || zombie!.state === "stopped");
 
   const rec = await reg.read("ss-zombie1");
@@ -995,7 +995,7 @@ test("native resume requires both provider conversation identities and exact equ
     assert.equal(stopCalls, 1);
     const record = await runtime.registry.read(sessionId);
     assert.equal(record?.state, "failed");
-    assert.notEqual(record?.contextRestored, true);
+    assert.notEqual(record?.providerContextRestored, true);
     await runtime.shutdown();
   }
 });
@@ -1005,7 +1005,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
   const cwd = await tempCwd();
   const resumedPlans: Array<{
     model?: string;
-    baseUrl?: string;
+    endpoint?: string;
     secret?: string;
     serviceDataDir?: string;
   }> = [];
@@ -1036,10 +1036,10 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
       };
     },
     resumeManagedSession: async (plan, token, emit) => {
-      const acp = plan.extras?.acp as { model?: string; baseUrl?: string } | undefined;
+      const acp = plan.extras?.acp as { model?: string; endpoint?: string } | undefined;
       resumedPlans.push({
         model: acp?.model,
-        baseUrl: acp?.baseUrl,
+        endpoint: acp?.endpoint,
         secret: plan.env?.SNAPSHOT_KEY,
         serviceDataDir: plan.env?.TENT_SERVICE_DATA_DIR,
       });
@@ -1060,7 +1060,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
     provider: "test",
     adapterId: adapter.id,
     model: "old-model",
-    baseUrl: "https://old.invalid/v1",
+    endpoint: "https://old.invalid/v1",
     envKey: "SNAPSHOT_KEY",
     launchSecretRef: "credential-1",
   };
@@ -1088,7 +1088,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
     {
       ...original,
       model: "new-model",
-      baseUrl: "https://new.invalid/v1",
+      endpoint: "https://new.invalid/v1",
     },
   ]);
   secret = "secret-v2";
@@ -1099,7 +1099,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
   });
   assert.deepEqual(resumedPlans[0], {
     model: "old-model",
-    baseUrl: "https://old.invalid/v1",
+    endpoint: "https://old.invalid/v1",
     secret: "secret-v2",
     serviceDataDir: dataDir,
   });

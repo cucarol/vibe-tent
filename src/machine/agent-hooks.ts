@@ -52,7 +52,7 @@ export interface AgentHookPathsOptions {
   /** Override home (tests). Default: os.homedir(). */
   home?: string;
   /**
-   * Optional absolute path to the tent executable / entry used in projected commands.
+   * Optional absolute path to the Tent program entry used in projected commands.
    * Default: bare `tent` on PATH (product expectation).
    */
   tentCommand?: string;

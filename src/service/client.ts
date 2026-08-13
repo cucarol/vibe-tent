@@ -1,11 +1,9 @@
 // Typed ServiceClient for Desktop / CLI attach (task.* + docs.* only).
 
 import type {
-  DeliveryProjection,
+  TaskResultProjection,
   EventEnvelope,
   GraphProjection,
-  NodeCollaboration,
-  NodeCollaborationsResult,
   NodeProjection,
   OutputProvenance,
   PendingInteractionListResult,
@@ -377,14 +375,14 @@ export class ServiceClient {
     return this.call("docs.importAttachment", { workspaceId, ...args });
   }
   /**
-   * User-only set compound Node type (MutationBus + baseEtag).
+   * User-only set or omit the single optional Node type (MutationBus + baseEtag).
    * Missing baseEtag → -32008; stale → -32009. Emits node.changed reason docs.setType.
    */
   docsSetType(
     workspaceId: string,
     args: {
       nodeId: string;
-      type: string;
+      type: string | null;
       baseEtag: string;
       actor?: string;
     }
@@ -526,38 +524,6 @@ export class ServiceClient {
   }
 
   // ---- convenience: registry ----
-  registryTypes(workspaceId: string) {
-    return this.call("registry.types", { workspaceId });
-  }
-  /**
-   * User-only custom secondary type create. Primaries / built-ins fail loud.
-   * Emits registry.types.updated.
-   */
-  registryTypeCreate(
-    workspaceId: string,
-    args: { name: string; actor?: string }
-  ) {
-    return this.call("registry.type.create", {
-      workspaceId,
-      name: args.name,
-      actor: args.actor ?? "user",
-    });
-  }
-  /**
-   * User-only custom secondary type delete. confirmation must equal name.
-   * In-use and built-in fail loud. Emits registry.types.updated.
-   */
-  registryTypeDelete(
-    workspaceId: string,
-    args: { name: string; confirmation: string; actor?: string }
-  ) {
-    return this.call("registry.type.delete", {
-      workspaceId,
-      name: args.name,
-      confirmation: args.confirmation,
-      actor: args.actor ?? "user",
-    });
-  }
   /** Read-only global tag vocabulary. */
   registryTags(workspaceId: string) {
     return this.call("registry.tags", { workspaceId });
@@ -724,17 +690,11 @@ export class ServiceClient {
        * Explicit parent actor (V0.2). Required on every dispatch.
        * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
        */
-      parentActor: { kind: "user" | "role"; id: string };
-      /**
-       * Sub-dispatch Git lane. When true, requires durable parent Role
-       * and a real Git workspace lane; targetBranch becomes tent-role/<parent>.
-       * asSub is lane-only — not review authority.
-       */
-      asSub?: boolean;
+      requester: { kind: "user" | "role"; id: string };
       acceptMode?: "review-required" | "auto-accept" | "agent-decide";
     } & (
-      | { roleId: string; connectionId?: never }
-      | { connectionId: string; roleId?: never }
+      | { assigneeRoleId: string; connectionId?: never }
+      | { connectionId: string; assigneeRoleId?: never }
     )
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });
@@ -745,12 +705,12 @@ export class ServiceClient {
   /**
    * Create and immediately claim a durable Role's own execution Task.
    * This is execution ownership, not downstream dispatch: there is no target,
-   * caller-authored responsibility override, asSub flag, or managed Session launch.
+   * caller-authored responsibility override or managed Session launch.
    */
   taskClaimDirect(
     workspaceId: string,
     args: {
-      roleId: string;
+      assigneeRoleId: string;
       workNodeIds: string[];
       contextNodeIds: string[];
       prompt: string;
@@ -800,39 +760,37 @@ export class ServiceClient {
   ) {
     return this.call("task.sendInput", { workspaceId, taskPath, ...args });
   }
-  taskDeliver(
+  taskSubmit(
     workspaceId: string,
     taskPath: string,
     args: {
-      summary: string;
+      report: string;
       commits?: string[];
       checks?: unknown[];
       artifactRefs?: import("../core/artifact.js").ArtifactRef[];
       decision?: string;
     }
   ) {
-    return this.call("task.deliver", { workspaceId, taskPath, ...args });
+    return this.call("task.submit", { workspaceId, taskPath, ...args });
   }
   taskAccept(
     workspaceId: string,
-    deliveryId: string,
-    actor: string,
-    opts?: { outputNodeIds?: string[] }
+    resultId: string,
+    actor: string
   ) {
     return this.call("task.accept", {
       workspaceId,
-      deliveryId,
+      resultId,
       actor,
-      ...(opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}),
     });
   }
   taskReject(
     workspaceId: string,
-    deliveryId: string,
+    resultId: string,
     actor: string,
     opts?: { note?: string; resume?: boolean }
   ) {
-    return this.call("task.reject", { workspaceId, deliveryId, actor, ...opts });
+    return this.call("task.reject", { workspaceId, resultId, actor, ...opts });
   }
   taskInterrupt(workspaceId: string, taskPath: string) {
     return this.call("task.interrupt", { workspaceId, taskPath });
@@ -853,7 +811,7 @@ export class ServiceClient {
   /**
    * Explicit fresh managed Session on the same Task when the bound provider
    * context is unusable. Not a silent fallback from taskStartSession.
-   * Uses the Session's immutable Agent Connection snapshot; refuses turnBusy with
+   * Uses the Session's immutable Agent Connection snapshot; refuses isTurnActive with
    * TURN_BUSY (no force).
    * Shares the per-Task managed-session execution slot with startSession.
    */
@@ -882,45 +840,34 @@ export class ServiceClient {
   }
 
   /**
-   * List deliveries for a workspace (optional Task / Node / responsibility filters).
+   * List Task Results for a workspace (optional Task / Node / responsibility filters).
    * Read projection only — review still uses task.accept / task.reject.
    */
-  deliveryList(
+  taskResultList(
     workspaceId: string,
-    opts?: { taskId?: string; nodeId?: string; roleId?: string; sessionId?: string }
+    opts?: {
+      taskId?: string;
+      nodeId?: string;
+      assigneeRoleId?: string;
+      executionSessionId?: string;
+    }
   ) {
-    return this.call<{ workspaceId: string; deliveries: DeliveryProjection[] }>(
-      "delivery.list",
+    return this.call<{ workspaceId: string; results: TaskResultProjection[] }>(
+      "taskResult.list",
       { workspaceId, ...opts }
     );
   }
 
-  /** Get one delivery by id within a workspace. */
-  deliveryGet(workspaceId: string, id: string) {
-    return this.call<{ workspaceId: string; delivery: DeliveryProjection }>(
-      "delivery.get",
+  /** Get one Task Result by id within a workspace. */
+  taskResultGet(workspaceId: string, id: string) {
+    return this.call<{ workspaceId: string; result: TaskResultProjection }>(
+      "taskResult.get",
       { workspaceId, id }
     );
   }
 
-  /** Exact-Node collaboration projection with at most one active Task. */
-  nodeCollaboration(workspaceId: string, nodeId: string) {
-    return this.call<NodeCollaboration>("node.collaboration", {
-      workspaceId,
-      nodeId,
-    });
-  }
-
-  /** Batch exact-Node collaboration; input order is preserved. */
-  nodeCollaborations(workspaceId: string, nodeIds: string[]) {
-    return this.call<NodeCollaborationsResult>("node.collaborations", {
-      workspaceId,
-      nodeIds,
-    });
-  }
-
   /**
-   * V0.2 Output provenance: Output → Delivery → Task → sourceNode by id.
+   * V0.2 Output provenance: Output → Task Result → Task → sourceNode by id.
    * Unbound type=output returns bound:false; never infers by path/name/time.
    */
   outputProvenance(
@@ -943,7 +890,7 @@ export class ServiceClient {
     return this.call<GraphProjection>("graph.projection", { workspaceId });
   }
 
-  // ---- convenience: proposal (triage; separate from delivery review) ----
+  // ---- convenience: proposal (triage; separate from Task Result review) ----
   proposalList(
     workspaceId: string,
     opts?: { nodeId?: string; status?: "pending" | "accepted" | "rejected" | "all" }
@@ -989,7 +936,7 @@ export class ServiceClient {
       sessionId?: string;
       roleId?: string;
       externalKey?: string;
-      lastTaskId?: string;
+      currentTaskId?: string;
       cwd?: string;
     } = {}
   ) {
@@ -1077,7 +1024,7 @@ export class ServiceClient {
 
   /**
    * Unified A2U pending read projection for one workspace.
-   * Aggregates user-targeted Decision Requests / toolApproval / ready Delivery.
+   * Aggregates user-targeted Decision Requests / toolApproval / ready Task Results.
    * Resolve actions stay on domain RPCs — no interaction.resolve.
    */
   interactionListPending(workspaceId: string) {

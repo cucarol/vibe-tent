@@ -46,9 +46,9 @@ async function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("test start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
-  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
-  return runtime.startSession({ ...start, lastTaskId, workspace });
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, currentTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, currentTaskId, workspace });
 }
 
 const seed = (): AgentConnectionConfig[] => [
@@ -64,7 +64,6 @@ const seed = (): AgentConnectionConfig[] => [
     adapterId: GROK_ACP_ADAPTER_ID,
     model: DEFAULT_GROK_MODEL,
     envKey: "CPA_GROK_API_KEY",
-    baseUrlEnvKey: "CPA_GROK_BASE_URL",
     permissionPolicy: "deny",
   },
 ];

@@ -10,7 +10,7 @@ import type {
 import type {
   CollaborationActiveTask,
   CollaborationDecision,
-  CollaborationDelivery,
+  CollaborationTaskResult,
 } from "../model/workspace-collaboration-view.js";
 
 export type CollaborationPanelProps = {
@@ -25,7 +25,7 @@ export function collaborationPanelIdentity(view: CollaborationSurfaceView): stri
 }
 
 function progressLabel(state: string): string {
-  if (state === "delivered") return "已返回";
+  if (state === "submitted") return "已返回";
   if (state === "waiting") return "等待决定";
   if (state === "failed" || state === "interrupted" || state === "rejected") return "未完成";
   if (state === "accepted") return "已接纳";
@@ -72,7 +72,7 @@ function ActiveTaskSection({ task }: { task: CollaborationActiveTask }) {
   const execution = task.execution?.label;
   const progress = task.pendingDecision
     ? "等待你的决定"
-    : task.readyDelivery
+    : task.readyResult
       ? task.responsibility.kind === "user"
         ? "内容已返回，等待接纳"
         : `内容已返回，等待${owner}接纳`
@@ -121,19 +121,19 @@ function DispatchSection({ node, allNodes, view, actions }: CollaborationPanelPr
   </section>;
 }
 
-function DeliveryItem({ delivery, view, actions }: { delivery: CollaborationDelivery; view: CollaborationSurfaceView; actions: CollaborationSurfaceActions }) {
+function TaskResultItem({ result, view, actions }: { result: CollaborationTaskResult; view: CollaborationSurfaceView; actions: CollaborationSurfaceActions }) {
   const [rejecting, setRejecting] = useState(false); const [note, setNote] = useState(""); const [error, setError] = useState<string | null>(null);
-  const busy = view.busyKey === `delivery:${delivery.deliveryId}`;
-  return <article className="tn-inbox-item" data-kind="delivery"><div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="warning">待接纳</StatusBadge></div><p>{delivery.summary || "对方没有提供摘要。"}</p>
-    {rejecting ? <div className="tn-inline-form"><TextField multiline label="退回说明" rows={3} value={note} disabled={busy} onChange={(event) => setNote(event.target.value)} /><div><Button size="compact" variant="quiet" onClick={() => setRejecting(false)}>取消</Button><Button size="compact" variant="danger" disabled={!note.trim()} loading={busy} onClick={() => void actions.rejectDelivery(delivery.deliveryId, note.trim()).then((ok) => { if (!ok) setError("退回未完成。"); })}>退回修改</Button></div></div>
-    : <div className="tn-inbox-actions"><Button size="compact" variant="quiet" disabled={!view.canMutate} onClick={() => setRejecting(true)}>退回</Button><Button size="compact" variant="primary" loading={busy} disabled={!view.canMutate} onClick={() => void actions.acceptDelivery(delivery.deliveryId).then((ok) => { if (!ok) setError("接纳未完成。"); })}>接纳</Button></div>}
+  const busy = view.busyKey === `result:${result.resultId}`;
+  return <article className="tn-inbox-item" data-kind="result"><div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="warning">待接纳</StatusBadge></div><p>{result.summary || "对方没有提供摘要。"}</p>
+    {rejecting ? <div className="tn-inline-form"><TextField multiline label="退回说明" rows={3} value={note} disabled={busy} onChange={(event) => setNote(event.target.value)} /><div><Button size="compact" variant="quiet" onClick={() => setRejecting(false)}>取消</Button><Button size="compact" variant="danger" disabled={!note.trim()} loading={busy} onClick={() => void actions.rejectTaskResult(result.resultId, note.trim()).then((ok) => { if (!ok) setError("退回未完成。"); })}>退回修改</Button></div></div>
+    : <div className="tn-inbox-actions"><Button size="compact" variant="quiet" disabled={!view.canMutate} onClick={() => setRejecting(true)}>退回</Button><Button size="compact" variant="primary" loading={busy} disabled={!view.canMutate} onClick={() => void actions.acceptTaskResult(result.resultId).then((ok) => { if (!ok) setError("接纳未完成。"); })}>接纳</Button></div>}
     {error ? <p className="tn-action-error" role="alert">{error}</p> : null}</article>;
 }
 
-function RoleDeliveryNotice({ delivery, owner }: { delivery: CollaborationDelivery; owner: string }) {
-  return <article className="tn-inbox-item" data-kind="delivery" data-actionable="false">
+function RoleTaskResultNotice({ result, owner }: { result: CollaborationTaskResult; owner: string }) {
+  return <article className="tn-inbox-item" data-kind="result" data-actionable="false">
     <div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="neutral">等待负责角色</StatusBadge></div>
-    <p>{delivery.summary || "对方没有提供摘要。"}</p>
+    <p>{result.summary || "对方没有提供摘要。"}</p>
     <p>由 {owner} 继续审阅；这里仅展示结果。</p>
   </article>;
 }
@@ -155,7 +155,7 @@ export function CollaborationPanel(props: CollaborationPanelProps) {
   const task = exactSelected?.activeTask ?? null;
   return <div className="tn-collaboration-panel" data-collaboration-status={props.view.status} data-collaboration-identity={collaborationPanelIdentity(props.view)}>
     <ResourceNotice view={props.view} />
-    {exactSelected ? <>{task ? <ActiveTaskSection task={task} /> : <DispatchSection {...props} />}{task?.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task?.readyDelivery ? <section className="tn-collaboration-section tn-inbox">{task.responsibility.kind === "user" ? <DeliveryItem delivery={task.readyDelivery} view={props.view} actions={props.actions} /> : <RoleDeliveryNotice delivery={task.readyDelivery} owner={task.responsibility.label} />}</section> : null}</> : null}
+    {exactSelected ? <>{task ? <ActiveTaskSection task={task} /> : <DispatchSection {...props} />}{task?.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task?.readyResult ? <section className="tn-collaboration-section tn-inbox">{task.responsibility.kind === "user" ? <TaskResultItem result={task.readyResult} view={props.view} actions={props.actions} /> : <RoleTaskResultNotice result={task.readyResult} owner={task.responsibility.label} />}</section> : null}</> : null}
     {(props.view.status === "error" || props.view.status === "stale") ? <Button variant="quiet" size="compact" onClick={() => void props.actions.retry()}>重新读取</Button> : null}
   </div>;
 }

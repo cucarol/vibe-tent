@@ -105,7 +105,7 @@ function yamlStr(s: string): string {
 function oneLineNote(node: Node): string {
   // 身份文件正文第一行非空文字当摘要
   const firstLine = node.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
-  return firstLine ? firstLine.slice(0, 40) : node.type;
+  return firstLine ? firstLine.slice(0, 40) : node.type ?? "";
 }
 
 function allNodes(tent: LoadedTent): Node[] {

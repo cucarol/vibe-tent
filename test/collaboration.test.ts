@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import {
-  createDelivery,
-  loadDeliveries,
-  loadDelivery,
-  removeNonAcceptedDeliveriesForNode,
-} from "../src/core/delivery.js";
+  createTaskResult,
+  loadTaskResults,
+  loadTaskResult,
+  writeTaskResult,
+} from "../src/core/task-result.js";
 import { dispatch, forceRelease } from "../src/core/ops.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadTaskRecord } from "../src/core/task.js";
 import {
   taskAccept,
   taskClaim,
-  taskDeliver,
+  taskSubmit,
   taskFail,
   taskInterrupt,
   taskReject,
@@ -31,11 +31,11 @@ test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
     tentRoot: dir,
   };
   const result = await dispatch(env as any, "cx-p1", {
-    sessionId: "ss-executor",
+    executionSessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "for inbox",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "for inbox",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
   const tent = await loadTent(fsa);
@@ -47,7 +47,7 @@ test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
   assert.equal((await buildInbox(tent)).length, 0);
 });
 
-test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted 记录", async () => {
+test("result:驳回后 task 仍 running,重新交付后 accept 保留 accepted 记录", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -58,64 +58,66 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
   };
 
   const result = await dispatch(env as any, "cx-p1", {
-    sessionId: "ss-executor",
+    executionSessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "Implement delivery single-track",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "Implement result single-track",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
 
-  const first = await taskDeliver(env as any, result.taskPath, {
-    summary: "完成第一版",
-    commits: ["aaa", "bbb", "aaa"],
+  const first = await taskSubmit(env as any, result.taskPath, {
+    report: "完成第一版",
+    commits: ["a".repeat(40), "b".repeat(40), "a".repeat(40)],
+    targetHead: "f".repeat(40),
   });
-  assert.match(first.delivery.path, /^temp\/sessions\/ss-executor\/deliveries\/dl-/);
-  assert.deepEqual(first.delivery.commits, ["aaa", "bbb"]);
-  assert.equal(first.delivery.status, "ready");
-  assert.equal((await loadDeliveries(fsa, { sourceNodeId: "cx-p1" }))[0].status, "ready");
+  assert.match(first.result.path, /^temp\/sessions\/ss-executor\/results\/rs-/);
+  assert.deepEqual(first.result.commits, ["a".repeat(40), "b".repeat(40)]);
+  assert.equal(first.result.status, "ready");
+  assert.equal((await loadTaskResults(fsa)).find((item) => item.id === first.result.id)?.status, "ready");
 
   const rejected = await taskReject(env as any, result.taskPath, {
     actor: "user",
-    deliveryId: first.delivery.id,
+    resultId: first.result.id,
     note: "需要补测试",
   });
-  assert.equal(rejected.delivery.status, "rejected");
-  assert.equal(rejected.delivery.review?.note, "需要补测试");
+  assert.equal(rejected.result.status, "rejected");
+  assert.equal(rejected.result.review?.note, "需要补测试");
   assert.equal(rejected.task.state, "running");
   const mid = (await loadTent(fsa)).byId.get("cx-p1")!;
   assert.equal(mid.fm.owner, undefined);
   assert.equal(mid.fm.status, undefined);
 
-  const revised = await taskDeliver(env as any, result.taskPath, {
-    summary: "已补测试",
-    commits: ["ccc"],
+  const revised = await taskSubmit(env as any, result.taskPath, {
+    report: "已补测试",
+    commits: ["c".repeat(40)],
+    targetHead: "f".repeat(40),
   });
-  assert.equal(revised.delivery.status, "ready");
+  assert.equal(revised.result.status, "ready");
   let integrated: string[] = [];
   const accepted = await taskAccept(env as any, result.taskPath, {
     actor: "user",
-    deliveryId: revised.delivery.id,
+    resultId: revised.result.id,
     integrate: async (commits) => {
       integrated = commits;
     },
   });
-  assert.deepEqual(integrated, ["ccc"]);
-  assert.equal(accepted.delivery.status, "accepted");
+  assert.deepEqual(integrated, ["c".repeat(40)]);
+  assert.equal(accepted.result.status, "accepted");
   assert.equal(accepted.task.state, "accepted");
   const box = (await loadTent(fsa)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
-  // Accepted delivery remains as operational history (not deleted like legacy report).
-  assert.equal(await fsa.exists(accepted.delivery.path), true);
-  assert.equal((await loadDelivery(fsa, accepted.delivery.path)).status, "accepted");
-  // Formal report body is Delivery.summary only — no temp/<role>/reports dual track.
-  assert.equal(accepted.delivery.summary, "已补测试");
+  // Accepted result remains as operational history (not deleted like legacy report).
+  assert.equal(await fsa.exists(accepted.result.path), true);
+  assert.equal((await loadTaskResult(fsa, accepted.result.path)).status, "accepted");
+  // Formal report body is TaskResult.summary only — no temp/<role>/reports dual track.
+  assert.equal(accepted.result.report, "已补测试");
   assert.equal(await fsa.exists("temp/sessions/ss-executor/reports/cx-p1.md"), false);
-  assert.match(accepted.delivery.path, /\/deliveries\//);
+  assert.match(accepted.result.path, /\/results\//);
 });
 
-test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async () => {
+test("result:单轨写入 results，不创建 legacy reports 路径", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -125,161 +127,162 @@ test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async
     tentRoot: dir,
   };
   const result = await dispatch(env as any, "cx-p1", {
-    sessionId: "ss-executor",
+    executionSessionId: "ss-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "Delivery-only formal record",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "TaskResult-only formal record",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
-  const delivered = await taskDeliver(env as any, result.taskPath, {
-    summary: "User-facing report body via Delivery.summary",
-    commits: ["deadbeef"],
+  const delivered = await taskSubmit(env as any, result.taskPath, {
+    report: "User-facing report body via TaskResult.report",
+    commits: ["d".repeat(40)],
+    targetHead: "f".repeat(40),
     checks: [{ name: "typecheck", command: "npm run typecheck", exitCode: 0 }],
     artifactRefs: [{ kind: "path", target: "dist/out.js" }],
   });
-  assert.equal(delivered.delivery.summary, "User-facing report body via Delivery.summary");
-  assert.deepEqual(delivered.delivery.commits, ["deadbeef"]);
-  assert.equal(delivered.delivery.checks[0]?.name, "typecheck");
-  assert.equal(delivered.delivery.artifactRefs[0]?.target, "dist/out.js");
-  assert.match(delivered.delivery.path, /^temp\/sessions\/ss-executor\/deliveries\/dl-/);
+  assert.equal(delivered.result.report, "User-facing report body via TaskResult.report");
+  assert.deepEqual(delivered.result.commits, ["d".repeat(40)]);
+  assert.equal(delivered.result.checks[0]?.name, "typecheck");
+  assert.equal(delivered.result.artifactRefs[0]?.target, "dist/out.js");
+  assert.match(delivered.result.path, /^temp\/sessions\/ss-executor\/results\/rs-/);
   assert.equal(await fsa.exists("temp/sessions/ss-executor/reports"), false);
   assert.equal(await fsa.exists(`temp/sessions/ss-executor/reports/cx-p1.md`), false);
-  const raw = await fsa.readFile(delivered.delivery.path);
+  const raw = await fsa.readFile(delivered.result.path);
   assert.match(raw, /^---\n/);
-  assert.match(raw, /type: delivery/);
-  assert.match(raw, /User-facing report body via Delivery\.summary/);
+  assert.match(raw, /type: task-result/);
+  assert.match(raw, /User-facing report body via TaskResult\.report/);
 });
 
-test("delivery:force-release 删除非 accepted，保留 accepted 历史", async () => {
+test("result:force-release preserves immutable Result history", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-01T02:00:00.000Z" };
-  const ready = await createDelivery(fsa, clock, {
+  const ready = await createTaskResult(fsa, clock, {
     taskId: "tk-ready",
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "ready to drop",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "ready history",
     status: "ready",
   });
-  const accepted = await createDelivery(fsa, clock, {
+  const accepted = await createTaskResult(fsa, clock, {
     taskId: "tk-accepted",
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "keep history",
-    status: "accepted",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "accepted history",
+    status: "ready",
   });
-  await removeNonAcceptedDeliveriesForNode(fsa, "cx-g2");
-  assert.equal(await fsa.exists(ready.path), false);
+  accepted.status = "accepted";
+  accepted.review = { reviewer: "user", at: clock.now() };
+  await writeTaskResult(fsa, accepted);
+  assert.equal(await fsa.exists(ready.path), true);
   assert.equal(await fsa.exists(accepted.path), true);
-  assert.equal((await loadDelivery(fsa, accepted.path)).status, "accepted");
+  assert.equal((await loadTaskResult(fsa, accepted.path)).status, "accepted");
 
-  // Re-create ready and ensure forceRelease uses the same cleanup.
-  const ready2 = await createDelivery(fsa, clock, {
+  // Force release changes occupation only and never rewrites Result history.
+  const ready2 = await createTaskResult(fsa, clock, {
     taskId: "tk-ready2",
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "ready again",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "ready again",
     status: "ready",
   });
   await forceRelease(
     { fs: fsa, clock, tentName: "wqb", tentRoot: dir } as any,
     "cx-g2"
   );
-  assert.equal(await fsa.exists(ready2.path), false);
+  assert.equal(await fsa.exists(ready2.path), true);
   assert.equal(await fsa.exists(accepted.path), true);
   const box = (await loadTent(fsa)).byId.get("cx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
 });
 
-test("task interrupt/fail remove only their own non-accepted Delivery", async () => {
+test("task interrupt/fail preserve immutable Task Result history", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-01T02:30:00.000Z" };
   const env = { fs: fsa, clock, tentName: "demo", tentRoot: dir };
 
   const first = await dispatch(env as any, "cx-g2", {
-    sessionId: "ss-workera",
+    executionSessionId: "ss-workera",
     workNodeIds: ["cx-g2"],
     contextNodeIds: [],
-    userPrompt: "first task",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "first task",
+    requester: { kind: "user", id: "user" },
   });
   const second = await dispatch(env as any, "cx-p1", {
-    sessionId: "ss-workerb",
+    executionSessionId: "ss-workerb",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "second task on an independent Node",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "second task on an independent Node",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, first.taskPath);
   await taskClaim(env as any, second.taskPath);
 
-  const firstTask = await loadTaskEnvelope(fsa, first.taskPath);
-  const secondTask = await loadTaskEnvelope(fsa, second.taskPath);
-  const firstDelivery = await createDelivery(fsa, clock, {
+  const firstTask = await loadTaskRecord(fsa, first.taskPath);
+  const secondTask = await loadTaskRecord(fsa, second.taskPath);
+  const firstTaskResult = await createTaskResult(fsa, clock, {
     taskId: firstTask.id!,
-    // Deliberately swapped: cleanup authority is exact taskId, not source Node.
-    sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/sessions/ss-workera/deliveries",
-    summary: "remove only this task",
-    status: "rejected",
+    resultsDir: "temp/sessions/ss-workera/results",
+    report: "retain this rejected result",
+    status: "ready",
   });
-  const secondDelivery = await createDelivery(fsa, clock, {
+  firstTaskResult.status = "rejected";
+  firstTaskResult.review = { reviewer: "user", at: clock.now() };
+  await writeTaskResult(fsa, firstTaskResult);
+  const secondTaskResult = await createTaskResult(fsa, clock, {
     taskId: secondTask.id!,
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-workerb/deliveries",
-    summary: "must remain",
+    resultsDir: "temp/sessions/ss-workerb/results",
+    report: "must remain",
     status: "ready",
   });
 
   await taskInterrupt(env as any, first.taskPath);
-  assert.equal(await fsa.exists(firstDelivery.path), false);
-  assert.equal(await fsa.exists(secondDelivery.path), true);
+  assert.equal(await fsa.exists(firstTaskResult.path), true);
+  assert.equal(await fsa.exists(secondTaskResult.path), true);
 
   const third = await dispatch(env as any, "cx-g2", {
-    sessionId: "ss-workerc",
+    executionSessionId: "ss-workerc",
     workNodeIds: ["cx-g2"],
     contextNodeIds: [],
-    userPrompt: "third task after exact Node release",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "third task after exact Node release",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, third.taskPath);
-  const thirdTask = await loadTaskEnvelope(fsa, third.taskPath);
-  const thirdDelivery = await createDelivery(fsa, clock, {
+  const thirdTask = await loadTaskRecord(fsa, third.taskPath);
+  const thirdTaskResult = await createTaskResult(fsa, clock, {
     taskId: thirdTask.id!,
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-workerc/deliveries",
-    summary: "fail removes only this task",
-    status: "rejected",
+    resultsDir: "temp/sessions/ss-workerc/results",
+    report: "fail retains this result",
+    status: "ready",
   });
+  thirdTaskResult.status = "rejected";
+  thirdTaskResult.review = { reviewer: "user", at: clock.now() };
+  await writeTaskResult(fsa, thirdTaskResult);
 
   await taskFail(env as any, third.taskPath);
-  assert.equal(await fsa.exists(thirdDelivery.path), false);
-  assert.equal(await fsa.exists(secondDelivery.path), true);
+  assert.equal(await fsa.exists(thirdTaskResult.path), true);
+  assert.equal(await fsa.exists(secondTaskResult.path), true);
 });
 
-test("delivery:纯数字 commit ref 保持字符串", async () => {
+test("result: full numeric Git object ids remain exact strings", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-03T08:35:00.000Z" };
   const refs = [
-    "2297910",
-    "0001234",
-    "1234567890123456789012345678901234567890",
+    "1".repeat(40),
+    "0".repeat(64),
   ];
 
-  const delivery = await createDelivery(fsa, clock, {
+  const result = await createTaskResult(fsa, clock, {
     taskId: "tk-testnumeric",
-    sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/sessions/ss-executor/deliveries",
-    summary: "数字 ref",
+    resultsDir: "temp/sessions/ss-executor/results",
+    report: "数字 ref",
     commits: refs,
+    targetHead: "2".repeat(40),
   });
-  const raw = await fsa.readFile(delivery.path);
-  assert.match(raw, /commits: \["2297910", "0001234", "1234567890123456789012345678901234567890"\]/);
-  assert.deepEqual((await loadDelivery(fsa, delivery.path)).commits, refs);
+  const raw = await fsa.readFile(result.path);
+  assert.match(raw, new RegExp(`commits: \\["${"1".repeat(40)}", "${"0".repeat(64)}"\\]`));
+  assert.deepEqual((await loadTaskResult(fsa, result.path)).commits, refs);
 });
 
 test("proposal:投递后 pending 进待裁,确认和驳回后离开待裁但保留文件", async () => {

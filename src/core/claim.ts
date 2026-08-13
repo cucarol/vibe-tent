@@ -2,7 +2,7 @@
 // One exact Node may be occupied by only one active Task. Ancestors, descendants,
 // siblings, and workspace context remain independent and may run concurrently.
 
-import { taskExecutionLabel, type TaskEnvelope } from "./task.js";
+import { taskExecutionLabel, type TaskRecord } from "./task.js";
 import { isActiveTaskState } from "./task-model.js";
 import { Node } from "./types.js";
 import { LoadedTent } from "./tree.js";
@@ -17,16 +17,16 @@ export interface ClaimCheck {
   blocker?: Node;
   reason?: string;
   /** Optional task context (not used for mutual exclusion). */
-  task?: TaskEnvelope;
+  task?: TaskRecord;
 }
 
 export interface CanClaimOptions {
   /** Active Task envelopes used for exact-Node occupation checks. */
-  tasks?: readonly TaskEnvelope[];
+  tasks?: readonly TaskRecord[];
 }
 
 /** Envelope is active while its canonical state occupies its exact Nodes. */
-export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
+export function taskIsActiveOccupation(task: TaskRecord): boolean {
   return isActiveTaskState(task.state);
 }
 
@@ -66,7 +66,7 @@ export function structuralClaimGate(node: Node): ClaimCheck {
 
 export interface ActiveOccupationHit {
   blocker: Node;
-  task: TaskEnvelope;
+  task: TaskRecord;
   reason: string;
   relation: "self";
 }
@@ -78,10 +78,10 @@ export interface ActiveOccupationHit {
  */
 export function findActiveOccupation(
   node: Node,
-  tasks: readonly TaskEnvelope[]
+  tasks: readonly TaskRecord[]
 ): ActiveOccupationHit | undefined {
   for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
+    if (!taskIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
     if (taskDirectlyReferencesNode(task, node.id)) {
       return {
@@ -102,7 +102,7 @@ export function findActiveOccupation(
  */
 export function nodeHasDirectActiveTask(
   nodeId: string,
-  tasks: readonly TaskEnvelope[]
+  tasks: readonly TaskRecord[]
 ): boolean {
   return listDirectActiveTasksForNode(nodeId, tasks).length > 0;
 }
@@ -111,16 +111,16 @@ export function nodeHasDirectActiveTask(
  * Any active task envelope. Informational only — no longer blocks root dispatch.
  */
 export function findAnyActiveTask(
-  tasks: readonly TaskEnvelope[]
-): TaskEnvelope | undefined {
-  return tasks.find((t) => envelopeIsActiveOccupation(t));
+  tasks: readonly TaskRecord[]
+): TaskRecord | undefined {
+  return tasks.find((t) => taskIsActiveOccupation(t));
 }
 
 /** Nodes that currently host a direct active-task Node ref (for status / panels). */
-export function occupiedNodesFromTasks(tent: LoadedTent, tasks: readonly TaskEnvelope[]): Node[] {
+export function occupiedNodesFromTasks(tent: LoadedTent, tasks: readonly TaskRecord[]): Node[] {
   const out = new Map<string, Node>();
   for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
+    if (!taskIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
     for (const nodeId of task.workNodeIds) {
       const node = tent.byId.get(nodeId);

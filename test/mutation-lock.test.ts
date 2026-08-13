@@ -10,10 +10,10 @@ import {
   releaseMutationLockIfOwned,
   withFileMutationLock,
 } from "../src/fs/mutation-lock.js";
-import { loadDeliveries } from "../src/core/delivery.js";
+import { loadTaskResults } from "../src/core/task-result.js";
 import { dispatch } from "../src/core/ops.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
-import { taskAccept, taskClaim, taskDeliver } from "../src/core/task-lifecycle.js";
+import { loadTaskRecord } from "../src/core/task.js";
+import { taskAccept, taskClaim, taskSubmit } from "../src/core/task-lifecycle.js";
 import { loadTent } from "../src/core/tree.js";
 import { makeTent } from "./helpers.js";
 
@@ -200,16 +200,16 @@ test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive aga
   assert.equal(await fsAdapter.exists("mutation.lock"), false);
 });
 
-test("lifecycle: auto-accept integrates outside mutation.lock and preserves ready Delivery on failure", async () => {
+test("lifecycle: auto-accept integrates outside mutation.lock and preserves ready TaskResult on failure", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    roleId: "rl-executor",
+    assigneeRoleId: "rl-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "auto-accept integrate outside lock",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "auto-accept integrate outside lock",
+    requester: { kind: "user", id: "user" },
     acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
@@ -217,9 +217,10 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
   let sawLockDuringIntegrate = true;
   await assert.rejects(
     () =>
-      taskDeliver(e as any, result.taskPath, {
-        summary: "will fail after proving lock free",
-        commits: ["abc"],
+      taskSubmit(e as any, result.taskPath, {
+        report: "will fail after proving lock free",
+        commits: ["a".repeat(40)],
+        targetHead: "f".repeat(40),
         integrate: async () => {
           sawLockDuringIntegrate = await e.fs.exists("mutation.lock");
           throw new Error("Workspace integration conflicted and was rolled back");
@@ -233,9 +234,9 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
     false,
     "Git integrate must not hold cross-process mutation.lock"
   );
-  const task = await loadTaskEnvelope(e.fs, result.taskPath);
-  assert.equal(task.state, "delivered");
-  const deliveries = await loadDeliveries(e.fs);
+  const task = await loadTaskRecord(e.fs, result.taskPath);
+  assert.equal(task.state, "submitted");
+  const deliveries = await loadTaskResults(e.fs);
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0]!.status, "ready");
   const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
@@ -248,16 +249,17 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
   const e = env(dir);
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    roleId: "rl-executor",
+    assigneeRoleId: "rl-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "manual accept outside lock",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "manual accept outside lock",
+    requester: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath);
-  const delivered = await taskDeliver(e as any, result.taskPath, {
-    summary: "ready",
-    commits: ["abc1234"],
+  const delivered = await taskSubmit(e as any, result.taskPath, {
+    report: "ready",
+    commits: ["a".repeat(40)],
+    targetHead: "f".repeat(40),
   });
 
   let sawLockDuringIntegrate = true;
@@ -265,7 +267,7 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
     () =>
       taskAccept(e as any, result.taskPath, {
         actor: "user",
-        deliveryId: delivered.delivery.id,
+        resultId: delivered.result.id,
         integrate: async () => {
           sawLockDuringIntegrate = await e.fs.exists("mutation.lock");
           throw new Error("Workspace integration conflicted and was rolled back");
@@ -279,9 +281,9 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
     false,
     "accept integrate must not hold cross-process mutation.lock"
   );
-  const task = await loadTaskEnvelope(e.fs, result.taskPath);
-  assert.equal(task.state, "delivered");
-  const ready = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
+  const task = await loadTaskRecord(e.fs, result.taskPath);
+  assert.equal(task.state, "submitted");
+  const ready = (await loadTaskResults(e.fs)).find((d) => d.status === "ready");
   assert.ok(ready);
   const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
@@ -293,19 +295,20 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   const e = env(dir);
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    roleId: "rl-executor",
+    assigneeRoleId: "rl-executor",
     workNodeIds: ["cx-p1"],
     contextNodeIds: [],
-    userPrompt: "agent decide",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "agent decide",
+    requester: { kind: "user", id: "user" },
     acceptMode: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);
 
   let lockFree = false;
-  const out = await taskDeliver(e as any, result.taskPath, {
-    summary: "ok",
-    commits: ["deadbee"],
+  const out = await taskSubmit(e as any, result.taskPath, {
+    report: "ok",
+    commits: ["d".repeat(40)],
+    targetHead: "f".repeat(40),
     decision: "integrate",
     integrate: async () => {
       lockFree = !(await e.fs.exists("mutation.lock"));
@@ -314,7 +317,7 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   assert.equal(lockFree, true);
   assert.equal(out.autoIntegrated, true);
   assert.equal(out.task.state, "accepted");
-  assert.equal(out.delivery.status, "accepted");
+  assert.equal(out.result.status, "accepted");
   const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.status, undefined);
   assert.equal(box.fm.owner, undefined);

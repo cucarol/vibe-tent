@@ -82,7 +82,7 @@ test("Task Context Card contains only Node context and optional generation", () 
     contextGeneration: value.contextGeneration,
   });
   assert.deepEqual(built, value);
-  assert.equal("userPrompt" in built, false);
+  assert.equal("prompt" in built, false);
   assert.equal("objective" in built, false);
   assert.equal("taskDeltaDigest" in built, false);
 });

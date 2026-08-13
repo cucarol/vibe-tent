@@ -14,7 +14,6 @@ import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { loadTagRegistry } from "../src/core/tags.js";
-import { loadTypeRegistry } from "../src/core/typeRegistry.js";
 import { loadTent } from "../src/core/tree.js";
 
 async function withService<T>(
@@ -54,14 +53,12 @@ async function mountScaffold(
   return { workspaceId, workspace, systemFs };
 }
 
-test("isClientMethod includes type/tags registry and docs semantic commands", () => {
+test("isClientMethod includes tags registry and direct Node type commands", () => {
   for (const method of [
     "docs.setType",
     "docs.tags.set",
     "docs.tag.add",
     "docs.tag.remove",
-    "registry.type.create",
-    "registry.type.delete",
     "registry.tags",
     "registry.tag.create",
     "registry.tag.delete",
@@ -69,23 +66,20 @@ test("isClientMethod includes type/tags registry and docs semantic commands", ()
     assert.equal(isClientMethod(method), true, method);
     assert.ok(CLIENT_METHODS.includes(method as (typeof CLIENT_METHODS)[number]), method);
   }
-  assert.equal(isClientMethod("registry.type.update"), false);
+  assert.equal(isClientMethod("registry.type.create"), false);
+  assert.equal(isClientMethod("registry.type.delete"), false);
   assert.equal(isClientMethod("docs.setTags"), false);
 });
 
-test("registry type + docs.setType + in-use delete + tags cascade", async () => {
+test("direct optional Node type + tags cascade", async () => {
   await withService(async (svc) => {
     const { workspaceId, systemFs } = await mountScaffold(svc);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    const typeEvents: Array<Record<string, unknown>> = [];
     const tagEvents: Array<Record<string, unknown>> = [];
     const conceptEvents: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.workspaceId !== workspaceId) return;
-      if (ev.type === "registry.types.updated") {
-        typeEvents.push(ev.payload as Record<string, unknown>);
-      }
       if (ev.type === "registry.tags.updated") {
         tagEvents.push(ev.payload as Record<string, unknown>);
       }
@@ -101,47 +95,6 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
         }
       }
     });
-
-    // Non-user rejected
-    const denied = await rpc(svc, "registry.type.create", {
-      workspaceId,
-      name: "snippet",
-      actor: "agent",
-    });
-    assert.ok(denied.error);
-    assert.equal(denied.error!.code, -32001);
-
-    // Create custom secondary
-    const created = (await client.registryTypeCreate(workspaceId, {
-      name: "snippet",
-    })) as { name: string; tier: string };
-    assert.equal(created.name, "snippet");
-    assert.equal(created.tier, "modifier");
-    assert.equal(typeEvents.length, 1);
-    assert.equal(typeEvents[0]!.action, "create");
-    assert.equal(typeEvents[0]!.name, "snippet");
-
-    // Builtin create fails
-    const builtinCreate = await rpc(svc, "registry.type.create", {
-      workspaceId,
-      name: "asset",
-      actor: "user",
-    });
-    assert.ok(builtinCreate.error);
-    assert.equal(builtinCreate.error!.code, -32602);
-
-    // Primary create fails
-    const primaryCreate = await rpc(svc, "registry.type.create", {
-      workspaceId,
-      name: "goal",
-      actor: "user",
-    });
-    assert.ok(primaryCreate.error);
-
-    const types = (await client.registryTypes(workspaceId)) as {
-      types: Array<{ name: string; tier: string }>;
-    };
-    assert.ok(types.types.some((t) => t.name === "snippet" && t.tier === "modifier"));
 
     const editRpc = await rpc(svc, "docs.readForEdit", {
       workspaceId,
@@ -191,44 +144,15 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     const afterType = await client.docsGet(workspaceId, cx);
     assert.equal(afterType.node.type, "prompt-snippet");
 
-    // In-use delete fails
-    const inUse = await rpc(svc, "registry.type.delete", {
-      workspaceId,
-      name: "snippet",
-      confirmation: "snippet",
-      actor: "user",
-    });
-    assert.ok(inUse.error);
-    assert.equal(inUse.error!.code, -32602);
-    assert.match(inUse.error!.message, /still in use/i);
-
-    // Builtin delete fails
-    const delAsset = await rpc(svc, "registry.type.delete", {
-      workspaceId,
-      name: "asset",
-      confirmation: "asset",
-      actor: "user",
-    });
-    assert.ok(delAsset.error);
-    assert.equal(delAsset.error!.code, -32602);
-
-    // Retype off custom secondary then delete OK
+    // The same field/method omits the optional type without a registry alias.
     const setBack = (await client.docsSetType(workspaceId, {
       nodeId: cx,
-      type: "prompt",
+      type: null,
       baseEtag: etag,
     })) as { etag: string };
     etag = setBack.etag;
-    const deleted = (await client.registryTypeDelete(workspaceId, {
-      name: "snippet",
-      confirmation: "snippet",
-    })) as { deleted: string };
-    assert.equal(deleted.deleted, "snippet");
-    assert.equal(
-      typeEvents.filter((e) => e.action === "delete" && e.name === "snippet").length,
-      1
-    );
-    assert.equal((await loadTypeRegistry(systemFs)).snippet, undefined);
+    const afterOmit = await client.docsGet(workspaceId, cx);
+    assert.equal(afterOmit.node.type, undefined);
 
     // Tags: registry create + list
     await client.registryTagCreate(workspaceId, { name: "alpha" });
@@ -303,7 +227,9 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
       workspaceId,
       nodeId: cx,
       baseEtag: etag,
-      raw: rawSnapshot.raw.replace(/type:\s*prompt\b/, "type: prompt-asset"),
+      raw: rawSnapshot.raw.includes("type:")
+        ? rawSnapshot.raw.replace(/type:\s*[^\n]+/, "type: prompt-asset")
+        : rawSnapshot.raw.replace(/^---\n/, "---\ntype: prompt-asset\n"),
     });
     assert.ok(rawTypeBypass.error);
     assert.equal(rawTypeBypass.error!.code, -32010);

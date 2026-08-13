@@ -1,67 +1,61 @@
-// Task lifecycle API (B4) — claim / wait / deliver / accept / reject / interrupt.
-// Uses existing envelope files under temp/<role>/tasks and delivery records.
-// Runtime occupation oracle = active Task envelope only.
-// Node frontmatter is not dual-written for owner/status; collaboration truth is Task/Delivery.
+// Task lifecycle API (B4) — claim / wait / submit / accept / reject / interrupt.
+// Uses Task records under temp/<owner>/tasks and Result records under results.
+// Runtime occupation oracle = active Task record only.
+// Node frontmatter is not dual-written for owner/status; collaboration truth is Task/TaskResult.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
+import { canClaim, taskIsActiveOccupation } from "./claim.js";
 import {
   listDirectActiveTasksForNode,
 } from "./task-node-refs.js";
 import {
-  createDeliveryUnlocked,
-  deliveryAcceptCandidateDigest,
-  deliveryReviewSemanticsDigest,
-  loadDelivery,
-  peekDeliveryTaskId,
-  removeNonAcceptedDeliveriesForTask,
-  writeDelivery,
-  type DeliveryRecord,
-} from "./delivery.js";
+  buildTaskResultRecord,
+  createTaskResultUnlocked,
+  taskResultAcceptCandidateDigest,
+  taskResultReviewSemanticsDigest,
+  taskResultPathForTask,
+  loadTaskResult,
+  writeTaskResult,
+  type TaskResultRecord,
+} from "./task-result.js";
 import { normalizeArtifactRefs } from "./artifact.js";
-import {
-  bindOutputsToDeliveryUnlocked,
-  restoreOutputBindSnapshots,
-  validateOutputBindingsForAccept,
-  type OutputBindSnapshot,
-} from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
 import { join, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import {
-  ackTaskEnvelope,
+  ackTaskRecord,
   assertIsoTimestamp,
-  loadTaskEnvelope,
-  loadTaskEnvelopes,
-  patchTaskEnvelope,
-  parseTaskLastReturn,
+  loadTaskRecord,
+  loadTaskRecords,
+  patchTaskRecord,
+  parseTaskStatusDetail,
   primaryNodeId,
-  type TaskEnvelope,
-  type TaskEnvelopePatch,
+  type TaskRecord,
+  type TaskRecordPatch,
 } from "./task.js";
 import { isSessionId } from "./id.js";
 import {
   assertReviewAuthority,
   assertTransition,
-  isDeliveryId,
+  isTaskResultId,
   isTaskId,
-  resolveDeliverRouting,
+  resolveSubmitRouting,
   TaskLifecycleError,
   type ArtifactRef,
-  type DeliverDecision,
-  type DeliveryCheck,
+  type SubmitDecision,
+  type TaskResultCheck,
   type TaskState,
-  type TaskLastReturn,
+  type TaskStatusDetail,
   type WaitReason,
 } from "./task-model.js";
 
-export type TaskClaimWrite = TaskEnvelopePatch;
+export type TaskClaimWrite = TaskRecordPatch;
 
 export interface TaskClaimOptions {
   /**
    * Optional single-write claim payload after structural checks.
    * When set on first claim (queued→running), state + lane/base/audit
-   * are persisted in **one** envelope patch. Callers must prepare lane/base before
+   * are persisted in **one** Task patch. Callers must prepare lane/base before
    * invoking claim so a failed prepare leaves the Task queued.
    * A queued Role handoff binds its trusted caller Session in this same write.
    * Connection-launched Tasks already carry their reserved Session. Lifecycle
@@ -76,62 +70,56 @@ export interface TaskWaitOptions {
   /** Optional stable machine code (e.g. session_unavailable). */
   code?: string;
   /** Internal formal return written atomically with a managed park. */
-  lastReturn?: TaskLastReturn;
+  statusDetail?: TaskStatusDetail;
 }
 
-export interface TaskDeliverOptions {
-  summary: string;
+export interface TaskSubmitOptions {
+  report: string;
   commits?: string[];
   /**
    * Review-time full SHA of the resolved integration target branch HEAD.
-   * Service snapshots this for commit-bearing Deliveries; Core persists it.
+   * Service snapshots this for commit-bearing Results; Core persists it.
    */
   targetHead?: string;
-  checks?: DeliveryCheck[];
+  checks?: TaskResultCheck[];
   artifactRefs?: ArtifactRef[];
   /** Required when acceptMode=agent-decide. */
-  decision?: DeliverDecision;
+  decision?: SubmitDecision;
   /** Optional integrate hook for auto-accept / agent-decide integrate. */
   integrate?: (commits: string[]) => Promise<void>;
 }
 
 export interface TaskAcceptOptions {
   actor: string;
-  /** Exact ready Delivery shown to the reviewer. */
-  deliveryId: string;
+  /** Exact ready TaskResult shown to the reviewer. */
+  resultId: string;
   integrate?: (commits: string[]) => Promise<void>;
-  /**
-   * Optional Output Node ids to bind to the accepted Delivery (`deliveryId` FM).
-   * The complete canonical set is persisted in the accept WAL before binding:
-   * ordinary failures compensate, while process loss converges forward.
-   */
-  outputNodeIds?: string[];
 }
 
 export interface TaskRejectOptions {
   actor: string;
-  /** Exact ready Delivery shown to the reviewer. */
-  deliveryId: string;
+  /** Exact ready TaskResult shown to the reviewer. */
+  resultId: string;
   note?: string;
-  /** Default true — rework path delivered → running. */
+  /** Default true — rework path submitted → running. */
   resume?: boolean;
 }
 
 export const DEFAULT_TASK_REJECT_NOTE = "Rejected; waiting for resubmission.";
 
-export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
+export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
-    const requestedSessionId = options.claimWrite?.sessionId;
-    if (task.sessionId && requestedSessionId && requestedSessionId !== task.sessionId) {
+    const requestedSessionId = options.claimWrite?.executionSessionId;
+    if (task.executionSessionId && requestedSessionId && requestedSessionId !== task.executionSessionId) {
       throw new Error(
-        `Cannot claim task with a different Session: bound=${task.sessionId} requested=${requestedSessionId}`
+        `Cannot claim task with a different Session: bound=${task.executionSessionId} requested=${requestedSessionId}`
       );
     }
     if (task.state === "running") {
-      if (requestedSessionId && requestedSessionId !== task.sessionId) {
+      if (requestedSessionId && requestedSessionId !== task.executionSessionId) {
         throw new Error(
-          `Cannot claim task with a different Session: bound=${task.sessionId ?? "missing"} requested=${requestedSessionId}`
+          `Cannot claim task with a different Session: bound=${task.executionSessionId ?? "missing"} requested=${requestedSessionId}`
         );
       }
       return task;
@@ -145,7 +133,7 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
 
     // Re-check exact Node occupation at claim. Exclude this queued Task itself;
     // another active Task on any requested Node blocks the all-or-none claim.
-    const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
+    const otherTasks = (await loadTaskRecords(env.fs)).filter(
       (candidate) => candidate.path !== task.path
     );
     for (const node of claimedNodes) {
@@ -153,60 +141,60 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
     }
 
-    // Single envelope write: running + optional lane/base/audit together.
+    // Single Task write: running + optional lane/base/audit together.
     // No intermediate lane-only patch; failed prepare must not reach this path.
     const now = env.clock.now();
     if (options.claimWrite) {
-      if (options.claimWrite.sessionId && !isSessionId(options.claimWrite.sessionId)) {
-        throw new Error(`task.claim requires a canonical Session id: ${options.claimWrite.sessionId}`);
+      if (options.claimWrite.executionSessionId && !isSessionId(options.claimWrite.executionSessionId)) {
+        throw new Error(`task.claim requires a canonical Session id: ${options.claimWrite.executionSessionId}`);
       }
-      return patchTaskEnvelope(env.fs, taskPath, {
+      return patchTaskRecord(env.fs, taskPath, {
         ...options.claimWrite,
         state: "running",
         updatedAt: options.claimWrite.updatedAt ?? now,
       });
     }
 
-    // Claim only acks the envelope — no Node frontmatter owner/status dual-write.
-    await ackTaskEnvelope(env.fs, taskPath);
-    return loadTaskEnvelope(env.fs, taskPath);
+    // Claim only acknowledges the Task record — no Node authority dual-write.
+    await ackTaskRecord(env.fs, taskPath);
+    return loadTaskRecord(env.fs, taskPath);
   });
 }
 
-export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitOptions): Promise<TaskEnvelope> {
+export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitOptions): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "wait", "waiting");
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
     const code = options.code?.trim();
-    const lastReturn = options.lastReturn ? parseTaskLastReturn(options.lastReturn)! : undefined;
-    if (lastReturn?.sessionId && task.sessionId !== lastReturn.sessionId) {
+    const statusDetail = options.statusDetail ? parseTaskStatusDetail(options.statusDetail)! : undefined;
+    if (statusDetail?.executionSessionId && task.executionSessionId !== statusDetail.executionSessionId) {
       throw new TaskLifecycleError(
         "TASK_NOT_ACTIVE",
-        `Task wait return Session mismatch: task=${task.sessionId ?? "unbound"} requested=${lastReturn.sessionId}.`
+        `Task wait return Session mismatch: task=${task.executionSessionId ?? "unbound"} requested=${statusDetail.executionSessionId}.`
       );
     }
-    return patchTaskEnvelope(env.fs, taskPath, {
+    return patchTaskRecord(env.fs, taskPath, {
       state: "waiting",
       wait: {
         reason: options.reason,
         summary,
         ...(code ? { code } : {}),
       },
-      ...(lastReturn ? { lastReturn } : {}),
+      ...(statusDetail ? { statusDetail } : {}),
       updatedAt: env.clock.now(),
     });
   });
 }
 
-export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
+export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     // Idempotent: already running after concurrent approve + session.live is fine.
     if (task.state === "running" && !task.wait) return task;
     assertTransition(task.state, "resume", "running");
-    return patchTaskEnvelope(env.fs, taskPath, {
+    return patchTaskRecord(env.fs, taskPath, {
       state: "running",
       wait: null,
       updatedAt: env.clock.now(),
@@ -216,17 +204,17 @@ export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskEnv
 
 /**
  * Exact-Task structural WAL preflight for composite Service mutations.
- * It performs no requested transition: pending reject and committed Delivery
+ * It performs no requested transition: pending reject and committed TaskResult
  * operations converge first, then the caller evaluates the returned Task.
  */
 export interface TaskRejectResumeContinuation {
-  deliveryId: string;
+  resultId: string;
   actor: string;
   note: string;
 }
 
 export interface TaskLifecycleReconciliation {
-  task: TaskEnvelope;
+  task: TaskRecord;
   rejectResume?: TaskRejectResumeContinuation;
 }
 
@@ -244,272 +232,298 @@ export async function reconcileTaskLifecycle(
   });
 }
 
-export interface TaskDeliverResult {
-  task: TaskEnvelope;
-  delivery: DeliveryRecord;
+export interface TaskSubmitResult {
+  task: TaskRecord;
+  result: TaskResultRecord;
   autoIntegrated: boolean;
 }
 
 /**
- * First deliver section under mutation.lock.
- * Every mode first publishes one durable ready Delivery candidate.
+ * First submit section under mutation.lock.
+ * Every mode first publishes one durable ready TaskResult candidate.
  * Auto-integrate modes return that exact candidate for Git integration outside the lock.
  */
-export type TaskDeliverPrepared =
-  | { kind: "done"; result: TaskDeliverResult }
+export type TaskSubmitPrepared =
+  | { kind: "done"; result: TaskSubmitResult }
   | {
       kind: "auto";
-      sourceNodeId: string;
-      deliveryId: string;
+      resultId: string;
       commits: string[];
       targetHead?: string;
     };
 
-export interface CommittedTaskDeliverRecovery {
-  task: TaskEnvelope;
-  delivery: DeliveryRecord;
-  prepared: TaskDeliverPrepared;
-  options: TaskDeliverOptions;
+export interface CommittedTaskSubmitRecovery {
+  task: TaskRecord;
+  result: TaskResultRecord;
+  prepared: TaskSubmitPrepared;
+  options: TaskSubmitOptions;
 }
 
+const TASK_SUBMIT_INTENT_TYPE = "task-result-submit-intent";
+
+type TaskSubmitIntent = {
+  type: typeof TASK_SUBMIT_INTENT_TYPE;
+  version: 1;
+  taskId: string;
+  resultId: string;
+  candidateDigest: string;
+  createdAt: string;
+};
+
 export interface TaskAcceptPrepared {
-  deliveryId: string;
-  deliveryPath: string;
+  resultId: string;
+  resultPath: string;
   commits: string[];
-  /** Canonical complete Output set validated before Git integration. */
-  outputNodeIds: string[];
-  /** Fixed-size complete immutable ready-Delivery semantics proof. */
-  deliverySemanticsDigest?: string;
+  /** Fixed-size complete immutable ready-TaskResult semantics proof. */
+  resultSemanticsDigest?: string;
   /** Present only when prepare recovered a previously committed accept intent. */
   recovered?: TaskAcceptResult;
   acceptIntent?: TaskAcceptIntent;
 }
 
 export interface TaskAcceptResult {
-  task: TaskEnvelope;
-  delivery: DeliveryRecord;
-  /** Output Node ids successfully bound (including same-delivery idempotent). */
-  boundOutputIds: string[];
-  /** Subset that newly wrote deliveryId (for node.changed). */
-  changedOutputIds: string[];
+  task: TaskRecord;
+  result: TaskResultRecord;
 }
 
 /**
- * Prepare deliver under cross-process mutation.lock only.
+ * Prepare submit under cross-process mutation.lock only.
  * Service callers should wrap this in a short MutationBus section and run
  * integrateCommits outside MutationBus when kind==="auto" and commits exist.
  */
-export async function prepareTaskDeliver(
+export async function prepareTaskSubmit(
   env: OpsEnv,
   taskPath: string,
-  options: TaskDeliverOptions
-): Promise<TaskDeliverPrepared> {
-  return withMutation(env.fs, async (): Promise<TaskDeliverPrepared> => {
+  options: TaskSubmitOptions
+): Promise<TaskSubmitPrepared> {
+  return withMutation(env.fs, async (): Promise<TaskSubmitPrepared> => {
+    const pendingIntent = await loadTaskSubmitIntent(env.fs, taskPath);
+    if (pendingIntent) {
+      return recoverPendingTaskSubmit(env, taskPath, pendingIntent, options, true);
+    }
     const task = await preflightTaskMutation(env, taskPath);
-    const recovered = await recoverExistingTaskDeliver(env, taskPath, task, options);
+    const recovered = await recoverExistingTaskSubmit(env, taskPath, task, options);
     if (recovered) return recovered;
-    assertDeliverPreconditions(task);
+    assertSubmitPreconditions(task);
     const nodeId = primaryNodeId(task);
-    if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
-    await assertNoReadyDelivery(env.fs, task);
+    if (!nodeId) throw new Error("task.submit requires a non-root work Node.");
+    await assertNoReadyResult(env.fs, task);
 
-    const routing = resolveDeliverRouting(task.acceptMode, options.decision);
+    const routing = resolveSubmitRouting(task.acceptMode, options.decision);
 
-    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
+    const candidateInput = {
       taskId: requireCanonicalTaskId(task),
-      sourceNodeId: nodeId,
-      summary: options.summary,
+      report: options.report,
       commits: options.commits,
       targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "ready",
       integrationMode: routing.integrationMode,
-      deliveriesDir: deliveryDirForTask(task),
-    });
+      resultsDir: resultDirForTask(task),
+    } as const;
+    const candidate = buildTaskResultRecord(env.clock, candidateInput);
+    const intent: TaskSubmitIntent = {
+      type: TASK_SUBMIT_INTENT_TYPE,
+      version: 1,
+      taskId: candidate.taskId,
+      resultId: candidate.id,
+      candidateDigest: taskResultAcceptCandidateDigest(candidate),
+      createdAt: candidate.createdAt,
+    };
+    await writeTaskSubmitIntent(env.fs, taskPath, intent);
+    const result = await createTaskResultUnlocked(
+      env.fs,
+      { now: () => intent.createdAt },
+      { ...candidateInput, id: intent.resultId }
+    );
+    assertTaskSubmitIntentMatchesResult(intent, result);
 
-    assertTransition(task.state, "deliver", "delivered");
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: "delivered",
-      activeDeliveryId: delivery.id,
-      lastReturn: null,
+    assertTransition(task.state, "submit", "submitted");
+    const next = await patchTaskRecord(env.fs, taskPath, {
+      state: "submitted",
+      currentResultId: result.id,
+      statusDetail: null,
       updatedAt: env.clock.now(),
     });
+    await env.fs.remove(taskSubmitIntentPath(taskPath));
     if (routing.autoIntegrate) {
       return {
         kind: "auto",
-        sourceNodeId: nodeId,
-        deliveryId: delivery.id,
-        commits: [...delivery.commits],
-        ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+        resultId: result.id,
+        commits: [...result.commits],
+        ...(result.targetHead ? { targetHead: result.targetHead } : {}),
       };
     }
-    return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
+    return { kind: "done", result: { task: next, result, autoIntegrated: false } };
   });
 }
 
 /**
- * Recover an already-committed exact-Task Delivery WAL without reconstructing
- * its immutable candidate from current Git/lane state. Used by the managed
- * report-draft retry path after a Service crash. It never creates a Delivery.
+ * Reuse an already-committed exact-Task TaskResult after its Task pointer is
+ * durable. Managed draft recovery may clean a stale submit intent, but it
+ * never publishes a Result or advances the Task pointer.
  */
-export async function recoverCommittedTaskDeliver(
+export async function recoverCommittedTaskResult(
   env: OpsEnv,
   taskPath: string,
-  expected: { summary: string }
-): Promise<CommittedTaskDeliverRecovery | undefined> {
+  expected: { report: string }
+): Promise<CommittedTaskSubmitRecovery | undefined> {
   return withMutation(env.fs, async () => {
+    const submitIntent = await loadTaskSubmitIntent(env.fs, taskPath);
+    if (submitIntent) await cleanupCommittedTaskSubmitIntent(env, taskPath, submitIntent);
     const task = await preflightTaskMutation(env, taskPath);
-    const delivery = await findCommittedTaskDelivery(env.fs, task);
-    if (!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) {
+    const result = await findCommittedTaskResult(env.fs, task);
+    if (!result || (result.status !== "ready" && result.status !== "accepted")) {
       return undefined;
     }
-    assertCommittedDeliveryMatchesTask(task, delivery);
+    assertCommittedResultMatchesTask(task, result);
     if (
-      delivery.summary !== expected.summary.trim()
+      result.report !== expected.report.trim()
     ) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Persisted Delivery report or outcome does not match the managed report draft."
+        "RESULT_CHANGED",
+        "Persisted TaskResult report or outcome does not match the managed report draft."
       );
     }
-    const prepared: TaskDeliverPrepared = delivery.status === "accepted"
+    const prepared: TaskSubmitPrepared = result.status === "accepted"
       ? {
           kind: "done",
-          result: { task, delivery, autoIntegrated: isAutoIntegrationMode(delivery.integrationMode) },
+          result: { task, result, autoIntegrated: isAutoIntegrationMode(result.integrationMode) },
         }
-      : isAutoIntegrationMode(delivery.integrationMode)
+      : isAutoIntegrationMode(result.integrationMode)
         ? {
             kind: "auto",
-            sourceNodeId: delivery.sourceNodeId,
-            deliveryId: delivery.id,
-            commits: [...delivery.commits],
-            ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+            resultId: result.id,
+            commits: [...result.commits],
+            ...(result.targetHead ? { targetHead: result.targetHead } : {}),
           }
         : {
             kind: "done",
-            result: { task, delivery, autoIntegrated: false },
+            result: { task, result, autoIntegrated: false },
           };
-    const options: TaskDeliverOptions = {
-      summary: delivery.summary,
-      commits: [...delivery.commits],
-      checks: delivery.checks.map((check) => ({ ...check })),
-      artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
-      ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
-      ...(delivery.integrationMode === "agent-decided-integrate"
+    const options: TaskSubmitOptions = {
+      report: result.report,
+      commits: [...result.commits],
+      checks: result.checks.map((check) => ({ ...check })),
+      artifactRefs: result.artifactRefs.map((ref) => ({ ...ref })),
+      ...(result.targetHead ? { targetHead: result.targetHead } : {}),
+      ...(result.integrationMode === "agent-decided-integrate"
         ? { decision: "integrate" as const }
         : {}),
     };
-    return { task, delivery, prepared, options };
+    return { task, result, prepared, options };
   });
 }
 
 /**
  * Finalize auto-integrate under mutation.lock after Git ran outside the lock.
- * Integration failure deliberately leaves the durable ready Delivery candidate intact.
+ * Integration failure deliberately leaves the durable ready TaskResult candidate intact.
  */
-export async function finalizeTaskDeliverAuto(
+export async function finalizeTaskSubmitAuto(
   env: OpsEnv,
   taskPath: string,
-  options: TaskDeliverOptions,
-  prepared: Extract<TaskDeliverPrepared, { kind: "auto" }>
-): Promise<TaskDeliverResult> {
+  options: TaskSubmitOptions,
+  prepared: Extract<TaskSubmitPrepared, { kind: "auto" }>
+): Promise<TaskSubmitResult> {
   return withMutation(env.fs, async () => {
     let task = await preflightTaskMutation(env, taskPath);
-    const persisted = await requireTaskDeliveryById(env.fs, task, prepared.deliveryId);
-    if (task.activeDeliveryId !== persisted.id) {
+    const persisted = await requireTaskResultById(env.fs, task, prepared.resultId);
+    if (task.currentResultId !== persisted.id) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery changed during auto-accept; refusing state write."
+        "RESULT_CHANGED",
+        "Ready result changed during auto-accept; refusing state write."
       );
     }
 
     if (persisted.status === "accepted") {
       if (!isAutoIntegrationMode(persisted.integrationMode)) {
         throw new TaskLifecycleError(
-          "DELIVERY_CHANGED",
-          "Accepted delivery is not an auto-integrate candidate; refusing recovery."
+          "RESULT_CHANGED",
+          "Accepted result is not an auto-integrate candidate; refusing recovery."
         );
       }
-      if (task.state === "delivered") {
-        task = await patchTaskEnvelope(env.fs, taskPath, {
+      if (task.state === "submitted") {
+        task = await patchTaskRecord(env.fs, taskPath, {
           state: "accepted",
-          activeDeliveryId: persisted.id,
-          lastReturn: null,
+          currentResultId: persisted.id,
+          statusDetail: null,
           wait: null,
           updatedAt: env.clock.now(),
         });
       } else if (task.state !== "accepted") {
         throw new TaskLifecycleError(
           "INVALID_TRANSITION",
-          `Cannot recover accepted Delivery while Task is ${task.state}.`
+          `Cannot recover accepted TaskResult while Task is ${task.state}.`
         );
       }
-      assertTaskDeliverCandidateMatches(task, persisted, options);
-      assertPreparedDeliveryMatches(persisted, prepared);
-      return { task, delivery: persisted, autoIntegrated: true };
+      assertTaskSubmitCandidateMatches(task, persisted, options);
+      assertPreparedResultMatches(persisted, prepared);
+      return { task, result: persisted, autoIntegrated: true };
     }
 
     assertTransition(task.state, "accept", "accepted");
-    const nodeId = primaryNodeId(task);
-    if (!nodeId || nodeId !== prepared.sourceNodeId) {
-      throw new Error("task.deliver requires a non-root node claim.");
-    }
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
-    if (delivery.id !== prepared.deliveryId) {
+    const result = await requireActiveReadyResult(env.fs, task);
+    if (result.id !== prepared.resultId) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery changed during auto-accept; refusing state write."
+        "RESULT_CHANGED",
+        "Ready result changed during auto-accept; refusing state write."
       );
     }
-    if (!exactStringListEqual(delivery.commits, prepared.commits)) {
+    if (!exactStringListEqual(result.commits, prepared.commits)) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery commits changed during auto-accept; refusing state write."
+        "RESULT_CHANGED",
+        "Ready result commits changed during auto-accept; refusing state write."
       );
     }
-    if ((delivery.targetHead?.trim() || undefined) !== prepared.targetHead) {
+    if ((result.targetHead?.trim() || undefined) !== prepared.targetHead) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery targetHead changed during auto-accept; refusing state write."
+        "RESULT_CHANGED",
+        "Ready result targetHead changed during auto-accept; refusing state write."
       );
     }
 
-    const routing = resolveDeliverRouting(task.acceptMode, options.decision);
+    const routing = resolveSubmitRouting(task.acceptMode, options.decision);
     if (!routing.autoIntegrate) {
       throw new Error("Task acceptMode changed during integrate; refusing state write.");
     }
-    assertTaskDeliverCandidateMatches(task, delivery, options);
-    assertPreparedDeliveryMatches(delivery, prepared);
+    assertTaskSubmitCandidateMatches(task, result, options);
+    assertPreparedResultMatches(result, prepared);
+    if (!task.requester) {
+      throw new TaskLifecycleError("RESULT_CHANGED", "Task requester is missing during auto-accept.");
+    }
 
-    delivery.status = "accepted";
-    delivery.integrationMode = routing.integrationMode;
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
-    // No review.by = submitter — integrate is service policy engine action.
+    result.status = "accepted";
+    const acceptedAt = env.clock.now();
+    result.review = { reviewer: task.requester.id, at: acceptedAt };
+    if (result.integrationMode !== routing.integrationMode) {
+      throw new TaskLifecycleError("RESULT_CHANGED", "Task Result integration mode changed during auto-accept.");
+    }
+    await writeTaskResult(env.fs, result);
+    // The requester authorized the frozen auto-integration policy at dispatch.
     // Occupation ends via task state=accepted; no Node frontmatter write.
 
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
+    const next = await patchTaskRecord(env.fs, taskPath, {
       state: "accepted",
-      activeDeliveryId: delivery.id,
-      lastReturn: null,
+      currentResultId: result.id,
+      statusDetail: null,
       wait: null,
-      updatedAt: env.clock.now(),
+      updatedAt: acceptedAt,
     });
-    return { task: next, delivery, autoIntegrated: true };
+    return { task: next, result, autoIntegrated: true };
   });
 }
 
-export async function taskDeliver(
+export async function taskSubmit(
   env: OpsEnv,
   taskPath: string,
-  options: TaskDeliverOptions
-): Promise<TaskDeliverResult> {
-  // review-required path: one atomic ready-Delivery section (no Git).
-  // Auto-integrate path: durable ready Delivery → Git outside lock → exact
+  options: TaskSubmitOptions
+): Promise<TaskSubmitResult> {
+  // review-required path: one atomic ready-TaskResult section (no Git).
+  // Auto-integrate path: durable ready TaskResult → Git outside lock → exact
   // candidate re-validation + accepted writes. Integration failure preserves
   // the candidate and targetHead/commits for review or retry.
-  const phase = await prepareTaskDeliver(env, taskPath, options);
+  const phase = await prepareTaskSubmit(env, taskPath, options);
   if (phase.kind === "done") return phase.result;
 
   const pendingCommits = [...phase.commits];
@@ -520,11 +534,11 @@ export async function taskDeliver(
     await options.integrate(pendingCommits);
   }
 
-  return finalizeTaskDeliverAuto(env, taskPath, options, phase);
+  return finalizeTaskSubmitAuto(env, taskPath, options, phase);
 }
 
 /**
- * Prepare accept under mutation.lock: authority, ready Delivery, optional Output pre-check.
+ * Prepare accept under mutation.lock: authority and exact ready Task Result.
  * Service should wrap in a short MutationBus section; Git integrate must run outside both.
  */
 export async function prepareTaskAccept(
@@ -533,57 +547,51 @@ export async function prepareTaskAccept(
   options: TaskAcceptOptions
 ): Promise<TaskAcceptPrepared> {
   return withMutation(env.fs, async () => {
+    const submitIntent = await loadTaskSubmitIntent(env.fs, taskPath);
+    if (submitIntent) await cleanupCommittedTaskSubmitIntent(env, taskPath, submitIntent);
     const intents = await loadTaskReviewIntents(env.fs, taskPath);
     if (intents.accept) {
       const recovered = await reconcilePendingTaskAccept(env, taskPath, intents.accept);
       if (!recovered) throw new Error("Exact-Task accept recovery intent disappeared.");
       assertTaskAcceptRequestMatchesIntent(intents.accept, options);
       return {
-        deliveryId: recovered.delivery.id,
-        deliveryPath: recovered.delivery.path,
+        resultId: recovered.result.id,
+        resultPath: recovered.result.path,
         // Git integration already preceded the committed accept intent.
         commits: [],
-        outputNodeIds: [...intents.accept.outputNodeIds],
-        recovered: recovered.result,
+        recovered: recovered.acceptance,
         acceptIntent: intents.accept,
       };
     }
-    const task = await preflightTaskMutation(env, taskPath);
+    const task = await preflightTaskMutation(env, taskPath, {
+      allowCommittedSubmitRecovery: true,
+    });
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireExpectedActiveReadyDelivery(
+    const result = await requireExpectedActiveReadyResult(
       env.fs,
       task,
-      options.deliveryId
+      options.resultId
     );
     const actor = canonicalTaskAcceptActor(options.actor);
     assertReviewAuthority({
       actor,
-      executorRoleId: task.roleId,
-      parentActor: task.parentActor,
+      executorRoleId: task.assigneeRoleId,
+      requester: task.requester,
       action: "accept",
     });
-    // Pre-validate Outputs before integrate so bad selectors fail before side effects.
-    let outputNodeIds: string[] = [];
-    if (options.outputNodeIds && options.outputNodeIds.length > 0) {
-      const tent = await loadTent(env.fs);
-      outputNodeIds = canonicalAcceptOutputNodeIds(
-        validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id).outputIds
-      );
-    }
     return {
-      deliveryId: delivery.id,
-      deliveryPath: delivery.path,
-      commits: [...delivery.commits],
-      outputNodeIds,
-      deliverySemanticsDigest: deliveryReviewSemanticsDigest(delivery),
+      resultId: result.id,
+      resultPath: result.path,
+      commits: [...result.commits],
+      resultSemanticsDigest: taskResultReviewSemanticsDigest(result),
     };
   });
 }
 
 /**
  * Finalize accept under mutation.lock after Git integrate (when any) ran outside the lock.
- * Revalidates Delivery/authority, commits an exact accept WAL, then advances
- * Output → Delivery → Task writes with restart-safe forward recovery.
+ * Revalidates Task Result/authority, commits an exact accept WAL, then advances
+ * Task Result → Task writes with restart-safe forward recovery.
  */
 export async function finalizeTaskAccept(
   env: OpsEnv,
@@ -599,126 +607,71 @@ export async function finalizeTaskAccept(
       assertTaskAcceptRequestMatchesIntent(prepared.acceptIntent, options);
       return prepared.recovered;
     }
-    const task = await preflightTaskMutation(env, taskPath);
+    const task = await preflightTaskMutation(env, taskPath, {
+      allowCommittedSubmitRecovery: true,
+    });
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireExpectedActiveReadyDelivery(
+    const result = await requireExpectedActiveReadyResult(
       env.fs,
       task,
-      options.deliveryId
+      options.resultId
     );
-    if (delivery.id !== prepared.deliveryId) {
+    if (result.id !== prepared.resultId) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery changed during integrate; refusing accept."
+        "RESULT_CHANGED",
+        "Ready result changed during integrate; refusing accept."
       );
     }
     if (
-      !prepared.deliverySemanticsDigest ||
-      deliveryReviewSemanticsDigest(delivery) !== prepared.deliverySemanticsDigest
+      !prepared.resultSemanticsDigest ||
+      taskResultReviewSemanticsDigest(result) !== prepared.resultSemanticsDigest
     ) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery semantics changed during integrate; refusing accept."
+        "RESULT_CHANGED",
+        "Ready result semantics changed during integrate; refusing accept."
       );
     }
-    if (!exactStringListEqual(delivery.commits, prepared.commits)) {
+    if (!exactStringListEqual(result.commits, prepared.commits)) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready delivery commits changed during accept; refusing accept."
+        "RESULT_CHANGED",
+        "Ready result commits changed during accept; refusing accept."
       );
     }
     const actor = canonicalTaskAcceptActor(options.actor);
     assertReviewAuthority({
       actor,
-      executorRoleId: task.roleId,
-      parentActor: task.parentActor,
+      executorRoleId: task.assigneeRoleId,
+      requester: task.requester,
       action: "accept",
     });
 
-    const tent = await loadTent(env.fs);
-    const outputNodeIds = canonicalAcceptOutputNodeIds(
-      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id).outputIds
-    );
-    if (!exactStringListEqual(outputNodeIds, prepared.outputNodeIds)) {
-      throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "task.accept Output selection changed during integrate; refusing accept."
-      );
-    }
-
-    // Snapshot Delivery + Task raw BEFORE any Output write so a later snapshot-read
-    // failure cannot leave Outputs bound with no operational rollback material.
-    // Order (final mutation, after delivery revalidation):
-    //   1) operational raw snapshots (fail here → zero Output writes)
-    //   2) exact accept WAL persistence
-    //   3) Output bind (own raw snapshots + write rollback)
-    //   4) accepted Delivery/Task persistence (compensate with 1+3 on failure)
-    const deliveryRawBefore = await env.fs.readFile(delivery.path);
-    const taskRawBefore = await env.fs.readFile(taskPath);
     const updatedAt = assertIsoTimestamp(env.clock.now(), "Task accept intent updatedAt");
     const intent: TaskAcceptIntent = {
       type: TASK_ACCEPT_INTENT_TYPE,
       version: 1,
       taskId: requireCanonicalTaskId(task),
-      deliveryId: delivery.id,
-      deliveryPath: delivery.path,
-      candidateDigest: deliveryAcceptCandidateDigest(delivery),
+      resultId: result.id,
+      resultPath: result.path,
+      candidateDigest: taskResultAcceptCandidateDigest(result),
       actor,
-      commits: [...delivery.commits],
-      outputNodeIds,
+      commits: [...result.commits],
       updatedAt,
     };
     await writeTaskAcceptIntent(env.fs, taskPath, intent);
-    /** Populated only after bind returns; mid-bind failures roll back inside bind. */
-    let outputSnapshots: OutputBindSnapshot[] = [];
-    let result: TaskAcceptResult;
-
-    try {
-      const bindResult = await bindOutputsToDeliveryUnlocked(
-        env.fs,
-        tent,
-        intent.outputNodeIds,
-        delivery.id
-      );
-      outputSnapshots = bindResult.snapshots;
-
-      delivery.status = "accepted";
-      delivery.integrationMode = "manual-accept";
-      delivery.review = { by: intent.actor, decision: "accept" };
-      delivery.updatedAt = intent.updatedAt;
-      await writeDelivery(env.fs, delivery);
-
-      // Accept ends occupation via task state; collab FM dual-write stays retired.
-      // Output.deliveryId is the sole provenance write path (not collab projection).
-      const next = await patchTaskEnvelope(env.fs, taskPath, {
-        state: "accepted",
-        wait: null,
-        updatedAt: intent.updatedAt,
-      });
-      result = {
-        task: next,
-        delivery,
-        boundOutputIds: bindResult.boundIds,
-        changedOutputIds: bindResult.changedIds,
-      };
-    } catch (err) {
-      // Restore Delivery/Task from pre-accept raw (no-op if never written).
-      // Restore Outputs when bind completed and a later step failed.
-      // Snapshot-read failures never reach here with bound Outputs.
-      await compensateAcceptAfterOutputBind(env.fs, {
-        deliveryPath: delivery.path,
-        deliveryRawBefore,
-        taskPath,
-        taskRawBefore,
-        outputSnapshots,
-      });
-      throw err;
-    }
+    result.status = "accepted";
+    result.review = { reviewer: intent.actor, at: intent.updatedAt };
+    await writeTaskResult(env.fs, result);
+    const next = await patchTaskRecord(env.fs, taskPath, {
+      state: "accepted",
+      wait: null,
+      updatedAt: intent.updatedAt,
+    });
+    const accepted: TaskAcceptResult = { task: next, result };
     // Removal is intentionally outside the compensation catch above. Once
-    // Delivery + Task are accepted, a failed remove leaves a forward-only
+    // TaskResult + Task are accepted, a failed remove leaves a forward-only
     // intent that the next exact-Task preflight can safely finish.
     await env.fs.remove(taskAcceptIntentPath(taskPath));
-    return result;
+    return accepted;
   });
 }
 
@@ -732,41 +685,19 @@ function exactStringListEqual(
   );
 }
 
-function canonicalAcceptOutputNodeIds(outputNodeIds: readonly string[]): string[] {
-  // Preserve the established first-occurrence bind/result order while removing
-  // duplicates. The persisted intent makes that normalized order immutable.
-  return [...new Set(outputNodeIds)];
-}
-
-function normalizeAcceptRetryOutputNodeIds(
-  outputNodeIds: readonly string[] | undefined
-): string[] {
-  if (!outputNodeIds || outputNodeIds.length === 0) return [];
-  const normalized: string[] = [];
-  for (const raw of outputNodeIds) {
-    if (typeof raw !== "string" || !raw.trim()) {
-      throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "This task.accept request differs from the persisted accept operation that was recovered."
-      );
-    }
-    normalized.push(raw.trim());
-  }
-  return canonicalAcceptOutputNodeIds(normalized);
-}
 
 export async function taskAccept(
   env: OpsEnv,
   taskPath: string,
   options: TaskAcceptOptions
 ): Promise<TaskAcceptResult> {
-  // Validate authority + ready delivery under lock; Git integrate outside;
+  // Validate authority + ready result under lock; Git integrate outside;
   // then re-validate, commit the accept WAL, and converge accepted state under lock.
   const prepared = await prepareTaskAccept(env, taskPath, options);
 
   if (prepared.commits.length > 0) {
     if (!options.integrate) {
-      throw new Error("Delivery contains commits; workspace integration is required.");
+      throw new Error("TaskResult contains commits; workspace integration is required.");
     }
     await options.integrate(prepared.commits);
   }
@@ -774,56 +705,14 @@ export async function taskAccept(
   return finalizeTaskAccept(env, taskPath, options, prepared);
 }
 
-/**
- * After Outputs were bound but Delivery/Task accepted persistence failed:
- * restore Task + Delivery raw, then Output snapshots. Fail loud if any restore fails.
- */
-async function compensateAcceptAfterOutputBind(
-  fs: FsAdapter,
-  args: {
-    deliveryPath: string;
-    deliveryRawBefore: string;
-    taskPath: string;
-    taskRawBefore: string;
-    outputSnapshots: readonly OutputBindSnapshot[];
-  }
-): Promise<void> {
-  const failures: string[] = [];
-  try {
-    await fs.writeFile(args.deliveryPath, args.deliveryRawBefore);
-  } catch (err) {
-    failures.push(
-      `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  try {
-    await fs.writeFile(args.taskPath, args.taskRawBefore);
-  } catch (err) {
-    failures.push(
-      `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  try {
-    await restoreOutputBindSnapshots(fs, args.outputSnapshots);
-  } catch (err) {
-    failures.push(
-      `outputs: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  if (failures.length > 0) {
-    throw new TaskLifecycleError(
-      "ACCEPT_ROLLBACK_FAILED",
-      `task.accept failed after Output bind and compensating rollback also failed: ${failures.join("; ")}`
-    );
-  }
-}
-
 export async function taskReject(
   env: OpsEnv,
   taskPath: string,
   options: TaskRejectOptions
-): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
+): Promise<{ task: TaskRecord; result: TaskResultRecord }> {
   return withMutation(env.fs, async () => {
+    const submitIntent = await loadTaskSubmitIntent(env.fs, taskPath);
+    if (submitIntent) await cleanupCommittedTaskSubmitIntent(env, taskPath, submitIntent);
     const intents = await loadTaskReviewIntents(env.fs, taskPath);
     if (intents.accept) {
       // A committed accept decision wins. Converge it before the later reject
@@ -836,12 +725,14 @@ export async function taskReject(
     if (recovered) {
       assertTaskRejectRequestMatchesIntent(recovered.intent, options);
       // The committed reject WAL wins, then the ordinary exact-Task preflight
-      // validates that no competing Delivery WAL remains before success.
-      const task = await preflightTaskMutation(env, taskPath);
-      return { task, delivery: recovered.delivery };
+      // validates that no competing TaskResult WAL remains before success.
+      const task = await preflightTaskMutation(env, taskPath, {
+        allowCommittedSubmitRecovery: true,
+      });
+      return { task, result: recovered.result };
     }
-    let task = await loadTaskEnvelope(env.fs, taskPath);
-    task = await reconcileCommittedTaskDelivery(env, taskPath, task);
+    let task = await loadTaskRecord(env.fs, taskPath);
+    task = await reconcileCommittedTaskResult(env, taskPath, task);
     const completed = await recoverCompletedTaskReject(env.fs, task, options);
     if (completed) return completed;
     const resume = options.resume !== false;
@@ -849,16 +740,16 @@ export async function taskReject(
     const to: TaskState = resume ? "running" : "rejected";
     assertTransition(task.state, event, to);
 
-    const delivery = await requireExpectedActiveReadyDelivery(
+    const result = await requireExpectedActiveReadyResult(
       env.fs,
       task,
-      options.deliveryId
+      options.resultId
     );
-    // Exact Task.parentActor only (no user override on Role-reviewed); never self.
+    // Exact Task.requester only (no user override on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
-      executorRoleId: task.roleId,
-      parentActor: task.parentActor,
+      executorRoleId: task.assigneeRoleId,
+      requester: task.requester,
       action: "reject",
     });
 
@@ -866,91 +757,82 @@ export async function taskReject(
       type: TASK_REJECT_INTENT_TYPE,
       version: 1,
       taskId: requireCanonicalTaskId(task),
-      deliveryId: delivery.id,
+      resultId: result.id,
       to,
       actor: options.actor,
       note: options.note?.trim() || DEFAULT_TASK_REJECT_NOTE,
       updatedAt: env.clock.now(),
     };
     await writeTaskRejectIntent(env.fs, taskPath, intent);
-    return completeTaskRejectIntent(env, taskPath, task, delivery, intent);
+    return completeTaskRejectIntent(env, taskPath, task, result, intent);
   });
 }
 
 async function recoverCompletedTaskReject(
   fs: FsAdapter,
-  task: TaskEnvelope,
+  task: TaskRecord,
   options: TaskRejectOptions
-): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord } | undefined> {
+): Promise<{ task: TaskRecord; result: TaskResultRecord } | undefined> {
   if (
-    !task.activeDeliveryId ||
+    !task.currentResultId ||
     (task.state !== "running" && task.state !== "rejected")
   ) {
     return undefined;
   }
-  const delivery = await requireTaskDeliveryById(fs, task, task.activeDeliveryId);
-  if (delivery.status !== "rejected" || delivery.review?.decision !== "reject") {
+  const result = await requireTaskResultById(fs, task, task.currentResultId);
+  if (result.status !== "rejected" || !result.review) {
     return undefined;
   }
   const completedIntent: TaskRejectIntent = {
     type: TASK_REJECT_INTENT_TYPE,
     version: 1,
     taskId: requireCanonicalTaskId(task),
-    deliveryId: delivery.id,
+    resultId: result.id,
     to: task.state,
-    actor: delivery.review.by,
-    note: delivery.review.note || DEFAULT_TASK_REJECT_NOTE,
-    updatedAt: delivery.updatedAt || task.updatedAt || "",
+    actor: result.review.reviewer,
+    note: result.review.note || DEFAULT_TASK_REJECT_NOTE,
+    updatedAt: result.review.at,
   };
   assertTaskRejectRequestMatchesIntent(completedIntent, options);
-  return { task, delivery };
+  return { task, result };
 }
 
 async function completedTaskRejectResume(
   fs: FsAdapter,
-  task: TaskEnvelope
+  task: TaskRecord
 ): Promise<TaskRejectResumeContinuation | undefined> {
-  if (task.state !== "running" || !task.activeDeliveryId) return undefined;
-  const delivery = await requireTaskDeliveryById(fs, task, task.activeDeliveryId);
-  if (delivery.status !== "rejected") return undefined;
+  if (task.state !== "running" || !task.currentResultId) return undefined;
+  const result = await requireTaskResultById(fs, task, task.currentResultId);
+  if (result.status !== "rejected") return undefined;
   if (
-    delivery.sourceNodeId !== primaryNodeId(task) ||
-    !isReadyDeliveryModeForTask(task, delivery.integrationMode)
+    !isReadyTaskResultModeForTask(task, result.integrationMode)
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      `Rejected Delivery ${delivery.id} source or integration mode does not match its exact Task.`
+      "RESULT_CHANGED",
+      `Rejected TaskResult ${result.id} integration mode does not match its exact Task.`
     );
   }
   if (
-    delivery.review?.decision !== "reject" ||
-    !delivery.review.by?.trim() ||
-    typeof delivery.review.note !== "string"
+    !result.review?.reviewer?.trim() ||
+    typeof result.review.note !== "string"
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      `Rejected Delivery ${delivery.id} does not contain a complete review continuation.`
+      "RESULT_CHANGED",
+      `Rejected TaskResult ${result.id} does not contain a complete review continuation.`
     );
   }
   return {
-    deliveryId: delivery.id,
-    actor: delivery.review.by,
-    note: delivery.review.note,
+    resultId: result.id,
+    actor: result.review.reviewer,
+    note: result.review.note,
   };
 }
 
-export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
+export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "interrupted") {
-      // Repair a dangling active Delivery projection idempotently. Preserve any
-      // existing formal lastReturn as interruption context.
-      await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId) return task;
-      return patchTaskEnvelope(env.fs, taskPath, {
-        activeDeliveryId: null,
-        updatedAt: env.clock.now(),
-      });
+      return task;
     }
     if (task.state === "queued") {
       assertTransition(task.state, "interrupt", "interrupted");
@@ -960,31 +842,28 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
     }
     assertTransition(task.state, "interrupt", "interrupted");
 
-    await releaseOccupationForTask(env, task);
-
-    return patchTaskEnvelope(env.fs, taskPath, {
+    return patchTaskRecord(env.fs, taskPath, {
       state: "interrupted",
       wait: null,
-      activeDeliveryId: null,
       updatedAt: env.clock.now(),
     });
   });
 }
 
 export interface TaskFailOptions {
-  /** Formal terminal failure text. Persisted in Task.lastReturn.error. */
+  /** Formal terminal failure text. Persisted in Task.statusDetail.error. */
   summary?: string;
   report?: string;
   error?: string;
   code?: string;
-  sessionId?: string;
+  executionSessionId?: string;
 }
 
 export interface TaskFailedReturnOptions {
   report?: string;
   error: string;
   code?: string;
-  sessionId?: string;
+  executionSessionId?: string;
 }
 
 /** Record a pre-publication managed failure without terminalizing the Task. */
@@ -992,23 +871,23 @@ export async function taskRecordFailedReturn(
   env: OpsEnv,
   taskPath: string,
   options: TaskFailedReturnOptions
-): Promise<TaskEnvelope> {
+): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
-    // A committed ready/accepted Delivery wins. Its reconciliation clears stale
-    // non-Delivery return state; integration/review failures are not Task returns.
+    // A committed ready/accepted TaskResult wins. Its reconciliation clears stale
+    // non-TaskResult return state; integration/review failures are not Task returns.
     if (task.state !== "running" && task.state !== "waiting") return task;
-    const sessionId = assertTaskFailureSession(task, options.sessionId);
-    const lastReturn = parseTaskLastReturn({
+    const executionSessionId = assertTaskFailureSession(task, options.executionSessionId);
+    const statusDetail = parseTaskStatusDetail({
       kind: "failed",
       ...(options.report ? { report: options.report } : {}),
       error: options.error,
       ...(options.code ? { code: options.code } : {}),
       at: env.clock.now(),
-      ...(sessionId ? { sessionId } : {}),
+      ...(executionSessionId ? { executionSessionId } : {}),
     })!;
-    return patchTaskEnvelope(env.fs, taskPath, {
-      lastReturn,
+    return patchTaskRecord(env.fs, taskPath, {
+      statusDetail,
       updatedAt: env.clock.now(),
     });
   });
@@ -1016,7 +895,7 @@ export async function taskRecordFailedReturn(
 
 /**
  * Unrecoverable failure: running|waiting → failed.
- * Releases node occupation via task terminal state (and non-accepted delivery cleanup)
+ * Releases Node occupation via terminal Task state. Task Results are retained.
  * so the same node can be re-dispatched. No Node frontmatter dual-write.
  * Idempotent when already failed.
  */
@@ -1024,69 +903,62 @@ export async function taskFail(
   env: OpsEnv,
   taskPath: string,
   options: TaskFailOptions = {}
-): Promise<TaskEnvelope> {
+): Promise<TaskRecord> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     if (task.state === "failed") {
-      const requestedLastReturn = buildTaskFailedReturn(task, options, env.clock.now());
-      // Already terminal non-active — ensure non-accepted deliveries are cleared (repair path).
-      await releaseOccupationForTask(env, task);
-      if (!task.activeDeliveryId && task.lastReturn?.kind === "failed") return task;
-      const lastReturn = task.lastReturn?.kind === "failed"
-        ? task.lastReturn
-        : requestedLastReturn;
-      return patchTaskEnvelope(env.fs, taskPath, {
-        activeDeliveryId: null,
-        lastReturn,
+      const requestedStatusDetail = buildTaskFailedReturn(task, options, env.clock.now());
+      if (task.statusDetail?.kind === "failed") return task;
+      return patchTaskRecord(env.fs, taskPath, {
+        statusDetail: requestedStatusDetail,
         updatedAt: env.clock.now(),
       });
     }
     assertTransition(task.state, "fail", "failed");
-    const lastReturn = buildTaskFailedReturn(task, options, env.clock.now());
-    await releaseOccupationForTask(env, task);
-    return patchTaskEnvelope(env.fs, taskPath, {
+    const statusDetail = buildTaskFailedReturn(task, options, env.clock.now());
+    return patchTaskRecord(env.fs, taskPath, {
       state: "failed",
       wait: null,
-      activeDeliveryId: null,
-      lastReturn,
+      statusDetail,
       updatedAt: env.clock.now(),
     });
   });
 }
 
 function buildTaskFailedReturn(
-  task: TaskEnvelope,
+  task: TaskRecord,
   options: TaskFailOptions,
   at: string
-): TaskLastReturn {
-  const sessionId = assertTaskFailureSession(task, options.sessionId);
-  return parseTaskLastReturn({
+): TaskStatusDetail {
+  const executionSessionId = assertTaskFailureSession(task, options.executionSessionId);
+  return parseTaskStatusDetail({
     kind: "failed",
     ...(options.report ? { report: options.report } : {}),
     error: options.error?.trim() || options.summary?.trim() || "Task failed.",
     ...(options.code ? { code: options.code } : {}),
     at,
-    ...(sessionId ? { sessionId } : {}),
+    ...(executionSessionId ? { executionSessionId } : {}),
   })!;
 }
 
 function assertTaskFailureSession(
-  task: TaskEnvelope,
+  task: TaskRecord,
   requestedSessionId: string | undefined
 ): string | undefined {
   const requested = requestedSessionId?.trim() || undefined;
-  if (requested && requested !== task.sessionId) {
+  if (requested && requested !== task.executionSessionId) {
     throw new TaskLifecycleError(
       "TASK_NOT_ACTIVE",
-      `Task failure Session mismatch: task=${task.sessionId ?? "unbound"} requested=${requested}.`
+      `Task failure Session mismatch: task=${task.executionSessionId ?? "unbound"} requested=${requested}.`
     );
   }
-  return requested ?? task.sessionId;
+  return requested ?? task.executionSessionId;
 }
 
-/** Clear this Task's non-accepted deliveries; occupation ends with task state. */
-async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
-  await removeNonAcceptedDeliveriesForTask(env.fs, requireCanonicalTaskId(task));
+/** Results are immutable history; occupation ends solely through Task state. */
+async function releaseOccupationForTask(env: OpsEnv, task: TaskRecord): Promise<void> {
+  void env;
+  void task;
 }
 
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
@@ -1097,91 +969,370 @@ export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
   });
 }
 
-/** Find active operational task for a node (envelope oracle; not frontmatter owner). */
-export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Promise<TaskEnvelope | undefined> {
-  const tasks = await loadTaskEnvelopes(fs);
+/** Find the active operational Task for a Node. */
+export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Promise<TaskRecord | undefined> {
+  const tasks = await loadTaskRecords(fs);
   return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
-/** Delivery storage stays in the Task's immutable owner namespace across Session replacement. */
-function deliveryDirForTask(task: TaskEnvelope): string {
+/** TaskResult storage stays in the Task's immutable owner namespace across Session replacement. */
+function resultDirForTask(task: TaskRecord): string {
   const normalized = task.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
   const match = /^(temp\/(?:roles|sessions)\/[^/]+)\/tasks\/[^/]+\.md$/.exec(normalized);
   if (!match) {
     throw new Error(
-      `Task ${requireCanonicalTaskId(task)} has no canonical owner delivery namespace.`
+      `Task ${requireCanonicalTaskId(task)} has no canonical owner result namespace.`
     );
   }
-  return `${match[1]}/deliveries`;
+  return `${match[1]}/results`;
 }
 
 // ---- internals ----
 
-function assertDeliverPreconditions(task: TaskEnvelope): void {
+function assertSubmitPreconditions(task: TaskRecord): void {
   if (task.state !== "running") {
     throw new TaskLifecycleError(
       "INVALID_TRANSITION",
-      `task.deliver requires state=running (got ${task.state}).`
+      `task.submit requires state=running (got ${task.state}).`
     );
   }
 }
 
-async function assertNoReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<void> {
-  const existing = await discoverTaskDeliveries(fs, task);
-  if (existing.some((d) => d.status === "ready")) {
-    throw new Error("A delivery is already ready for review; accept or reject it first.");
+async function assertNoReadyResult(fs: FsAdapter, task: TaskRecord): Promise<void> {
+  const existing = task.currentResultId
+    ? await loadTaskResultById(fs, task, task.currentResultId)
+    : undefined;
+  if (existing?.status === "ready") {
+    throw new Error("A result is already ready for review; accept or reject it first.");
   }
 }
 
-async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord> {
-  if (task.activeDeliveryId) {
-    const byId = await loadTaskDeliveryById(fs, task, task.activeDeliveryId);
-    if (byId && byId.status === "ready") return byId;
-    // Fall through: try path via role
-    if (byId) {
-      // reload by path if status drifted
-    }
+async function requireActiveReadyResult(fs: FsAdapter, task: TaskRecord): Promise<TaskResultRecord> {
+  if (!task.currentResultId) {
+    throw new TaskLifecycleError("NO_ACTIVE_RESULT", "No ready result for this task.");
   }
-  const ready = (await discoverTaskDeliveries(fs, task)).find((d) => d.status === "ready");
-  if (!ready) {
-    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
+  const result = await loadTaskResultById(fs, task, task.currentResultId);
+  if (!result || result.status !== "ready") {
+    throw new TaskLifecycleError("NO_ACTIVE_RESULT", "No ready result for this task.");
   }
-  return ready;
+  return result;
 }
 
-async function requireExpectedActiveReadyDelivery(
+async function requireExpectedActiveReadyResult(
   fs: FsAdapter,
-  task: TaskEnvelope,
-  deliveryId: string
-): Promise<DeliveryRecord> {
-  if (task.activeDeliveryId !== deliveryId) {
+  task: TaskRecord,
+  resultId: string
+): Promise<TaskResultRecord> {
+  if (task.currentResultId !== resultId) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "The ready delivery changed; refresh before reviewing it."
+      "RESULT_CHANGED",
+      "The ready result changed; refresh before reviewing it."
     );
   }
-  const delivery = await requireActiveReadyDelivery(fs, task);
-  if (delivery.id !== deliveryId) {
+  const result = await requireActiveReadyResult(fs, task);
+  if (result.id !== resultId) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "The ready delivery changed; refresh before reviewing it."
+      "RESULT_CHANGED",
+      "The ready result changed; refresh before reviewing it."
     );
   }
-  return delivery;
+  return result;
 }
 
-const TASK_ACCEPT_INTENT_TYPE = "task-delivery-accept-intent";
+function taskSubmitIntentPath(taskPath: string): string {
+  if (!taskPath.endsWith(".md")) {
+    throw new Error(`Task submit recovery requires a canonical markdown Task path: ${taskPath}.`);
+  }
+  return `${taskPath.slice(0, -3)}.result-submit-intent.json`;
+}
+
+async function writeTaskSubmitIntent(
+  fs: FsAdapter,
+  taskPath: string,
+  intent: TaskSubmitIntent
+): Promise<void> {
+  const path = taskSubmitIntentPath(taskPath);
+  if (await fs.exists(path)) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      `Exact-Task submit recovery intent already exists: ${path}.`
+    );
+  }
+  await fs.writeFile(path, JSON.stringify(intent, null, 2) + "\n");
+}
+
+async function loadTaskSubmitIntent(
+  fs: FsAdapter,
+  taskPath: string
+): Promise<TaskSubmitIntent | undefined> {
+  const path = taskSubmitIntentPath(taskPath);
+  if (!(await fs.exists(path))) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(path));
+  } catch {
+    throw new Error(`Invalid exact-Task submit recovery intent: ${path}.`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid exact-Task submit recovery intent: ${path}.`);
+  }
+  const value = raw as Record<string, unknown>;
+  const keys = Object.keys(value).sort();
+  const expectedKeys = [
+    "candidateDigest",
+    "createdAt",
+    "resultId",
+    "taskId",
+    "type",
+    "version",
+  ];
+  let createdAt: string;
+  try {
+    createdAt = assertIsoTimestamp(String(value.createdAt ?? ""), "Task submit intent createdAt");
+  } catch {
+    throw new Error(`Invalid exact-Task submit recovery intent: ${path}.`);
+  }
+  if (
+    !exactStringListEqual(keys, expectedKeys) ||
+    value.type !== TASK_SUBMIT_INTENT_TYPE ||
+    value.version !== 1 ||
+    typeof value.taskId !== "string" ||
+    !isTaskId(value.taskId) ||
+    typeof value.resultId !== "string" ||
+    !isTaskResultId(value.resultId) ||
+    typeof value.candidateDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.candidateDigest) ||
+    typeof value.createdAt !== "string" ||
+    value.createdAt !== createdAt
+  ) {
+    throw new Error(`Invalid exact-Task submit recovery intent: ${path}.`);
+  }
+  return value as TaskSubmitIntent;
+}
+
+function taskSubmitCandidateForIntent(
+  env: OpsEnv,
+  task: TaskRecord,
+  intent: TaskSubmitIntent,
+  options: TaskSubmitOptions
+): TaskResultRecord {
+  const routing = resolveSubmitRouting(task.acceptMode, options.decision);
+  return buildTaskResultRecord(
+    { now: () => intent.createdAt },
+    {
+      taskId: requireCanonicalTaskId(task),
+      report: options.report,
+      commits: options.commits,
+      targetHead: options.targetHead,
+      checks: options.checks,
+      artifactRefs: options.artifactRefs,
+      status: "ready",
+      integrationMode: routing.integrationMode,
+      resultsDir: resultDirForTask(task),
+      id: intent.resultId,
+    }
+  );
+}
+
+function assertTaskSubmitIntentMatchesResult(
+  intent: TaskSubmitIntent,
+  result: TaskResultRecord
+): void {
+  if (
+    result.taskId !== intent.taskId ||
+    result.id !== intent.resultId ||
+    result.status !== "ready" ||
+    result.review !== undefined ||
+    result.createdAt !== intent.createdAt ||
+    taskResultAcceptCandidateDigest(result) !== intent.candidateDigest
+  ) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      `Exact-Task submit recovery Result ${intent.resultId} differs from its persisted intent.`
+    );
+  }
+}
+
+async function recoverPendingTaskSubmit(
+  env: OpsEnv,
+  taskPath: string,
+  intent: TaskSubmitIntent,
+  options: TaskSubmitOptions,
+  allowCreate: boolean
+): Promise<TaskSubmitPrepared> {
+  const reviewIntents = await loadTaskReviewIntents(env.fs, taskPath);
+  if (reviewIntents.accept || reviewIntents.reject) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "Conflicting exact-Task submit and review recovery intents exist; refusing mutation."
+    );
+  }
+  let task = await loadTaskRecord(env.fs, taskPath);
+  if (requireCanonicalTaskId(task) !== intent.taskId) {
+    throw new TaskLifecycleError("RESULT_CHANGED", "Task submit recovery intent identity changed.");
+  }
+  const candidate = taskSubmitCandidateForIntent(env, task, intent, options);
+  if (taskResultAcceptCandidateDigest(candidate) !== intent.candidateDigest) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "This task.submit request differs from the persisted Result publication."
+    );
+  }
+  const resultPath = candidate.path;
+  let result: TaskResultRecord;
+  if (await env.fs.exists(resultPath)) {
+    result = await loadTaskResult(env.fs, resultPath);
+    assertTaskSubmitIntentMatchesResult(intent, result);
+  } else {
+    if (!allowCreate) {
+      throw new TaskLifecycleError(
+        "RESULT_CHANGED",
+        "A Task Result submit intent exists without its Result; retry the exact task.submit request."
+      );
+    }
+    if (task.state !== "running" || task.currentResultId !== undefined) {
+      throw new TaskLifecycleError(
+        "RESULT_CHANGED",
+        "Task state changed before its intended Result was published."
+      );
+    }
+    result = await createTaskResultUnlocked(
+      env.fs,
+      { now: () => intent.createdAt },
+      {
+        taskId: candidate.taskId,
+        report: candidate.report,
+        commits: candidate.commits,
+        targetHead: candidate.targetHead,
+        checks: candidate.checks,
+        artifactRefs: candidate.artifactRefs,
+        status: "ready",
+        integrationMode: candidate.integrationMode,
+        resultsDir: resultDirForTask(task),
+        id: intent.resultId,
+      }
+    );
+    assertTaskSubmitIntentMatchesResult(intent, result);
+  }
+
+  if (task.state === "running" && task.currentResultId === undefined) {
+    task = await patchTaskRecord(env.fs, taskPath, {
+      state: "submitted",
+      currentResultId: result.id,
+      statusDetail: null,
+      updatedAt: env.clock.now(),
+    });
+  } else if (task.state !== "submitted" || task.currentResultId !== result.id) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "Task no longer matches its persisted Result publication."
+    );
+  }
+  await env.fs.remove(taskSubmitIntentPath(taskPath));
+  if (isAutoIntegrationMode(result.integrationMode)) {
+    return {
+      kind: "auto",
+      resultId: result.id,
+      commits: [...result.commits],
+      ...(result.targetHead ? { targetHead: result.targetHead } : {}),
+    };
+  }
+  return { kind: "done", result: { task, result, autoIntegrated: false } };
+}
+
+async function convergeCommittedTaskSubmitIntent(
+  env: OpsEnv,
+  taskPath: string,
+  intent: TaskSubmitIntent
+): Promise<TaskRecord> {
+  const reviewIntents = await loadTaskReviewIntents(env.fs, taskPath);
+  if (reviewIntents.accept || reviewIntents.reject) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "Conflicting exact-Task submit and review recovery intents exist; refusing mutation."
+    );
+  }
+  let task = await loadTaskRecord(env.fs, taskPath);
+  if (requireCanonicalTaskId(task) !== intent.taskId) {
+    throw new TaskLifecycleError("RESULT_CHANGED", "Task submit recovery intent identity changed.");
+  }
+  const path = taskResultPathForTask(taskPath, intent.resultId);
+  if (!(await env.fs.exists(path))) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "A Task Result submit intent exists without its Result; retry the exact task.submit request."
+    );
+  }
+  const result = await loadTaskResult(env.fs, path);
+  assertTaskSubmitIntentMatchesResult(intent, result);
+  if (task.state === "running" && task.currentResultId === undefined) {
+    task = await patchTaskRecord(env.fs, taskPath, {
+      state: "submitted",
+      currentResultId: result.id,
+      statusDetail: null,
+      updatedAt: env.clock.now(),
+    });
+  } else if (task.state !== "submitted" || task.currentResultId !== result.id) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "Task no longer matches its persisted Result publication."
+    );
+  }
+  await env.fs.remove(taskSubmitIntentPath(taskPath));
+  return task;
+}
+
+/**
+ * Unrelated review mutations may only clean an intent after the exact Result
+ * pointer is already durable. Only the matching task.submit retry may publish
+ * a Result or advance a running Task to submitted.
+ */
+async function cleanupCommittedTaskSubmitIntent(
+  env: OpsEnv,
+  taskPath: string,
+  intent: TaskSubmitIntent
+): Promise<TaskRecord> {
+  const reviewIntents = await loadTaskReviewIntents(env.fs, taskPath);
+  if (reviewIntents.accept || reviewIntents.reject) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "Conflicting exact-Task submit and review recovery intents exist; refusing mutation."
+    );
+  }
+  const task = await loadTaskRecord(env.fs, taskPath);
+  if (requireCanonicalTaskId(task) !== intent.taskId) {
+    throw new TaskLifecycleError("RESULT_CHANGED", "Task submit recovery intent identity changed.");
+  }
+  const resultPath = taskResultPathForTask(taskPath, intent.resultId);
+  if (!(await env.fs.exists(resultPath))) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "A Task Result publication is incomplete; retry the exact task.submit request."
+    );
+  }
+  const result = await loadTaskResult(env.fs, resultPath);
+  assertTaskSubmitIntentMatchesResult(intent, result);
+  if (task.state !== "submitted" || task.currentResultId !== result.id) {
+    throw new TaskLifecycleError(
+      "RESULT_CHANGED",
+      "A Task Result publication is incomplete; retry the exact task.submit request."
+    );
+  }
+  await env.fs.remove(taskSubmitIntentPath(taskPath));
+  return task;
+}
+
+const TASK_ACCEPT_INTENT_TYPE = "task-result-accept-intent";
 
 type TaskAcceptIntent = {
   type: typeof TASK_ACCEPT_INTENT_TYPE;
   version: 1;
   taskId: string;
-  deliveryId: string;
-  deliveryPath: string;
+  resultId: string;
+  resultPath: string;
   candidateDigest: string;
   actor: string;
   commits: string[];
-  outputNodeIds: string[];
   updatedAt: string;
 };
 
@@ -1189,7 +1340,7 @@ function taskAcceptIntentPath(taskPath: string): string {
   if (!taskPath.endsWith(".md")) {
     throw new Error(`Task accept recovery requires a canonical markdown Task path: ${taskPath}.`);
   }
-  return `${taskPath.slice(0, -3)}.delivery-accept-intent.json`;
+  return `${taskPath.slice(0, -3)}.result-accept-intent.json`;
 }
 
 async function writeTaskAcceptIntent(
@@ -1200,7 +1351,7 @@ async function writeTaskAcceptIntent(
   const path = taskAcceptIntentPath(taskPath);
   if (await fs.exists(path)) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       `Exact-Task accept recovery intent already exists: ${path}.`
     );
   }
@@ -1228,20 +1379,15 @@ async function loadTaskAcceptIntent(
     "actor",
     "candidateDigest",
     "commits",
-    "deliveryId",
-    "deliveryPath",
-    "outputNodeIds",
+    "resultId",
+    "resultPath",
     "taskId",
     "type",
     "updatedAt",
     "version",
   ];
-  let outputNodeIds: string[];
   let updatedAt: string;
   try {
-    outputNodeIds = normalizeAcceptRetryOutputNodeIds(
-      Array.isArray(value.outputNodeIds) ? value.outputNodeIds as string[] : undefined
-    );
     updatedAt = assertIsoTimestamp(String(value.updatedAt ?? ""), "Task accept intent updatedAt");
   } catch {
     throw new Error(`Invalid exact-Task accept recovery intent: ${path}.`);
@@ -1252,11 +1398,11 @@ async function loadTaskAcceptIntent(
     value.version !== 1 ||
     typeof value.taskId !== "string" ||
     !isTaskId(value.taskId) ||
-    typeof value.deliveryId !== "string" ||
-    !isDeliveryId(value.deliveryId) ||
-    typeof value.deliveryPath !== "string" ||
-    !value.deliveryPath.trim() ||
-    value.deliveryPath !== value.deliveryPath.trim() ||
+    typeof value.resultId !== "string" ||
+    !isTaskResultId(value.resultId) ||
+    typeof value.resultPath !== "string" ||
+    !value.resultPath.trim() ||
+    value.resultPath !== value.resultPath.trim() ||
     typeof value.candidateDigest !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.candidateDigest) ||
     typeof value.actor !== "string" ||
@@ -1267,9 +1413,6 @@ async function loadTaskAcceptIntent(
       (item) => typeof item === "string" && Boolean(item.trim()) && item === item.trim()
     ) ||
     new Set(value.commits as string[]).size !== value.commits.length ||
-    !Array.isArray(value.outputNodeIds) ||
-    !value.outputNodeIds.every((item) => typeof item === "string") ||
-    !exactStringListEqual(value.outputNodeIds as string[], outputNodeIds) ||
     typeof value.updatedAt !== "string" ||
     value.updatedAt !== updatedAt
   ) {
@@ -1286,7 +1429,7 @@ async function loadTaskReviewIntents(
   const reject = await loadTaskRejectIntent(fs, taskPath);
   if (accept && reject) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       "Conflicting exact-Task accept and reject recovery intents exist; refusing mutation."
     );
   }
@@ -1297,14 +1440,12 @@ function assertTaskAcceptRequestMatchesIntent(
   intent: TaskAcceptIntent,
   options: TaskAcceptOptions
 ): void {
-  const outputNodeIds = normalizeAcceptRetryOutputNodeIds(options.outputNodeIds);
   if (
-    options.deliveryId !== intent.deliveryId ||
-    canonicalTaskAcceptActor(options.actor) !== intent.actor ||
-    !exactStringListEqual(outputNodeIds, intent.outputNodeIds)
+    options.resultId !== intent.resultId ||
+    canonicalTaskAcceptActor(options.actor) !== intent.actor
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       "This task.accept request differs from the persisted accept operation that was recovered."
     );
   }
@@ -1319,14 +1460,24 @@ async function reconcilePendingTaskAccept(
   taskPath: string,
   knownIntent?: TaskAcceptIntent
 ): Promise<
-  | { task: TaskEnvelope; delivery: DeliveryRecord; intent: TaskAcceptIntent; result: TaskAcceptResult }
+  | {
+      task: TaskRecord;
+      result: TaskResultRecord;
+      intent: TaskAcceptIntent;
+      acceptance: TaskAcceptResult;
+    }
   | undefined
 > {
   const intent = knownIntent ?? await loadTaskAcceptIntent(env.fs, taskPath);
   if (!intent) return undefined;
-  const result = await completeTaskAcceptIntent(env, taskPath, intent);
+  const acceptance = await completeTaskAcceptIntent(env, taskPath, intent);
   await env.fs.remove(taskAcceptIntentPath(taskPath));
-  return { task: result.task, delivery: result.delivery, intent, result };
+  return {
+    task: acceptance.task,
+    result: acceptance.result,
+    intent,
+    acceptance,
+  };
 }
 
 async function completeTaskAcceptIntent(
@@ -1334,112 +1485,84 @@ async function completeTaskAcceptIntent(
   taskPath: string,
   intent: TaskAcceptIntent
 ): Promise<TaskAcceptResult> {
-  const task = await loadTaskEnvelope(env.fs, taskPath);
+  const task = await loadTaskRecord(env.fs, taskPath);
   if (
     intent.taskId !== requireCanonicalTaskId(task) ||
-    task.activeDeliveryId !== intent.deliveryId
+    task.currentResultId !== intent.resultId
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       `Exact-Task accept recovery intent does not match Task ${requireCanonicalTaskId(task)}.`
     );
   }
   assertReviewAuthority({
     actor: intent.actor,
-    executorRoleId: task.roleId,
-    parentActor: task.parentActor,
+    executorRoleId: task.assigneeRoleId,
+    requester: task.requester,
     action: "accept",
   });
-  const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
-  assertTaskAcceptIntentCanConverge(task, delivery, intent);
+  const result = await requireTaskResultById(env.fs, task, intent.resultId);
+  assertTaskAcceptIntentCanConverge(task, result, intent);
 
-  // Complete structural validation before the first recovery write. The
-  // persisted intent, never an Output scan, is the authoritative complete set.
-  const tent = await loadTent(env.fs);
-  const validatedOutputNodeIds = canonicalAcceptOutputNodeIds(
-    validateOutputBindingsForAccept(tent, intent.outputNodeIds, delivery.id).outputIds
-  );
-  if (!exactStringListEqual(validatedOutputNodeIds, intent.outputNodeIds)) {
-    throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "Exact-Task accept recovery Output set is not canonical."
-    );
-  }
-
-  const bindResult = await bindOutputsToDeliveryUnlocked(
-    env.fs,
-    tent,
-    intent.outputNodeIds,
-    delivery.id
-  );
-  if (delivery.status === "ready") {
-    delivery.status = "accepted";
-    delivery.integrationMode = "manual-accept";
-    delivery.review = { by: intent.actor, decision: "accept" };
-    delivery.updatedAt = intent.updatedAt;
-    await writeDelivery(env.fs, delivery);
+  if (result.status === "ready") {
+    result.status = "accepted";
+    result.review = { reviewer: intent.actor, at: intent.updatedAt };
+    await writeTaskResult(env.fs, result);
   }
 
   let next = task;
-  if (task.state === "delivered") {
-    next = await patchTaskEnvelope(env.fs, taskPath, {
+  if (task.state === "submitted") {
+    next = await patchTaskRecord(env.fs, taskPath, {
       state: "accepted",
       wait: null,
       updatedAt: intent.updatedAt,
     });
   }
-  return {
-    task: next,
-    delivery,
-    boundOutputIds: bindResult.boundIds,
-    changedOutputIds: bindResult.changedIds,
-  };
+  return { task: next, result };
 }
 
 function assertTaskAcceptIntentCanConverge(
-  task: TaskEnvelope,
-  delivery: DeliveryRecord,
+  task: TaskRecord,
+  result: TaskResultRecord,
   intent: TaskAcceptIntent
 ): void {
   const taskStateMatches =
-    delivery.status === "ready"
-      ? task.state === "delivered"
-      : delivery.status === "accepted" &&
-        (task.state === "delivered" ||
+    result.status === "ready"
+      ? task.state === "submitted"
+      : result.status === "accepted" &&
+        (task.state === "submitted" ||
           (task.state === "accepted" &&
             task.updatedAt === intent.updatedAt &&
             task.wait == null));
-  const deliveryMatches =
-    delivery.status === "ready"
-      ? isReadyDeliveryModeForTask(task, delivery.integrationMode) && !delivery.review
-      : delivery.status === "accepted" &&
-        delivery.integrationMode === "manual-accept" &&
-        delivery.updatedAt === intent.updatedAt &&
-        delivery.review?.decision === "accept" &&
-        delivery.review.by === intent.actor &&
-        delivery.review.note === undefined;
+  const resultMatches =
+    result.status === "ready"
+      ? isReadyTaskResultModeForTask(task, result.integrationMode) && !result.review
+      : result.status === "accepted" &&
+        isReadyTaskResultModeForTask(task, result.integrationMode) &&
+        result.review?.at === intent.updatedAt &&
+        result.review.reviewer === intent.actor &&
+        result.review.note === undefined;
   if (
-    delivery.sourceNodeId !== primaryNodeId(task) ||
-    delivery.path !== intent.deliveryPath ||
-    deliveryAcceptCandidateDigest(delivery) !== intent.candidateDigest ||
-    !exactStringListEqual(delivery.commits, intent.commits) ||
+    result.path !== intent.resultPath ||
+    taskResultAcceptCandidateDigest(result) !== intent.candidateDigest ||
+    !exactStringListEqual(result.commits, intent.commits) ||
     !taskStateMatches ||
-    !deliveryMatches
+    !resultMatches
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      `Exact-Task accept recovery cannot converge Delivery ${delivery.id} from Task ${requireCanonicalTaskId(task)}.`
+      "RESULT_CHANGED",
+      `Exact-Task accept recovery cannot converge TaskResult ${result.id} from Task ${requireCanonicalTaskId(task)}.`
     );
   }
 }
 
-const TASK_REJECT_INTENT_TYPE = "task-delivery-reject-intent";
+const TASK_REJECT_INTENT_TYPE = "task-result-reject-intent";
 
 type TaskRejectIntent = {
   type: typeof TASK_REJECT_INTENT_TYPE;
   version: 1;
   taskId: string;
-  deliveryId: string;
+  resultId: string;
   to: "running" | "rejected";
   actor: string;
   note: string;
@@ -1448,14 +1571,14 @@ type TaskRejectIntent = {
 
 /**
  * Exact-Task internal intent only. It bridges the otherwise underivable
- * reject-resume vs terminal-reject choice while Delivery and Task are written.
+ * reject-resume vs terminal-reject choice while TaskResult and Task are written.
  * It carries no authority: taskReject writes it only after reviewer validation.
  */
 function taskRejectIntentPath(taskPath: string): string {
   if (!taskPath.endsWith(".md")) {
     throw new Error(`Task reject recovery requires a canonical markdown Task path: ${taskPath}.`);
   }
-  return `${taskPath.slice(0, -3)}.delivery-reject-intent.json`;
+  return `${taskPath.slice(0, -3)}.result-reject-intent.json`;
 }
 
 async function writeTaskRejectIntent(
@@ -1486,7 +1609,7 @@ async function loadTaskRejectIntent(
     value.type !== TASK_REJECT_INTENT_TYPE ||
     value.version !== 1 ||
     typeof value.taskId !== "string" ||
-    typeof value.deliveryId !== "string" ||
+    typeof value.resultId !== "string" ||
     (value.to !== "running" && value.to !== "rejected") ||
     typeof value.actor !== "string" ||
     !value.actor.trim() ||
@@ -1504,31 +1627,42 @@ async function reconcilePendingTaskReject(
   env: OpsEnv,
   taskPath: string
 ): Promise<
-  { task: TaskEnvelope; delivery: DeliveryRecord; intent: TaskRejectIntent } | undefined
+  { task: TaskRecord; result: TaskResultRecord; intent: TaskRejectIntent } | undefined
 > {
   const intent = await loadTaskRejectIntent(env.fs, taskPath);
   if (!intent) return undefined;
-  const task = await loadTaskEnvelope(env.fs, taskPath);
-  if (intent.taskId !== requireCanonicalTaskId(task) || task.activeDeliveryId !== intent.deliveryId) {
+  const task = await loadTaskRecord(env.fs, taskPath);
+  if (intent.taskId !== requireCanonicalTaskId(task) || task.currentResultId !== intent.resultId) {
     throw new Error(`Exact-Task reject recovery intent does not match Task ${requireCanonicalTaskId(task)}.`);
   }
   assertReviewAuthority({
     actor: intent.actor,
-    executorRoleId: task.roleId,
-    parentActor: task.parentActor,
+    executorRoleId: task.assigneeRoleId,
+    requester: task.requester,
     action: "reject",
   });
-  const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
-  assertTaskRejectIntentCanConverge(task, delivery, intent);
-  const completed = await completeTaskRejectIntent(env, taskPath, task, delivery, intent);
+  const result = await requireTaskResultById(env.fs, task, intent.resultId);
+  assertTaskRejectIntentCanConverge(task, result, intent);
+  const completed = await completeTaskRejectIntent(env, taskPath, task, result, intent);
   return { ...completed, intent };
 }
 
 /** Exact-Task WAL order for every public lifecycle mutation. */
 async function preflightTaskMutation(
   env: OpsEnv,
-  taskPath: string
-): Promise<TaskEnvelope> {
+  taskPath: string,
+  options: { allowCommittedSubmitRecovery?: boolean } = {}
+): Promise<TaskRecord> {
+  const submitIntent = await loadTaskSubmitIntent(env.fs, taskPath);
+  if (submitIntent) {
+    if (!options.allowCommittedSubmitRecovery) {
+      throw new TaskLifecycleError(
+        "RESULT_CHANGED",
+        "A Task Result publication is incomplete; retry the exact task.submit request."
+      );
+    }
+    return cleanupCommittedTaskSubmitIntent(env, taskPath, submitIntent);
+  }
   const intents = await loadTaskReviewIntents(env.fs, taskPath);
   const accepted = intents.accept
     ? await reconcilePendingTaskAccept(env, taskPath, intents.accept)
@@ -1536,8 +1670,8 @@ async function preflightTaskMutation(
   const rejected = intents.reject
     ? await reconcilePendingTaskReject(env, taskPath)
     : undefined;
-  const task = accepted?.task ?? rejected?.task ?? await loadTaskEnvelope(env.fs, taskPath);
-  return reconcileCommittedTaskDelivery(env, taskPath, task);
+  const task = accepted?.task ?? rejected?.task ?? await loadTaskRecord(env.fs, taskPath);
+  return reconcileCommittedTaskResult(env, taskPath, task);
 }
 
 function assertTaskRejectRequestMatchesIntent(
@@ -1547,13 +1681,13 @@ function assertTaskRejectRequestMatchesIntent(
   const expectedTo = options.resume === false ? "rejected" : "running";
   const expectedNote = options.note?.trim() || DEFAULT_TASK_REJECT_NOTE;
   if (
-    options.deliveryId !== intent.deliveryId ||
+    options.resultId !== intent.resultId ||
     options.actor !== intent.actor ||
     expectedTo !== intent.to ||
     expectedNote !== intent.note
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       "This task.reject request differs from the persisted reject operation that was recovered."
     );
   }
@@ -1562,224 +1696,209 @@ function assertTaskRejectRequestMatchesIntent(
 async function completeTaskRejectIntent(
   env: OpsEnv,
   taskPath: string,
-  task: TaskEnvelope,
-  delivery: DeliveryRecord,
+  task: TaskRecord,
+  result: TaskResultRecord,
   intent: TaskRejectIntent
-): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
-  if (delivery.status === "ready") {
-    delivery.status = "rejected";
-    delivery.review = {
-      by: intent.actor,
-      decision: "reject",
+): Promise<{ task: TaskRecord; result: TaskResultRecord }> {
+  if (result.status === "ready") {
+    result.status = "rejected";
+    result.review = {
+      reviewer: intent.actor,
+      at: intent.updatedAt,
       note: intent.note,
     };
-    delivery.updatedAt = intent.updatedAt;
-    await writeDelivery(env.fs, delivery);
+    await writeTaskResult(env.fs, result);
   } else if (
-    delivery.status !== "rejected" ||
-    delivery.review?.decision !== "reject" ||
-    delivery.review.by !== intent.actor ||
-    delivery.review.note !== intent.note
+    result.status !== "rejected" ||
+    result.review?.reviewer !== intent.actor ||
+    result.review.at !== intent.updatedAt ||
+    result.review.note !== intent.note
   ) {
-    throw new Error(`Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`);
+    throw new Error(`Exact-Task reject recovery TaskResult ${result.id} does not match its intent.`);
   }
 
   let next = task;
-  if (task.state === "delivered") {
-    next = await patchTaskEnvelope(env.fs, taskPath, {
+  if (task.state === "submitted") {
+    next = await patchTaskRecord(env.fs, taskPath, {
       state: intent.to,
-      // Keep activeDeliveryId for history; new deliver checks ready-only.
+      // Keep currentResultId for history; new submit checks ready-only.
       updatedAt: intent.updatedAt,
     });
   } else if (task.state !== intent.to) {
     throw new Error(
-      `Exact-Task reject recovery expected Task state delivered|${intent.to}, got ${task.state}.`
+      `Exact-Task reject recovery expected Task state submitted|${intent.to}, got ${task.state}.`
     );
   }
 
   await env.fs.remove(taskRejectIntentPath(taskPath));
-  return { task: next, delivery };
+  return { task: next, result };
 }
 
 /** Validate the complete committed reject operation before its first write. */
 function assertTaskRejectIntentCanConverge(
-  task: TaskEnvelope,
-  delivery: DeliveryRecord,
+  task: TaskRecord,
+  result: TaskResultRecord,
   intent: TaskRejectIntent
 ): void {
-  if (task.state !== "delivered" && task.state !== intent.to) {
+  if (task.state !== "submitted" && task.state !== intent.to) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
+      "RESULT_CHANGED",
       `Exact-Task reject recovery cannot converge from Task state ${task.state}.`
     );
   }
   if (
-    delivery.sourceNodeId !== primaryNodeId(task) ||
-    !isReadyDeliveryModeForTask(task, delivery.integrationMode)
+    !isReadyTaskResultModeForTask(task, result.integrationMode)
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "Persisted reject Delivery source or integration mode does not match its exact Task."
+      "RESULT_CHANGED",
+      "Persisted reject TaskResult integration mode does not match its exact Task."
     );
   }
-  if (delivery.status === "ready") {
-    if (delivery.review) {
+  if (result.status === "ready") {
+    if (result.review) {
       throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        "Ready Delivery already carries review authority; refusing reject recovery."
+        "RESULT_CHANGED",
+        "Ready TaskResult already carries review authority; refusing reject recovery."
       );
     }
     return;
   }
   if (
-    delivery.status !== "rejected" ||
-    delivery.review?.decision !== "reject" ||
-    delivery.review.by !== intent.actor ||
-    delivery.review.note !== intent.note
+    result.status !== "rejected" ||
+    result.review?.reviewer !== intent.actor ||
+    result.review.at !== intent.updatedAt ||
+    result.review.note !== intent.note
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      `Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`
+      "RESULT_CHANGED",
+      `Exact-Task reject recovery TaskResult ${result.id} does not match its intent.`
     );
   }
 }
 
-async function recoverExistingTaskDeliver(
+async function recoverExistingTaskSubmit(
   env: OpsEnv,
   taskPath: string,
-  task: TaskEnvelope,
-  options: TaskDeliverOptions
-): Promise<TaskDeliverPrepared | undefined> {
-  const delivery = await findCommittedTaskDelivery(env.fs, task);
-  if (!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) return undefined;
-  assertCommittedDeliveryMatchesTask(task, delivery);
+  task: TaskRecord,
+  options: TaskSubmitOptions
+): Promise<TaskSubmitPrepared | undefined> {
+  const result = await findCommittedTaskResult(env.fs, task);
+  if (!result || (result.status !== "ready" && result.status !== "accepted")) return undefined;
+  assertCommittedResultMatchesTask(task, result);
+  assertTaskSubmitCandidateMatches(task, result, options);
 
   let next = task;
-  if (delivery.status === "ready") {
+  if (result.status === "ready") {
     if (task.state === "running") {
-      next = await patchTaskEnvelope(env.fs, taskPath, {
-        state: "delivered",
-        activeDeliveryId: delivery.id,
-        lastReturn: null,
+      next = await patchTaskRecord(env.fs, taskPath, {
+        state: "submitted",
+        currentResultId: result.id,
+        statusDetail: null,
         updatedAt: env.clock.now(),
       });
-    } else if (task.state !== "delivered" || task.activeDeliveryId !== delivery.id) {
+    } else if (task.state !== "submitted" || task.currentResultId !== result.id) {
       return undefined;
     }
   } else {
-    if (!isAutoIntegrationMode(delivery.integrationMode)) return undefined;
-    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
-      next = await patchTaskEnvelope(env.fs, taskPath, {
+    if (!isAutoIntegrationMode(result.integrationMode)) return undefined;
+    if (task.state === "submitted" && task.currentResultId === result.id) {
+      next = await patchTaskRecord(env.fs, taskPath, {
         state: "accepted",
-        activeDeliveryId: delivery.id,
-        lastReturn: null,
+        currentResultId: result.id,
+        statusDetail: null,
         wait: null,
         updatedAt: env.clock.now(),
       });
-    } else if (task.state !== "accepted" || task.activeDeliveryId !== delivery.id) {
+    } else if (task.state !== "accepted" || task.currentResultId !== result.id) {
       return undefined;
     }
   }
-
-  assertTaskDeliverCandidateMatches(next, delivery, options);
-  if (delivery.status === "accepted") {
+  if (result.status === "accepted") {
     return {
       kind: "done",
-      result: { task: next, delivery, autoIntegrated: true },
+      result: { task: next, result, autoIntegrated: true },
     };
   }
-  if (isAutoIntegrationMode(delivery.integrationMode)) {
+  if (isAutoIntegrationMode(result.integrationMode)) {
     return {
       kind: "auto",
-      sourceNodeId: delivery.sourceNodeId,
-      deliveryId: delivery.id,
-      commits: [...delivery.commits],
-      ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+      resultId: result.id,
+      commits: [...result.commits],
+      ...(result.targetHead ? { targetHead: result.targetHead } : {}),
     };
   }
   return {
     kind: "done",
-    result: { task: next, delivery, autoIntegrated: false },
+    result: { task: next, result, autoIntegrated: false },
   };
 }
 
 /**
- * Reconcile only an already-committed exact-Task Delivery WAL. This helper has
+ * Reconcile only an already-committed exact-Task TaskResult WAL. This helper has
  * no caller-supplied candidate data, so competing lifecycle operations cannot
- * overwrite the prior deliver operation while repairing its Task projection.
+ * overwrite the prior submit operation while repairing its Task projection.
  */
-async function reconcileCommittedTaskDelivery(
+async function reconcileCommittedTaskResult(
   env: OpsEnv,
   taskPath: string,
-  task: TaskEnvelope
-): Promise<TaskEnvelope> {
-  const delivery = await findCommittedTaskDelivery(env.fs, task);
-  if (!delivery) return task;
-  if (delivery.status === "ready" || delivery.status === "accepted") {
-    assertCommittedDeliveryMatchesTask(task, delivery);
+  task: TaskRecord
+): Promise<TaskRecord> {
+  const result = await findCommittedTaskResult(env.fs, task);
+  if (!result) return task;
+  if (result.status === "ready" || result.status === "accepted") {
+    assertCommittedResultMatchesTask(task, result);
   }
 
-  if (delivery.status === "ready") {
-    if (task.state === "running") {
-      return patchTaskEnvelope(env.fs, taskPath, {
-        state: "delivered",
-        activeDeliveryId: delivery.id,
-        lastReturn: null,
-        updatedAt: env.clock.now(),
-      });
-    }
-    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) return task;
-    throwCommittedDeliveryStateMismatch(task, delivery);
+  if (result.status === "ready") {
+    if (task.state === "submitted" && task.currentResultId === result.id) return task;
+    throwCommittedTaskResultStateMismatch(task, result);
   }
-  if (delivery.status === "accepted") {
-    if (task.state === "delivered" && task.activeDeliveryId === delivery.id) {
-      return patchTaskEnvelope(env.fs, taskPath, {
+  if (result.status === "accepted") {
+    if (task.state === "submitted" && task.currentResultId === result.id) {
+      return patchTaskRecord(env.fs, taskPath, {
         state: "accepted",
-        activeDeliveryId: delivery.id,
-        lastReturn: null,
+        currentResultId: result.id,
+        statusDetail: null,
         wait: null,
         updatedAt: env.clock.now(),
       });
     }
-    if (task.state === "accepted" && task.activeDeliveryId === delivery.id) return task;
-    throwCommittedDeliveryStateMismatch(task, delivery);
+    if (task.state === "accepted" && task.currentResultId === result.id) return task;
+    throwCommittedTaskResultStateMismatch(task, result);
   }
   return task;
 }
 
-function throwCommittedDeliveryStateMismatch(
-  task: TaskEnvelope,
-  delivery: DeliveryRecord
+function throwCommittedTaskResultStateMismatch(
+  task: TaskRecord,
+  result: TaskResultRecord
 ): never {
   throw new TaskLifecycleError(
-    "DELIVERY_CHANGED",
-    `Committed Delivery ${delivery.id} (${delivery.status}) conflicts with Task ${requireCanonicalTaskId(task)} state ${task.state}; refusing mutation.`
+    "RESULT_CHANGED",
+    `Committed TaskResult ${result.id} (${result.status}) conflicts with Task ${requireCanonicalTaskId(task)} state ${task.state}; refusing mutation.`
   );
 }
 
-function assertCommittedDeliveryMatchesTask(
-  task: TaskEnvelope,
-  delivery: DeliveryRecord
+function assertCommittedResultMatchesTask(
+  task: TaskRecord,
+  result: TaskResultRecord
 ): void {
-  const nodeId = primaryNodeId(task);
-  const modeMatches = delivery.status === "ready"
-    ? isReadyDeliveryModeForTask(task, delivery.integrationMode)
-    : delivery.status === "accepted"
-      ? delivery.integrationMode === "manual-accept" ||
-        (task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept") ||
-        (task.acceptMode === "agent-decide" && delivery.integrationMode === "agent-decided-integrate")
+  const modeMatches = result.status === "ready"
+    ? isReadyTaskResultModeForTask(task, result.integrationMode)
+    : result.status === "accepted"
+      ? isReadyTaskResultModeForTask(task, result.integrationMode)
       : true;
-  if (!nodeId || delivery.sourceNodeId !== nodeId || !modeMatches) {
+  if (!modeMatches) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "Persisted Delivery source or integration mode does not match its exact Task; refusing recovery."
+      "RESULT_CHANGED",
+      "Persisted TaskResult integration mode does not match its exact Task; refusing recovery."
     );
   }
 }
 
-function isReadyDeliveryModeForTask(
-  task: TaskEnvelope,
-  integrationMode: DeliveryRecord["integrationMode"]
+function isReadyTaskResultModeForTask(
+  task: TaskRecord,
+  integrationMode: TaskResultRecord["integrationMode"]
 ): boolean {
   return (
     (task.acceptMode === "review-required" && integrationMode === null) ||
@@ -1789,37 +1908,34 @@ function isReadyDeliveryModeForTask(
   );
 }
 
-function assertTaskDeliverCandidateMatches(
-  task: TaskEnvelope,
-  delivery: DeliveryRecord,
-  options: TaskDeliverOptions
+function assertTaskSubmitCandidateMatches(
+  task: TaskRecord,
+  result: TaskResultRecord,
+  options: TaskSubmitOptions
 ): void {
-  const routing = resolveDeliverRouting(task.acceptMode, options.decision);
-  const nodeId = primaryNodeId(task);
+  const routing = resolveSubmitRouting(task.acceptMode, options.decision);
   const expectedCommits = [...new Set((options.commits ?? []).map((value) => value.trim()).filter(Boolean))];
   const expectedTargetHead = options.targetHead?.trim() || undefined;
   const expectedChecks = options.checks ?? [];
   const expectedArtifacts = normalizeArtifactRefs(options.artifactRefs ?? []);
   if (
-    !nodeId ||
-    delivery.sourceNodeId !== nodeId ||
-    delivery.summary !== options.summary.trim() ||
-    delivery.integrationMode !== routing.integrationMode ||
-    !exactStringListEqual(delivery.commits, expectedCommits) ||
-    (delivery.targetHead?.trim() || undefined) !== expectedTargetHead ||
-    !exactDeliveryChecksEqual(delivery.checks, expectedChecks) ||
-    !exactArtifactRefsEqual(delivery.artifactRefs, expectedArtifacts)
+    result.report !== options.report.trim() ||
+    result.integrationMode !== routing.integrationMode ||
+    !exactStringListEqual(result.commits, expectedCommits) ||
+    (result.targetHead?.trim() || undefined) !== expectedTargetHead ||
+    !exactTaskResultChecksEqual(result.checks, expectedChecks) ||
+    !exactArtifactRefsEqual(result.artifactRefs, expectedArtifacts)
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "Persisted Delivery candidate differs from this task.deliver retry; refusing duplicate publication."
+      "RESULT_CHANGED",
+      "Persisted TaskResult candidate differs from this task.submit retry; refusing duplicate publication."
     );
   }
 }
 
-function exactDeliveryChecksEqual(
-  current: readonly DeliveryCheck[],
-  expected: readonly DeliveryCheck[]
+function exactTaskResultChecksEqual(
+  current: readonly TaskResultCheck[],
+  expected: readonly TaskResultCheck[]
 ): boolean {
   return (
     current.length === expected.length &&
@@ -1853,98 +1969,64 @@ function exactArtifactRefsEqual(
   );
 }
 
-function assertPreparedDeliveryMatches(
-  delivery: DeliveryRecord,
-  prepared: Extract<TaskDeliverPrepared, { kind: "auto" }>
+function assertPreparedResultMatches(
+  result: TaskResultRecord,
+  prepared: Extract<TaskSubmitPrepared, { kind: "auto" }>
 ): void {
   if (
-    delivery.id !== prepared.deliveryId ||
-    delivery.sourceNodeId !== prepared.sourceNodeId ||
-    !exactStringListEqual(delivery.commits, prepared.commits) ||
-    (delivery.targetHead?.trim() || undefined) !== prepared.targetHead
+    result.id !== prepared.resultId ||
+    !exactStringListEqual(result.commits, prepared.commits) ||
+    (result.targetHead?.trim() || undefined) !== prepared.targetHead
   ) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      "Ready delivery changed during auto-accept; refusing state write."
+      "RESULT_CHANGED",
+      "Ready result changed during auto-accept; refusing state write."
     );
   }
 }
 
-function isAutoIntegrationMode(mode: DeliveryRecord["integrationMode"]): boolean {
+function isAutoIntegrationMode(mode: TaskResultRecord["integrationMode"]): boolean {
   return mode === "auto-accept" || mode === "agent-decided-integrate";
 }
 
-async function requireTaskDeliveryById(
+async function requireTaskResultById(
   fs: FsAdapter,
-  task: TaskEnvelope,
-  deliveryId: string
-): Promise<DeliveryRecord> {
-  const delivery = await loadTaskDeliveryById(fs, task, deliveryId);
-  if (!delivery) {
-    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No delivery for this exact task and id.");
+  task: TaskRecord,
+  resultId: string
+): Promise<TaskResultRecord> {
+  const result = await loadTaskResultById(fs, task, resultId);
+  if (!result) {
+    throw new TaskLifecycleError("NO_ACTIVE_RESULT", "No result for this exact task and id.");
   }
-  return delivery;
+  return result;
 }
 
-async function loadTaskDeliveryById(
+async function loadTaskResultById(
   fs: FsAdapter,
-  task: TaskEnvelope,
-  deliveryId: string
-): Promise<DeliveryRecord | undefined> {
-  const path = join(deliveryDirForTask(task), `${deliveryId}.md`);
+  task: TaskRecord,
+  resultId: string
+): Promise<TaskResultRecord | undefined> {
+  const path = join(resultDirForTask(task), `${resultId}.md`);
   if (!(await fs.exists(path))) return undefined;
-  const delivery = await loadDelivery(fs, path);
-  if (delivery.id !== deliveryId || delivery.taskId !== requireCanonicalTaskId(task)) {
+  const result = await loadTaskResult(fs, path);
+  if (result.id !== resultId || result.taskId !== requireCanonicalTaskId(task)) {
     throw new TaskLifecycleError(
-      "DELIVERY_CHANGED",
-      `Delivery ${deliveryId} does not belong to exact Task ${requireCanonicalTaskId(task)}.`
+      "RESULT_CHANGED",
+      `TaskResult ${resultId} does not belong to exact Task ${requireCanonicalTaskId(task)}.`
     );
   }
-  return delivery;
+  return result;
 }
 
-async function findCommittedTaskDelivery(
+async function findCommittedTaskResult(
   fs: FsAdapter,
-  task: TaskEnvelope
-): Promise<DeliveryRecord | undefined> {
-  if (task.activeDeliveryId) {
-    const active = await loadTaskDeliveryById(fs, task, task.activeDeliveryId);
-    if (active?.status === "ready" || active?.status === "accepted") return active;
-  }
-  const ready = (await discoverTaskDeliveries(fs, task)).filter(
-    (delivery) => delivery.status === "ready"
-  );
-  if (ready.length > 1) {
-    throw new Error(`Task ${requireCanonicalTaskId(task)} has multiple ready Deliveries; refusing recovery.`);
-  }
-  return ready[0];
-}
-
-/**
- * Shared owner directory, exact-Task validation: bounded identity-peek every
- * filename, then fully parse only records whose frontmatter names this Task.
- */
-async function discoverTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord[]> {
-  const dir = deliveryDirForTask(task);
-  if (!(await fs.exists(dir))) return [];
-  const taskId = requireCanonicalTaskId(task);
-  const out: DeliveryRecord[] = [];
-  const entries = (await fs.listDir(dir))
-    .filter((entry) => !entry.isDir && entry.name.endsWith(".md"))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if ((await peekDeliveryTaskId(fs, path)) !== taskId) continue;
-    const delivery = await loadDelivery(fs, path);
-    if (entry.name !== `${delivery.id}.md` || delivery.taskId !== taskId) {
-      throw new TaskLifecycleError(
-        "DELIVERY_CHANGED",
-        `Delivery identity does not match its exact Task path: ${path}.`
-      );
-    }
-    out.push(delivery);
-  }
-  return out;
+  task: TaskRecord
+): Promise<TaskResultRecord | undefined> {
+  if (!task.currentResultId) return undefined;
+  const current = await loadTaskResultById(fs, task, task.currentResultId);
+  return current?.status === "ready" || current?.status === "accepted"
+    ? current
+    : undefined;
 }
 
 function requireNodeById(tent: LoadedTent, nodeId: string): Node {
@@ -1956,7 +2038,7 @@ function requireNodeById(tent: LoadedTent, nodeId: string): Node {
   return node;
 }
 
-function requireCanonicalTaskId(task: TaskEnvelope): string {
+function requireCanonicalTaskId(task: TaskRecord): string {
   const id = task.id?.trim() || "";
   if (!isTaskId(id)) {
     throw new Error(`Task ${task.path} is missing its canonical tk-* id.`);

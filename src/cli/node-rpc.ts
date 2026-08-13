@@ -26,7 +26,7 @@ type NodeProjection = {
   nodeId: string;
   name: string;
   path: string;
-  type: string;
+  type?: string;
   mode?: string;
   children?: NodeProjection[];
 };
@@ -69,7 +69,7 @@ export async function runNodeCommand(
       case "create": {
         const name = oneTarget(
           positionals,
-          "tent node create <name> [--type goal|prompt|output[-secondary]] [--parent <nodeId|root>] [--body <text>|-] [--tags a,b] [--json]"
+          "tent node create <name> [--type <type>] [--parent <nodeId|root>] [--body <text>|-] [--tags a,b] [--json]"
         );
         if (typeof name !== "string") return name;
         let body = flagValue(flags, "body");
@@ -77,7 +77,7 @@ export async function runNodeCommand(
         const parentPath = await resolveParentPath(client, workspaceId, flags.parent);
         const created = await client.docsCreateNote(workspaceId, {
           name,
-          type: flags.type || "prompt",
+          ...(flags.type ? { type: flags.type } : {}),
           parentPath,
           ...(body !== undefined ? { body } : {}),
         });

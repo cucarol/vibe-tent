@@ -617,7 +617,7 @@ export async function listRoleCommits(contract: RoleWorkspaceContract): Promise<
 }
 
 /**
- * Fail-loud role-lane commit listing for production delivery collection.
+ * Fail-loud role-lane commit listing for production result collection.
  * Same range as listRoleCommits (`targetBranch..branch`); does not swallow Git errors.
  * Newest-first (git log order).
  */
@@ -672,7 +672,7 @@ export async function listRoleCommitsSince(
 }
 
 /**
- * Pending delivery candidates from an authoritative role lane for managed collection.
+ * Pending result candidates from an authoritative role lane for managed collection.
  * Requires task-scoped `base` (roleBranchBase full SHA); lists only `base..branch`,
  * minus already-integrated (ancestor or -x cherry-pick) commits.
  * Returns oldest-first so integrate can fast-forward complete intervals.
@@ -748,8 +748,8 @@ export async function listExecutorLaneCommitsWithParents(
 }
 
 /**
- * Pre-ready Delivery history gate for ordinary executor lanes (cx-5q6za6).
- * Service must call this under the Task lifecycle boundary before ready Delivery:
+ * Pre-ready TaskResult history gate for ordinary executor lanes (cx-5q6za6).
+ * Service must call this under the Task lifecycle boundary before ready TaskResult:
  * obtains actual `git rev-list --parents --reverse base..tip`, then pure Core assert.
  * Unauthorized merge / foreign ancestry fails loud; does not mutate lane/audit.
  */
@@ -766,7 +766,7 @@ export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
   if (!base) {
     throw new ExecutorLaneHistoryError(
       "MISSING_BASE",
-      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready TaskResult)."
     );
   }
   let tip = input.tipCommit?.trim() || "";
@@ -795,10 +795,10 @@ export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
 export { ExecutorLaneHistoryError };
 
 /**
- * Codes for public task.deliver commits[] membership (pre-ready Delivery).
- * Fail-loud; no ready Delivery; Git untouched.
+ * Codes for public task.submit commits[] membership (pre-ready TaskResult).
+ * Fail-loud; no ready TaskResult; Git untouched.
  */
-export type DeliverCommitLaneErrorCode =
+export type SubmitCommitLaneErrorCode =
   | "MISSING_COMMIT"
   | "NOT_A_COMMIT"
   | "BASE_COMMIT"
@@ -807,23 +807,23 @@ export type DeliverCommitLaneErrorCode =
   | "MISSING_BASE"
   | "MISSING_BRANCH";
 
-export class DeliverCommitLaneError extends Error {
-  code: DeliverCommitLaneErrorCode;
+export class SubmitCommitLaneError extends Error {
+  code: SubmitCommitLaneErrorCode;
   details?: Record<string, unknown>;
   constructor(
-    code: DeliverCommitLaneErrorCode,
+    code: SubmitCommitLaneErrorCode,
     message: string,
     details?: Record<string, unknown>
   ) {
     super(message);
-    this.name = "DeliverCommitLaneError";
+    this.name = "SubmitCommitLaneError";
     this.code = code;
     this.details = details;
   }
 }
 
 /**
- * Public task.deliver commits[] membership gate (ordinary executor lanes).
+ * Public task.submit commits[] membership gate (ordinary executor lanes).
  *
  * Every non-empty commits[] entry must:
  * 1. resolve as a commit object in the workspace Git odb;
@@ -831,42 +831,42 @@ export class DeliverCommitLaneError extends Error {
  * 3. be reachable from that branch tip.
  *
  * Rejects missing, non-commit, base tip itself, target-only, sibling/foreign
- * branch, and unrelated ancestry before ready Delivery. Empty commits[] is a
+ * branch, and unrelated ancestry before ready TaskResult. Empty commits[] is a
  * no-op (zero-commit docs tasks / managed auto-collect empty lanes).
  */
-export async function assertDeliverCommitsInExecutorLane(input: {
+export async function resolveSubmitCommitsInExecutorLane(input: {
   workspace: string;
   baseCommit: string;
   branch: string;
   commits: string[];
-}): Promise<void> {
+}): Promise<string[]> {
   const refs = [...new Set(input.commits.map((c) => c.trim()).filter(Boolean))];
-  if (refs.length === 0) return;
+  if (refs.length === 0) return [];
 
   const root = nodePath.resolve(input.workspace);
   await assertGitWorkspace(root);
 
   const baseRaw = input.baseCommit?.trim() || "";
   if (!baseRaw) {
-    throw new DeliverCommitLaneError(
+    throw new SubmitCommitLaneError(
       "MISSING_BASE",
-      "task.deliver commits[] require recorded baseCommit (fail-loud; no ready Delivery)."
+      "task.submit commits[] require recorded baseCommit (fail-loud; no ready TaskResult)."
     );
   }
   const branch = input.branch?.trim() || "";
   if (!branch) {
-    throw new DeliverCommitLaneError(
+    throw new SubmitCommitLaneError(
       "MISSING_BRANCH",
-      "task.deliver commits[] require recorded executor branch (fail-loud; no ready Delivery)."
+      "task.submit commits[] require recorded executor branch (fail-loud; no ready TaskResult)."
     );
   }
 
   const fullBase = await fullRef(root, baseRaw);
   const branchRef = `refs/heads/${branch}`;
   if (!(await gitOk(root, ["show-ref", "--verify", "--quiet", branchRef]))) {
-    throw new DeliverCommitLaneError(
+    throw new SubmitCommitLaneError(
       "MISSING_BRANCH",
-      `task.deliver commits[] executor branch missing: ${branch} (no ready Delivery).`,
+      `task.submit commits[] executor branch missing: ${branch} (no ready TaskResult).`,
       { branch }
     );
   }
@@ -880,24 +880,25 @@ export async function assertDeliverCommitsInExecutorLane(input: {
       .filter(Boolean)
   );
 
+  const canonical: string[] = [];
   for (const sourceRef of refs) {
     const isCommit = await gitOk(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
     if (!isCommit) {
       // Distinguish unknown object vs exists-but-not-commit when possible.
       const exists = await gitOk(root, ["cat-file", "-e", sourceRef]);
-      throw new DeliverCommitLaneError(
+      throw new SubmitCommitLaneError(
         exists ? "NOT_A_COMMIT" : "MISSING_COMMIT",
         exists
-          ? `task.deliver commits[] entry is not a commit object: ${sourceRef} (no ready Delivery; Git untouched).`
-          : `task.deliver commits[] entry does not resolve in workspace Git: ${sourceRef} (no ready Delivery; Git untouched).`,
+          ? `task.submit commits[] entry is not a commit object: ${sourceRef} (no ready TaskResult; Git untouched).`
+          : `task.submit commits[] entry does not resolve in workspace Git: ${sourceRef} (no ready TaskResult; Git untouched).`,
         { commit: sourceRef }
       );
     }
     const full = await fullRef(root, sourceRef);
     if (full === fullBase) {
-      throw new DeliverCommitLaneError(
+      throw new SubmitCommitLaneError(
         "BASE_COMMIT",
-        `task.deliver commits[] must not list recorded baseCommit ${fullBase} itself (no ready Delivery; Git untouched).`,
+        `task.submit commits[] must not list recorded baseCommit ${fullBase} itself (no ready TaskResult; Git untouched).`,
         { commit: full, baseCommit: fullBase, branch }
       );
     }
@@ -909,31 +910,33 @@ export async function assertDeliverCommitsInExecutorLane(input: {
         branchRef,
       ]);
       if (!reachableFromBranch) {
-        throw new DeliverCommitLaneError(
+        throw new SubmitCommitLaneError(
           "NOT_REACHABLE_FROM_BRANCH",
-          `task.deliver commits[] entry ${full} is not reachable from executor branch ${branch} ` +
-            `(foreign/sibling/unrelated ancestry; no ready Delivery; Git untouched).`,
+          `task.submit commits[] entry ${full} is not reachable from executor branch ${branch} ` +
+            `(foreign/sibling/unrelated ancestry; no ready TaskResult; Git untouched).`,
           { commit: full, baseCommit: fullBase, branch }
         );
       }
       // Reachable from branch but outside base..branch → base ancestor, or otherwise
       // not exclusive to the task range (e.g. target-only / pre-base history).
-      throw new DeliverCommitLaneError(
+      throw new SubmitCommitLaneError(
         "NOT_IN_LANE_RANGE",
-        `task.deliver commits[] entry ${full} is not in exact range ${fullBase}..${branch} ` +
-          `(target-only, base history, or foreign to this task lane; no ready Delivery; Git untouched).`,
+        `task.submit commits[] entry ${full} is not in exact range ${fullBase}..${branch} ` +
+          `(target-only, base history, or foreign to this task lane; no ready TaskResult; Git untouched).`,
         { commit: full, baseCommit: fullBase, branch }
       );
     }
     // Belt: membership in rev-list base..branch already implies branch reachability.
     if (!(await gitOk(root, ["merge-base", "--is-ancestor", full, branchRef]))) {
-      throw new DeliverCommitLaneError(
+      throw new SubmitCommitLaneError(
         "NOT_REACHABLE_FROM_BRANCH",
-        `task.deliver commits[] entry ${full} failed branch reachability re-check for ${branch}.`,
+        `task.submit commits[] entry ${full} failed branch reachability re-check for ${branch}.`,
         { commit: full, baseCommit: fullBase, branch }
       );
     }
+    if (!canonical.includes(full)) canonical.push(full);
   }
+  return canonical;
 }
 
 async function assertGitWorkspace(root: string): Promise<void> {

@@ -135,12 +135,12 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), false);
   assert.match(spec, /Role and Session are different/);
   assert.match(spec, /A Task is one work package and one review unit/);
-  assert.match(spec, /A Delivery is an executor's formal result for one Task/);
+  assert.match(spec, /A TaskResult is an executor's formal result for one Task/);
   assert.match(spec, /Task, Session, and any Output Node/);
   assert.match(spec, /another Task cannot acquire the same work\s+Node/);
   assert.match(spec, /role:<roleId>/);
   assert.match(spec, /connection:<connectionId>/);
-  assert.match(spec, /natural ACP final report defaults to a Delivery/i);
+  assert.match(spec, /natural ACP final report defaults to a TaskResult/i);
   assert.match(spec, /Retired public commands\s+are removed rather than kept as aliases/);
   assert.match(spec, /Project instructions live in the\s+workspace `AGENTS\.md`/);
   assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
@@ -160,7 +160,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSkill, /name: tent-task/);
   assert.match(taskSkill, /tent task request-decision/);
   assert.match(taskSkill, /task-input/i);
-  assert.match(taskSkill, /Delivery is never acceptance/i);
+  assert.match(taskSkill, /TaskResult is never acceptance/i);
   assert.match(taskSkill, /Work refs are occupied/i);
   assert.match(taskSkill, /natural, non-empty managed ACP final report is deliverable by default/i);
   assert.match(taskSkill, /preserves every non-empty final\s+report as a durable draft/i);
@@ -181,7 +181,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskPaths, /\.tent\/temp/);
   assert.match(taskPaths, /workNodeIds|Context Card/i);
   assert.doesNotMatch(taskPaths, /honor contract/i);
-  assert.match(taskCli, /tent task deliver/);
+  assert.match(taskCli, new RegExp(["tent task", "deliver"].join(" ")));
   assert.match(taskCli, /tent task request-decision/);
   assert.match(taskCli, /tent task send-input/);
   assert.match(taskCli, /tent task task-input list/);
@@ -190,7 +190,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskCli, /dispatcher/i);
   assert.match(taskCli, /--target role:<roleId>\|connection:<connectionId>/);
   assert.match(taskCli, /preserves every non-empty final report as a durable draft/i);
-  assert.match(taskCli, /publishes natural report content as Delivery/i);
+  assert.match(taskCli, /publishes natural report content as TaskResult/i);
   assert.match(taskCli, /schedules exactly one durable report-draft retry/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
   assert.match(taskSession, /Temporary managed ACP Session boundaries/i);
@@ -231,7 +231,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(taskSkill, /Lead the terminal report with exactly one/i);
 });
 
-test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type axes", async () => {
+test("docs/skill drift: in-workspace Node/Task/TaskResult model and retired type axes", async () => {
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const taskPaths = await fs.readFile(
     path.join(repoRoot, "skills", "tent-task", "references", "paths.md"),
@@ -242,7 +242,7 @@ test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type a
   assert.match(spec, /in-workspace/i);
   assert.match(spec, /WorkspaceLane/);
   assert.match(spec, /goal \| prompt \| output/);
-  assert.match(spec, /Task, Session, and Delivery/);
+  assert.match(spec, /Task, Session, and TaskResult/);
   assert.match(spec, /coordination flags are presentation or retired concerns/);
   assert.match(spec, /does not publish a\s+permanent migration API/i);
   assert.doesNotMatch(

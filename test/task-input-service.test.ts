@@ -4,11 +4,13 @@
  * Review boundaries: workspaceId+taskPath scope; ack actor binding; cancel pending-only.
  */
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { taskReject as coreTaskReject } from "../src/core/task-lifecycle.js";
 import { NodeFs } from "../src/fs/node-fs.js";
@@ -40,6 +42,7 @@ const DEFAULT_ROUTE = {
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
 } as const;
+const execFileAsync = promisify(execFile);
 
 function mockAcpRoute(
   id: string,
@@ -107,6 +110,19 @@ async function makeWorkspace(): Promise<string> {
     name: "task-input",
     nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
+  await fsa.writeFile(
+    ".tent/roles.json",
+    JSON.stringify(
+      {
+        roles: [
+          { id: "rl-dispatcher", name: "dispatcher", displayName: "dispatcher" },
+          { id: "rl-executor", name: "executor", displayName: "executor" },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
   return workspace;
 }
 
@@ -127,16 +143,16 @@ async function withService<T>(
   }
 }
 
-async function exactReadyDeliveryId(
+async function exactReadyTaskResultId(
   client: ReturnType<typeof createServiceClient>,
   workspaceId: string,
   taskPath: string
 ): Promise<string> {
   const got = (await client.taskGet(workspaceId, taskPath)) as {
-    task: { activeDeliveryId?: string };
+    task: { currentResultId?: string };
   };
-  assert.ok(got.task.activeDeliveryId, "fixture requires an exact ready Delivery");
-  return got.task.activeDeliveryId;
+  assert.ok(got.task.currentResultId, "fixture requires an exact ready TaskResult");
+  return got.task.currentResultId;
 }
 
 test("CLIENT_METHODS includes task.sendInput and taskInput.*", () => {
@@ -162,20 +178,20 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Work that may get user append",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
     const bound = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { sessionId?: string };
+      task: { executionSessionId?: string };
     };
-    assert.ok(bound.task.sessionId);
+    assert.ok(bound.task.executionSessionId);
     const executor = createServiceClient({
       baseUrl: svc.url,
       token: svc.token,
-      currentSessionId: bound.task.sessionId,
-      currentSessionToken: deriveSessionToken(svc.token, bound.task.sessionId!),
+      currentSessionId: bound.task.executionSessionId,
+      currentSessionToken: deriveSessionToken(svc.token, bound.task.executionSessionId!),
     });
 
     // Empty payload rejected
@@ -304,7 +320,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.ok(spoofedUser.error);
     assert.equal(spoofedUser.error!.code, -32001);
 
-    // Omitted actor is the Local Service user path; persisted parentActor
+    // Omitted actor is the Local Service user path; persisted requester
     // is user:user, so it succeeds.
     const userAcked = (await client.taskInputAck(
       workspaceId,
@@ -412,7 +428,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
         workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-ti",
         prompt: "Canonical cross-workspace TaskInput isolation fixture",
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
         acceptMode: "review-required",
       })) as { taskPath: string };
       await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -515,6 +531,11 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
 
 test("taskInput ack authority includes persisted parent Role and verified bound Session", async () => {
   const ws = await makeWorkspace();
+  await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: ws });
+  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: ws });
+  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: ws });
+  await execFileAsync("git", ["add", "."], { cwd: ws });
+  await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: ws });
   await withService([], async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
@@ -528,7 +549,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       workNodeIds: [note.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Canonical parent acknowledgement fixture",
-      parentActor: { kind: "role", id: "dispatcher" },
+      requester: { kind: "role", id: "rl-dispatcher" },
       acceptMode: "review-required",
     })) as { taskPath: string; taskId?: string };
     const parentTaskPath = parentDispatched.taskPath;
@@ -552,14 +573,14 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
         workspaceId,
         taskPath: parentTaskPath,
         inputId: "ti-parent-role-ack",
-        actor: "dispatcher",
+        actor: "rl-dispatcher",
       },
       { token: svc.token }
     );
     assert.ok(!parentAck.error, JSON.stringify(parentAck.error));
     assert.equal(
       (parentAck.result as { input: { resolvedBy: string } }).input.resolvedBy,
-      "dispatcher"
+      "rl-dispatcher"
     );
 
     // A Session id is authority only when Service registry + Task binding agree.
@@ -571,7 +592,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       workNodeIds: [sessionNote.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "session-bound ack",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -619,11 +640,11 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       failedDraftInputId,
       "provider boundary ambiguous"
     );
-    const originalDraftGet = svc.ctx.managedDeliveryReportDrafts.get.bind(
-      svc.ctx.managedDeliveryReportDrafts
+    const originalDraftGet = svc.ctx.managedTaskResultReportDrafts.get.bind(
+      svc.ctx.managedTaskResultReportDrafts
     );
     let failedDraftAttempts = 0;
-    svc.ctx.managedDeliveryReportDrafts.get = async () => {
+    svc.ctx.managedTaskResultReportDrafts.get = async () => {
       failedDraftAttempts += 1;
       throw new Error("injected draft lookup failure");
     };
@@ -650,7 +671,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       assert.equal(persisted.input.status, "consumed");
       assert.equal(persisted.input.resolvedBy, "user");
     } finally {
-      svc.ctx.managedDeliveryReportDrafts.get = originalDraftGet;
+      svc.ctx.managedTaskResultReportDrafts.get = originalDraftGet;
     }
   });
 });
@@ -685,7 +706,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Recover exact durable inputs after explicit Session bind",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -738,7 +759,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
       await client.taskWait(workspaceId, taskPath, "user-input", "hold recovery task open");
       await pollUntil(async () => {
         const probe = await svc.runtime.probe(started.session.sessionId);
-        return probe.alive && probe.turnBusy === false ? true : null;
+        return probe.isAlive && probe.isTurnActive === false ? true : null;
       }, 10_000, "bootstrap settled before recovery FIFO release");
       firstHold.release();
 
@@ -820,7 +841,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Guard TaskInput injection by exact Task Session binding",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const started = (await client.taskStartSession(workspaceId, {
@@ -855,7 +876,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
 
     await svc.runtime.registry.update(sessionId, {
       workspace: workspaceId,
-      lastTaskId: "tk-foreign",
+      currentTaskId: "tk-foreign",
     });
     const taskMismatch = (await client.taskSendInput(
       workspaceId,
@@ -877,7 +898,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
   });
 });
 
-test("managed ACP: task.sendInput continues same session; delivered survives Delivery cleanup", async () => {
+test("managed ACP: task.sendInput continues same session; delivered survives TaskResult cleanup", async () => {
   const ws = await makeWorkspace();
   const logPath = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-log-")),
@@ -906,7 +927,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Managed sendInput flow",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -919,10 +940,10 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
 
     await pollUntil(async () => {
       const sessions = (await client.sessionList(workspaceId)) as {
-        sessions: { sessionId: string; alive: boolean }[];
+        sessions: { sessionId: string; isAlive: boolean }[];
       };
       return sessions.sessions.find(
-        (s) => s.sessionId === started.session.sessionId && s.alive
+        (s) => s.sessionId === started.session.sessionId && s.isAlive
       );
     }, 15_000, "session alive");
 
@@ -992,11 +1013,11 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "managed delivery after user input");
-    assert.equal(delivered.task.state, "delivered");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "managed result after user input");
+    assert.equal(delivered.task.state, "submitted");
 
-    // After task Delivery + session cleanup, managed-delivered input must stay delivered
+    // After task TaskResult + session cleanup, managed-delivered input must stay delivered
     // (cancelSession/cancelTask must not rewrite it to cancelled).
     const afterCleanup = (await client.taskInputGet(
       workspaceId,
@@ -1008,7 +1029,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     assert.equal(
       afterCleanup.input.status,
       "delivered",
-      "managed-delivered TaskInput must remain delivered after Delivery/session cleanup"
+      "managed-delivered TaskInput must remain delivered after TaskResult/session cleanup"
     );
     assert.ok(afterCleanup.input.deliveredAt);
 
@@ -1058,7 +1079,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Work that will be rejected with review note",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1069,20 +1090,20 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     })) as { session: { sessionId: string } };
     void started;
 
-    // First managed delivery (bootstrap).
+    // First managed result (bootstrap).
     await pollUntil(async () => {
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first managed delivery");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "first managed result");
 
     const exactNote = "  please fix the edge case and re-run tests  ";
     const t0 = Date.now();
-    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const terminalTaskResultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      terminalDeliveryId,
+      terminalTaskResultId,
       "user",
       {
         resume: true,
@@ -1155,8 +1176,8 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "rework delivery after review feedback");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "rework result after review feedback");
 
     const logRaw = await fs.readFile(logPath, "utf8");
     const log = JSON.parse(logRaw) as { prompts?: string[] };
@@ -1213,7 +1234,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Native reject-resume same session",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1228,8 +1249,8 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first managed delivery before native reject-resume");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "first managed result before native reject-resume");
 
     const beforeToken = (await svc.runtime.registry.read(priorSessionId))?.resumeToken;
     assert.ok(beforeToken, "provider token must exist before stop");
@@ -1239,11 +1260,11 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     await svc.runtime.stopSession(priorSessionId, "user");
     const priorProbe = await svc.runtime.probe(priorSessionId);
     assert.equal(
-      priorProbe.alive,
+      priorProbe.isAlive,
       false,
       `prior session must be dead so reject-resume takes native resume path (state=${priorProbe.state})`
     );
-    assert.equal(priorProbe.resumeCapable, true, JSON.stringify(priorProbe));
+    assert.equal(priorProbe.canResume, true, JSON.stringify(priorProbe));
     assert.ok(
       priorProbe.state === "stopped" || priorProbe.state === "failed",
       `prior session must be terminal; got state=${priorProbe.state}`
@@ -1251,20 +1272,20 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
 
     // Task must remain reject-resume-eligible (delivered), not failed by stop.
     const beforeReject = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { state: string; sessionId?: string };
+      task: { state: string; executionSessionId?: string };
     };
     assert.equal(
       beforeReject.task.state,
-      "delivered",
-      "stopping prior session after deliver must leave task delivered for reject-resume"
+      "submitted",
+      "stopping prior Session after submit must leave the Task reviewable"
     );
-    assert.equal(beforeReject.task.sessionId, priorSessionId);
+    assert.equal(beforeReject.task.executionSessionId, priorSessionId);
 
     const exactNote = "  native-resume: fix and re-run  ";
-    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const terminalTaskResultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      terminalDeliveryId,
+      terminalTaskResultId,
       "user",
       {
         resume: true,
@@ -1292,10 +1313,10 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     assert.equal(
       rejected.session!.sessionId,
       priorSessionId,
-      "resumeCapable dead prior must reuse the same Tent sessionId"
+      "canResume dead prior must reuse the same Tent sessionId"
     );
     assert.equal(
-      (await svc.runtime.probe(priorSessionId)).alive,
+      (await svc.runtime.probe(priorSessionId)).isAlive,
       true,
       "restored session must be live"
     );
@@ -1366,8 +1387,8 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "rework delivery on native resumed session");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "rework result on native resumed session");
 
     // New bridge process rewrites MOCK_ACP_LOG — assert load (not new) + one inject.
     const logRaw = await fs.readFile(logPath, "utf8");
@@ -1430,7 +1451,7 @@ test("reject-resume restore failure parks session_unavailable and startSession r
       contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Reject restore recovery",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1443,10 +1464,10 @@ test("reject-resume restore failure parks session_unavailable and startSession r
       const got = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return got.task.state === "delivered" ? got : null;
-    }, 20_000, "first delivery before injected restore failure");
+      return got.task.state === "submitted" ? got : null;
+    }, 20_000, "first result before injected restore failure");
     await svc.runtime.stopSession(sessionId, "user");
-    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const resultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
 
     const originalResume = svc.runtime.resumeSession.bind(svc.runtime);
     svc.runtime.resumeSession = async () => {
@@ -1457,7 +1478,7 @@ test("reject-resume restore failure parks session_unavailable and startSession r
         () =>
           client.taskReject(
             workspaceId,
-            deliveryId,
+            resultId,
             "user",
             { resume: true, note: "RECOVER_AFTER_FAILURE" }
           ),
@@ -1525,7 +1546,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Slow reject-resume inject",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1539,13 +1560,13 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first delivery before slow reject");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "first result before slow reject");
 
     const t0 = Date.now();
     const rejected = (await client.taskReject(
       workspaceId,
-      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      await exactReadyTaskResultId(client, workspaceId, taskPath),
       "user",
       {
         resume: true,
@@ -1567,7 +1588,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     assert.equal(rejected.state, "running");
     assert.ok(rejected.session?.sessionId);
     assert.equal(rejected.input.kind, "review-feedback");
-    // The durable response must return while background delivery is still pending.
+    // The durable response must return while background result is still pending.
     // A generous wall-clock ceiling catches a real headers-timeout regression without
     // making the contract depend on scheduler load in the full parallel suite.
     assert.ok(
@@ -1631,7 +1652,7 @@ test("reject-resume: background completion projects processing → delivered", a
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Background reject inject",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -1645,8 +1666,8 @@ test("reject-resume: background completion projects processing → delivered", a
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first delivery for bg reject");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "first result for bg reject");
 
     // Deterministically reproduce the real Codex ordering: the follow-up emits
     // prompt_complete while review-feedback is still processing, then the
@@ -1683,7 +1704,7 @@ test("reject-resume: background completion projects processing → delivered", a
     try {
       rejected = (await client.taskReject(
         workspaceId,
-        await exactReadyDeliveryId(client, workspaceId, taskPath),
+        await exactReadyTaskResultId(client, workspaceId, taskPath),
         "user",
         {
           resume: true,
@@ -1732,28 +1753,29 @@ test("reject-resume: background completion projects processing → delivered", a
     assert.equal(final.status, "delivered");
     assert.ok(final.deliveredAt);
 
-    // Rework delivery still single-track after background inject.
+    // Rework result still single-track after background inject.
     await pollUntil(async () => {
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "rework delivery after bg review-feedback");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "rework result after bg review-feedback");
 
-    const deliveries = (await client.deliveryList(workspaceId)) as {
-      deliveries: Array<{ summary: string; status: string }>;
+    const deliveries = (await client.taskResultList(workspaceId)) as {
+      results: Array<{ report: string; status: string }>;
     };
-    const readyRework = deliveries.deliveries.filter(
-      (delivery) =>
-        delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+    const readyRework = deliveries.results.filter(
+      (result) =>
+        result.status === "ready" &&
+        result.report === "outcome: delivered\n\nBG_REWORK_OK"
     );
     assert.equal(readyRework.length, 1, "durable draft retry publishes exactly once");
 
     const beforeUncertain = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { activeDeliveryId?: string };
+      task: { currentResultId?: string };
     };
-    const priorDeliveryId = beforeUncertain.task.activeDeliveryId;
-    assert.ok(priorDeliveryId);
+    const priorTaskResultId = beforeUncertain.task.currentResultId;
+    assert.ok(priorTaskResultId);
 
     // Repeat with the provider-accepted/local-confirmation-failed state. Keep
     // markDelivered blocked until prompt_complete has hit PENDING_TASK_INPUT,
@@ -1788,7 +1810,7 @@ test("reject-resume: background completion projects processing → delivered", a
     try {
       uncertainRejected = (await client.taskReject(
         workspaceId,
-        await exactReadyDeliveryId(client, workspaceId, taskPath),
+        await exactReadyTaskResultId(client, workspaceId, taskPath),
         "user",
         { resume: true, note: "BG_UNCERTAIN_NOTE" }
       )) as typeof uncertainRejected;
@@ -1821,14 +1843,14 @@ test("reject-resume: background completion projects processing → delivered", a
     }
 
     const blockedTask = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { state: string; activeDeliveryId?: string };
+      task: { state: string; currentResultId?: string };
     };
     assert.equal(
       blockedTask.task.state,
       "running",
       "uncertain must keep rework Task non-terminal until ack"
     );
-    assert.equal(blockedTask.task.activeDeliveryId, priorDeliveryId);
+    assert.equal(blockedTask.task.currentResultId, priorTaskResultId);
 
     const attention = (await client.taskInputListPending(
       workspaceId,
@@ -1848,16 +1870,16 @@ test("reject-resume: background completion projects processing → delivered", a
     assert.ok(uncertainAttention?.uncertainAt);
     assert.match(uncertainAttention?.lastError ?? "", /markDelivered/);
 
-    const beforeAckDeliveries = (await client.deliveryList(workspaceId)) as {
-      deliveries: Array<{ summary: string; status: string }>;
+    const beforeAckDeliveries = (await client.taskResultList(workspaceId)) as {
+      results: Array<{ report: string; status: string }>;
     };
     assert.equal(
-      beforeAckDeliveries.deliveries.filter(
-        (delivery) =>
-          delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+      beforeAckDeliveries.results.filter(
+        (result) =>
+          result.status === "ready" && result.report === "BG_REWORK_OK"
       ).length,
       0,
-      "uncertain blocker must suppress draft auto-delivery"
+      "uncertain blocker must suppress draft auto-result"
     );
 
     const spoofedUserAck = await rpcCall(
@@ -1876,8 +1898,8 @@ test("reject-resume: background completion projects processing → delivered", a
 
     // Ack must return after its own durable mutation, without waiting for the
     // report-draft retry (which may include slow Git/Service work).
-    const originalDraftGet = svc.ctx.managedDeliveryReportDrafts.get.bind(
-      svc.ctx.managedDeliveryReportDrafts
+    const originalDraftGet = svc.ctx.managedTaskResultReportDrafts.get.bind(
+      svc.ctx.managedTaskResultReportDrafts
     );
     let releaseDraftRetry!: () => void;
     const draftRetryHold = new Promise<void>((resolve) => {
@@ -1888,7 +1910,7 @@ test("reject-resume: background completion projects processing → delivered", a
       enteredDraftRetry = resolve;
     });
     let holdDraftRetry = true;
-    svc.ctx.managedDeliveryReportDrafts.get = async (...args) => {
+    svc.ctx.managedTaskResultReportDrafts.get = async (...args) => {
       if (holdDraftRetry && args[0] === workspaceId && args[1] === taskPath) {
         holdDraftRetry = false;
         enteredDraftRetry();
@@ -1928,7 +1950,7 @@ test("reject-resume: background completion projects processing → delivered", a
       );
     } finally {
       releaseDraftRetry();
-      svc.ctx.managedDeliveryReportDrafts.get = originalDraftGet;
+      svc.ctx.managedTaskResultReportDrafts.get = originalDraftGet;
     }
     const acked =
       ackBeforeRetry.kind === "ack" ? ackBeforeRetry.value : await ackPromise;
@@ -1940,14 +1962,14 @@ test("reject-resume: background completion projects processing → delivered", a
 
     await pollUntil(async () => {
       const got = (await client.taskGet(workspaceId, taskPath)) as {
-        task: { state: string; activeDeliveryId?: string };
+        task: { state: string; currentResultId?: string };
       };
-      return got.task.state === "delivered" &&
-        got.task.activeDeliveryId &&
-        got.task.activeDeliveryId !== priorDeliveryId
+      return got.task.state === "submitted" &&
+        got.task.currentResultId &&
+        got.task.currentResultId !== priorTaskResultId
         ? got.task
         : null;
-    }, 20_000, "ack triggers durable draft-only Delivery retry");
+    }, 20_000, "ack triggers durable draft-only TaskResult retry");
 
     const logRaw = await fs.readFile(logPath, "utf8");
     const log = JSON.parse(logRaw) as { prompts?: string[] };
@@ -1957,16 +1979,17 @@ test("reject-resume: background completion projects processing → delivered", a
       1,
       "uncertain draft retry must not inject the provider prompt twice"
     );
-    const afterUncertain = (await client.deliveryList(workspaceId)) as {
-      deliveries: Array<{ summary: string; status: string }>;
+    const afterUncertain = (await client.taskResultList(workspaceId)) as {
+      results: Array<{ report: string; status: string }>;
     };
     assert.equal(
-      afterUncertain.deliveries.filter(
-        (delivery) =>
-          delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+      afterUncertain.results.filter(
+        (result) =>
+          result.status === "ready" &&
+          result.report === "outcome: delivered\n\nBG_REWORK_OK"
       ).length,
       1,
-      "uncertain durable draft retry publishes exactly one ready Delivery"
+      "uncertain durable draft retry publishes exactly one ready TaskResult"
     );
   });
 });
@@ -2090,7 +2113,7 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Double reject protection",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2104,13 +2127,13 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
       const t = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first delivery for dup reject");
+      return t.task.state === "submitted" ? t : null;
+    }, 20_000, "first result for dup reject");
 
-    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const resultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
     const first = (await client.taskReject(
       workspaceId,
-      deliveryId,
+      resultId,
       "user",
       {
         resume: true,
@@ -2124,11 +2147,11 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
     assert.equal(first.accepted, true);
     assert.equal(first.state, "running");
 
-    // Lost-response retry uses the cached original delivery id and exact args.
+    // Lost-response retry uses the cached original result id and exact args.
     // It must converge to the same deterministic TaskInput, never add another.
     const retry = (await client.taskReject(
       workspaceId,
-      deliveryId,
+      resultId,
       "user",
       {
         resume: true,
@@ -2139,12 +2162,12 @@ test("reject-resume: cached exact retry reuses one durable feedback and mismatch
     assert.equal(retry.state, "running");
     assert.equal(retry.input.id, first.input.id);
 
-    // Same cached Delivery but different request cannot inherit the old result.
+    // Same cached TaskResult but different request cannot inherit the old result.
     await assert.rejects(
       async () =>
         client.taskReject(
           workspaceId,
-          deliveryId,
+          resultId,
           "user",
           {
             resume: true,
@@ -2235,7 +2258,7 @@ test("reject-resume: omitted note uses authoritative default and startSession re
       contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Reject WAL continuation",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2244,22 +2267,22 @@ test("reject-resume: omitted note uses authoritative default and startSession re
       const got = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string };
       };
-      return got.task.state === "delivered" ? got : null;
-    }, 20_000, "first delivery for reject WAL continuation");
+      return got.task.state === "submitted" ? got : null;
+    }, 20_000, "first result for reject WAL continuation");
 
-    const deliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const resultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
     const mount = svc.ctx.host.require(workspaceId);
     await coreTaskReject(mount.env, taskPath, {
       actor: "user",
-      deliveryId,
+      resultId,
       resume: true,
     });
 
     const afterCore = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { state: string; activeDeliveryId?: string };
+      task: { state: string; currentResultId?: string };
     };
     assert.equal(afterCore.task.state, "running");
-    assert.equal(afterCore.task.activeDeliveryId, deliveryId);
+    assert.equal(afterCore.task.currentResultId, resultId);
     const pendingBefore = (await client.taskInputListPending(
       workspaceId,
       taskPath
@@ -2279,7 +2302,7 @@ test("reject-resume: omitted note uses authoritative default and startSession re
 
     const recovered = (await client.taskReject(
       workspaceId,
-      deliveryId,
+      resultId,
       "user",
       { resume: true }
     )) as { input: { id: string; text?: string }; accepted: boolean };
@@ -2333,19 +2356,19 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Terminal reject path",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
-    await client.taskDeliver(workspaceId, taskPath, {
-      summary: "will reject terminal",
+    await client.taskSubmit(workspaceId, taskPath, {
+      report: "will reject terminal",
     });
 
-    const terminalDeliveryId = await exactReadyDeliveryId(client, workspaceId, taskPath);
+    const terminalTaskResultId = await exactReadyTaskResultId(client, workspaceId, taskPath);
     const rejected = (await client.taskReject(
       workspaceId,
-      terminalDeliveryId,
+      terminalTaskResultId,
       "user",
       {
         resume: false,
@@ -2364,21 +2387,21 @@ test("reject --no-resume: terminal reject without review-feedback or session res
 
     const retry = (await client.taskReject(
       workspaceId,
-      terminalDeliveryId,
+      terminalTaskResultId,
       "user",
       { resume: false, note: "no rework" }
-    )) as { state: string; delivery: { id: string; status: string } };
+    )) as { state: string; result: { id: string; status: string } };
     assert.equal(retry.state, "rejected");
-    assert.equal(retry.delivery.id, terminalDeliveryId);
-    assert.equal(retry.delivery.status, "rejected");
+    assert.equal(retry.result.id, terminalTaskResultId);
+    assert.equal(retry.result.status, "rejected");
 
     const authorityBeforeConflict = JSON.stringify({
       task: await client.taskGet(workspaceId, taskPath),
-      delivery: await client.deliveryGet(workspaceId, terminalDeliveryId),
+      result: await client.taskResultGet(workspaceId, terminalTaskResultId),
     });
     await assert.rejects(
       () =>
-        client.taskReject(workspaceId, terminalDeliveryId, "user", {
+        client.taskReject(workspaceId, terminalTaskResultId, "user", {
           resume: false,
           note: "different terminal request",
         }),
@@ -2387,7 +2410,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
     assert.equal(
       JSON.stringify({
         task: await client.taskGet(workspaceId, taskPath),
-        delivery: await client.deliveryGet(workspaceId, terminalDeliveryId),
+        result: await client.taskResultGet(workspaceId, terminalTaskResultId),
       }),
       authorityBeforeConflict
     );
@@ -2430,7 +2453,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "FIFO serialization",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2442,10 +2465,10 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
 
     await pollUntil(async () => {
       const sessions = (await client.sessionList(workspaceId)) as {
-        sessions: { sessionId: string; alive: boolean }[];
+        sessions: { sessionId: string; isAlive: boolean }[];
       };
       return sessions.sessions.find(
-        (s) => s.sessionId === started.session.sessionId && s.alive
+        (s) => s.sessionId === started.session.sessionId && s.isAlive
       );
     }, 15_000, "session alive");
 
@@ -2467,7 +2490,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
 
     // Keep the Task waiting while both inputs are durably accepted. Resuming
     // here would also retry the already-preserved bootstrap report, allowing
-    // its default Delivery to race ahead of sendInput before this FIFO seam is
+    // its default TaskResult to race ahead of sendInput before this FIFO seam is
     // exercised. Hold the first background worker instead: the second RPC is
     // issued only after the first row is durable and has entered the queue.
     const hold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
@@ -2583,7 +2606,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         workNodeIds: [created.nodeId], contextNodeIds: [],
         connectionId: connectionId,
         prompt: `concurrent ${name}`,
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
         acceptMode: "review-required",
       })) as { taskPath: string };
       const taskPath = dispatched.taskPath;
@@ -2686,7 +2709,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "queue failure semantics",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2694,9 +2717,9 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
 
     // Bind a dead session id so managed continue fails (not live, not resume-capable).
     const mount = svc.ctx.host.require(workspaceId);
-    const { patchTaskEnvelope } = await import("../src/core/task.js");
-    await patchTaskEnvelope(mount.env.fs, taskPath, {
-      sessionId: "ss-deadnotinregistry",
+    const { patchTaskRecord } = await import("../src/core/task.js");
+    await patchTaskRecord(mount.env.fs, taskPath, {
+      executionSessionId: "ss-deadnotinregistry",
       updatedAt: new Date().toISOString(),
     });
 
@@ -2797,7 +2820,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "async accept path",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2809,10 +2832,10 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
 
     await pollUntil(async () => {
       const sessions = (await client.sessionList(workspaceId)) as {
-        sessions: { sessionId: string; alive: boolean }[];
+        sessions: { sessionId: string; isAlive: boolean }[];
       };
       return sessions.sessions.find(
-        (s) => s.sessionId === started.session.sessionId && s.alive
+        (s) => s.sessionId === started.session.sessionId && s.isAlive
       );
     }, 15_000, "session alive");
 
@@ -2834,7 +2857,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
       }
     }, 15_000, "bootstrap done while waiting");
     // sendInput accepts waiting Tasks. Keeping this Task parked prevents the
-    // completed bootstrap report from racing a default Delivery ahead of the
+    // completed bootstrap report from racing a default TaskResult ahead of the
     // durable input acceptance being measured here.
     const t0 = Date.now();
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
@@ -2927,7 +2950,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "drain semantics",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -2938,10 +2961,10 @@ test("task.sendInput: service stop drains background work without unhandled reje
 
     await pollUntil(async () => {
       const sessions = (await client.sessionList(workspaceId)) as {
-        sessions: { sessionId: string; alive: boolean }[];
+        sessions: { sessionId: string; isAlive: boolean }[];
       };
       return sessions.sessions.find(
-        (s) => s.sessionId === started.session.sessionId && s.alive
+        (s) => s.sessionId === started.session.sessionId && s.isAlive
       );
     }, 15_000, "session alive for drain");
 
@@ -2996,7 +3019,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       logPath,
       promptText: "BOOT_HANG",
       followupText: "SHOULD_NOT_FINISH",
-      // Park bootstrap long enough to taskWait before auto-delivery races.
+      // Park bootstrap long enough to taskWait before auto-result races.
       promptDelayMs: 2_500,
       hangFollowup: true,
       keepAlive: true,
@@ -3026,7 +3049,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "hang shutdown",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     taskPath = dispatched.taskPath;
@@ -3037,10 +3060,10 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
 
     await pollUntil(async () => {
       const sessions = (await client.sessionList(workspaceId)) as {
-        sessions: { sessionId: string; alive: boolean }[];
+        sessions: { sessionId: string; isAlive: boolean }[];
       };
       return sessions.sessions.find(
-        (s) => s.sessionId === started.session.sessionId && s.alive
+        (s) => s.sessionId === started.session.sessionId && s.isAlive
       );
     }, 15_000, "session alive for hang");
 

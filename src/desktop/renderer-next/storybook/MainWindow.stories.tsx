@@ -22,7 +22,7 @@ type MainWindowPreviewProps = {
   selectedPlacement?: "placed" | "unplaced";
   documentStatus?: FocusDocumentStatus;
   expanded?: boolean;
-  collaborationState?: "none" | "empty" | "active" | "delivery" | "decision" | "loading" | "stale" | "error";
+  collaborationState?: "none" | "empty" | "active" | "result" | "decision" | "loading" | "stale" | "error";
   outlineMode?: "nodes" | "inbox";
   snapshotSourceState?: "current" | "changed" | "deleted" | "revision-unknown" | "authority-unknown";
 };
@@ -30,24 +30,25 @@ type MainWindowPreviewProps = {
 const collaborationActions: CollaborationSurfaceActions = {
   async retry() {},
   async dispatch() { return true; },
-  async acceptDelivery() { return true; },
-  async rejectDelivery() { return true; },
+  async acceptTaskResult() { return true; },
+  async rejectTaskResult() { return true; },
   async respondDecision() { return true; },
 };
 
 function fixtureCollaboration(state: NonNullable<MainWindowPreviewProps["collaborationState"]>): CollaborationSurfaceView | undefined {
   if (state === "none") return undefined;
   const task: CollaborationActiveTask | null = state === "empty" || state === "loading" || state === "error" ? null : {
-    state: state === "delivery" ? "delivered" : state === "decision" ? "waiting" : "running",
+    taskId: "tk-ui",
+    state: state === "result" ? "submitted" : state === "decision" ? "waiting" : "running",
     responsibility: { kind: "role" as const, roleId: "rl-ui", label: "界面" },
     execution: { kind: "connection" as const, connectionId: "cn-grok", label: "Grok UI" },
-    readyDelivery: state === "delivery" ? { deliveryId: "dl-ui", summary: "已完成右侧协作闭环，并补齐状态与键盘验证。", createdAt: "2026-08-04T12:20:00.000Z" } : null,
+    readyResult: state === "result" ? { resultId: "rs-ui", summary: "已完成右侧协作闭环，并补齐状态与键盘验证。", createdAt: "2026-08-04T12:20:00.000Z" } : null,
     pendingDecision: state === "decision" ? { requestId: "dr-ui", question: "审阅区在窄侧栏中应优先展示摘要还是验证证据？", options: [{ id: "summary", label: "优先摘要" }, { id: "evidence", label: "优先验证证据" }] } : null,
   };
   const snapshot = {
     workspaceId: FIXTURE_WORKSPACE_ID,
-    selectedNode: { nodeId: "cx-workbench", activeTask: task, lastReturn: null },
-    inbox: { items: [], counts: { delivery: 0, decision: 0, total: 0 } },
+    selectedNode: { nodeId: "cx-workbench", activeTask: task, statusDetail: null },
+    inbox: { items: [], counts: { result: 0, decision: 0, total: 0 } },
   };
   return {
     workspaceId: FIXTURE_WORKSPACE_ID,
@@ -269,7 +270,7 @@ export const 收件箱模式1440: Story = {
 };
 export const 尚未放入画布: Story = {
   name: "正常 · 尚未放入画布",
-  args: { selectedNodeId: "cx-delivery", selectedPlacement: "unplaced" },
+  args: { selectedNodeId: "cx-result", selectedPlacement: "unplaced" },
 };
 export const 数据过期: Story = { name: "过期 · 保留本地位置", args: { state: "stale" } };
 export const 数据过期不可放入: Story = {
@@ -277,7 +278,7 @@ export const 数据过期不可放入: Story = {
   args: {
     state: "stale",
     connection: "reconnecting",
-    selectedNodeId: "cx-delivery",
+    selectedNodeId: "cx-result",
     selectedPlacement: "unplaced",
   },
 };
@@ -302,7 +303,7 @@ export const 正文错误: Story = { name: "Focus · 读取失败", args: { docu
 export const 正文已归档: Story = { name: "Focus · 已归档", args: { documentStatus: "archived" } };
 export const 协作空闲: Story = { name: "协作 · 空闲与派活入口", args: { collaborationState: "empty" } };
 export const 协作活动任务: Story = { name: "协作 · 活动任务", args: { collaborationState: "active" } };
-export const 协作待审交付: Story = { name: "协作 · 待审交付", args: { collaborationState: "delivery" } };
+export const 协作待审交付: Story = { name: "协作 · 待审交付", args: { collaborationState: "result" } };
 export const 协作决策请求: Story = { name: "协作 · 决策请求", args: { collaborationState: "decision" } };
 export const 协作加载中: Story = { name: "协作 · 首次加载", args: { collaborationState: "loading" } };
 export const 协作已过期: Story = { name: "协作 · 断线保留", args: { collaborationState: "stale", connection: "reconnecting" } };

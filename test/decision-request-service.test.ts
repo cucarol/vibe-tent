@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { createServiceClient } from "../src/service/client.js";
 import { deriveSessionToken } from "../src/service/auth.js";
@@ -104,7 +104,7 @@ function deferred() {
 async function createRunningRoleTask(input: {
   svc: Awaited<ReturnType<typeof startLocalTentService>>;
   workspace: string;
-  parentActor: { kind: "user"; id: "user" } | { kind: "role"; id: string };
+  requester: { kind: "user"; id: "user" } | { kind: "role"; id: string };
 }) {
   const root = createServiceClient({ baseUrl: input.svc.url, token: input.svc.token });
   const { workspaceId } = (await root.mount(input.workspace)) as { workspaceId: string };
@@ -123,9 +123,9 @@ async function createRunningRoleTask(input: {
   const dispatched = (await root.taskDispatch(workspaceId, {
     workNodeIds: [note.nodeId],
     contextNodeIds: [],
-    roleId: "rl-executor",
+    assigneeRoleId: "rl-executor",
     prompt: "Need a durable decision",
-    parentActor: input.parentActor,
+    requester: input.requester,
     acceptMode: "review-required",
   })) as { taskPath: string };
   await executor.client.taskClaim(workspaceId, dispatched.taskPath);
@@ -153,24 +153,24 @@ async function createRunningConnectionTask(input: {
     contextNodeIds: [],
     connectionId: "fake-default",
     prompt: "Managed Task with a durable Decision Request",
-    parentActor: { kind: "user", id: "user" },
+    requester: { kind: "user", id: "user" },
     acceptMode: "review-required",
-  })) as { taskPath: string; task: { sessionId?: string } };
+  })) as { taskPath: string; task: { executionSessionId?: string } };
   const current = (await root.taskGet(workspaceId, dispatched.taskPath)) as {
-    task: { sessionId?: string; state: string };
+    task: { executionSessionId?: string; state: string };
   };
   assert.equal(current.task.state, "running");
-  assert.ok(current.task.sessionId);
+  assert.ok(current.task.executionSessionId);
   return {
     root,
     workspaceId,
     taskPath: dispatched.taskPath,
-    sessionId: current.task.sessionId,
+    sessionId: current.task.executionSessionId,
     executor: createServiceClient({
       baseUrl: input.svc.url,
       token: input.svc.token,
-      currentSessionId: current.task.sessionId,
-      currentSessionToken: deriveSessionToken(input.svc.token, current.task.sessionId),
+      currentSessionId: current.task.executionSessionId,
+      currentSessionToken: deriveSessionToken(input.svc.token, current.task.executionSessionId),
     }),
   };
 }
@@ -196,14 +196,14 @@ test("public RPC surface contains only DecisionRequest methods", () => {
   }
 });
 
-test("exact requester Session creates a user DecisionRequest and blocks ordinary input and Delivery", async () => {
+test("exact requester Session creates a user DecisionRequest and blocks ordinary input and TaskResult", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
     const { root, workspaceId, taskPath, executor, executorExternalKey } =
       await createRunningRoleTask({
         svc,
         workspace,
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
       });
 
     await assert.rejects(
@@ -258,7 +258,7 @@ test("exact requester Session creates a user DecisionRequest and blocks ordinary
       /pending Decision Request/i
     );
     await assert.rejects(
-      () => root.taskDeliver(workspaceId, taskPath, { summary: "bypass" }),
+      () => root.taskSubmit(workspaceId, taskPath, { report: "bypass" }),
       /pending Decision Request/i
     );
 
@@ -278,7 +278,7 @@ test("response persists deterministic TaskInput before answer and retry creates 
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Choose release",
@@ -415,8 +415,8 @@ test("response persists deterministic TaskInput before answer and retry creates 
       reboundSessionId,
       [afterRetry[0]!.id]
     );
-    await patchTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath, {
-      sessionId: reboundSessionId,
+    await patchTaskRecord(svc.ctx.host.require(workspaceId).env.fs, taskPath, {
+      executionSessionId: reboundSessionId,
       state: "failed",
     });
     const responseLossRetry = (await root.decisionRequestRespond(
@@ -461,7 +461,7 @@ test("answered Decision retry never resumes a later Decision wait", async () => 
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const first = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "First decision",
@@ -494,13 +494,13 @@ test("answered Decision retry repairs the committed answer before Task resume", 
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Recover answered WAL",
     })) as { request: { id: string } };
     const mount = svc.ctx.host.require(workspaceId);
-    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const task = await loadTaskRecord(mount.env.fs, taskPath);
     const request = await svc.ctx.decisionRequests.getExactById(
       workspaceId,
       requested.request.id
@@ -567,13 +567,13 @@ test("answered Decision retry returns durable facts when requester Session is cl
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Persist answer before requester closes",
     })) as { request: { id: string } };
     const mount = svc.ctx.host.require(workspaceId);
-    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const task = await loadTaskRecord(mount.env.fs, taskPath);
     const request = await svc.ctx.decisionRequests.getExactById(
       workspaceId,
       requested.request.id
@@ -630,7 +630,7 @@ test("pending response rejects a closed requester Session before creating TaskIn
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Respond only while requester remains open",
@@ -659,7 +659,7 @@ test("Role target alone may escalate the same request id to user", async () => {
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "role", id: "rl-reviewer" },
+      requester: { kind: "role", id: "rl-reviewer" },
     });
     const reviewerExternalKey = `codex:${Math.random().toString(36).slice(2)}`;
     const reviewer = await enterRole(
@@ -727,7 +727,7 @@ test("escalation and response serialize on the exact Task lifecycle", async () =
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "role", id: "rl-reviewer" },
+      requester: { kind: "role", id: "rl-reviewer" },
     });
     const reviewer = await enterRole(svc, workspaceId, workspace, "rl-reviewer");
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
@@ -771,7 +771,7 @@ test("task.sendInput rechecks DecisionRequest under the exact mutation boundary"
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Block racing input?",
@@ -799,7 +799,7 @@ test("terminal Task cleanup removes pending DecisionRequest and stale rows stay 
     const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Will be interrupted",
@@ -851,7 +851,7 @@ test("terminal Task cleanup removes pending DecisionRequest and stale rows stay 
     )) as { task: { state: string } };
     assert.equal(terminal.task.state, "interrupted");
     const probe = await svc.runtime.probe(second.sessionId);
-    assert.equal(probe.alive, false, "managed Session must stop despite request cleanup failure");
+    assert.equal(probe.isAlive, false, "managed Session must stop despite request cleanup failure");
     assert.ok(
       cleanupEvents.some(
         (event) =>

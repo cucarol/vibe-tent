@@ -8,7 +8,7 @@ export interface OkfNode {
   path: string;
   notePath: string;
   name: string;
-  type: string;
+  type?: string;
 }
 
 export function buildNodeIndex(nodes: Iterable<Node>): Map<string, OkfNode[]> {
@@ -54,7 +54,7 @@ function toOkfNode(node: Node): OkfNode {
     path: node.path,
     notePath,
     name: node.name,
-    type: node.type,
+    ...(node.type ? { type: node.type } : {}),
   };
 }
 

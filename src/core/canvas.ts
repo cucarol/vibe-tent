@@ -4,7 +4,6 @@
 
 import { Node } from "./types.js";
 import { LoadedTent, nodeNotePath } from "./tree.js";
-import { splitType } from "./typeRegistry.js";
 
 export interface CanvasNode {
   id: string;
@@ -108,16 +107,15 @@ function filePath(node: Node, prefix: string): string {
   return prefix ? `${prefix}/${p}` : p;
 }
 function labelFor(node: Node, isRoot: boolean): string {
-  const tag = isRoot ? "" : ` · ${node.type}`;
+  const tag = isRoot || !node.type ? "" : ` · ${node.type}`;
   return `${node.name}${tag}`;
 }
 function colorFor(node: Node, isRoot: boolean): string | undefined {
   if (isRoot) return ROOT_COLOR[node.name] || undefined;
-  const { base, modifier } = splitType(node.type);
-  if (base === "goal") return "5";
-  if (base === "prompt") return "6";
-  if (base === "output") return "4";
-  if (modifier === "asset" || node.type === "asset") return "";
+  if (node.type === "goal") return "5";
+  if (node.type === "prompt") return "6";
+  if (node.type === "output") return "4";
+  if (node.type === "asset") return "";
   return undefined;
 }
 

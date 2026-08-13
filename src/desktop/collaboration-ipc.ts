@@ -1,5 +1,5 @@
 /**
- * Narrow Electron boundary for Task, Delivery, and Decision Request UI.
+ * Narrow Electron boundary for Task, TaskResult, and Decision Request UI.
  *
  * Authority fields are deliberately absent: Desktop main supplies the fixed
  * local-user parent/actor values. Renderer code cannot override Git
@@ -32,15 +32,14 @@ export type DesktopCollaborationRequest =
       acceptMode: DesktopAcceptMode;
     }
   | {
-      operation: "acceptDelivery";
+      operation: "acceptTaskResult";
       workspaceId: string;
-      deliveryId: string;
-      outputNodeIds: string[];
+      resultId: string;
     }
   | {
-      operation: "rejectDelivery";
+      operation: "rejectTaskResult";
       workspaceId: string;
-      deliveryId: string;
+      resultId: string;
       note: string;
       resume: true;
     }

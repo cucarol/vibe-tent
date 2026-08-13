@@ -29,7 +29,7 @@ export function isDesktopProjectionEventType(type: string): boolean {
     type === "registry.roles.updated" ||
     type === "connection.changed" ||
     type === "task.state" ||
-    type === "delivery.updated" ||
+    type === "taskResult.updated" ||
     type === "decisionRequest.pending" ||
     type === "decisionRequest.resolved"
   );

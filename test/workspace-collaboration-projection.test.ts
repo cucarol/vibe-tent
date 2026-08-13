@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { contentEtag } from "../src/core/etag.js";
-import { createDelivery, writeDelivery } from "../src/core/delivery.js";
+import { createTaskResult, writeTaskResult } from "../src/core/task-result.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import {
-  loadTaskEnvelope,
-  patchTaskEnvelope,
-  writeTaskEnvelope,
-  type TaskEnvelope,
+  loadTaskRecord,
+  patchTaskRecord,
+  writeTaskRecord,
+  type TaskRecord,
 } from "../src/core/task.js";
 import { taskFail } from "../src/core/task-lifecycle.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
@@ -40,7 +40,7 @@ async function makeWorkspace() {
     nodes: [
       { name: "selected", type: "prompt", body: "# Selected\n" },
       { name: "selected-child", type: "prompt", body: "# Child\n" },
-      { name: "user-delivery", type: "prompt", body: "# Delivery\n" },
+      { name: "user-result", type: "prompt", body: "# TaskResult\n" },
       { name: "user-decision", type: "prompt", body: "# Decision\n" },
       { name: "history", type: "prompt", body: "# History\n" },
       { name: "connection", type: "prompt", body: "# Connection\n" },
@@ -95,46 +95,45 @@ async function writeTask(
   systemFs: NodeFs,
   input: {
     workNodeIds: string[];
-    roleId?: string;
-    sessionId?: string;
-    parentActor: { kind: "user" | "role"; id: string };
+    assigneeRoleId?: string;
+    executionSessionId?: string;
+    requester: { kind: "user" | "role"; id: string };
   }
-): Promise<TaskEnvelope> {
-  const taskPath = await writeTaskEnvelope(systemFs, new SystemClock(), {
-    roleId: input.roleId,
-    sessionId: input.sessionId,
+): Promise<TaskRecord> {
+  const taskPath = await writeTaskRecord(systemFs, new SystemClock(), {
+    assigneeRoleId: input.assigneeRoleId,
+    executionSessionId: input.executionSessionId,
     workNodeIds: input.workNodeIds,
     contextNodeIds: [],
     nodeSnapshots: input.workNodeIds.map(snapshot),
     manifestPath: "temp/test/manifest.yml",
-    userPrompt: "projection fixture",
-    parentActor: input.parentActor,
+    prompt: "projection fixture",
+    requester: input.requester,
     acceptMode: "review-required",
   });
-  return loadTaskEnvelope(systemFs, taskPath);
+  return loadTaskRecord(systemFs, taskPath);
 }
 
-async function readyDelivery(
+async function readyTaskResult(
   systemFs: NodeFs,
-  task: TaskEnvelope,
-  sourceNodeId: string,
-  summary: string,
+  task: TaskRecord,
+  _nodeId: string,
+  report: string,
   now: string
 ) {
-  const delivery = await createDelivery(systemFs, { now: () => now }, {
+  const result = await createTaskResult(systemFs, { now: () => now }, {
     taskId: task.id!,
-    sourceNodeId,
-    deliveriesDir: task.roleId
-      ? `temp/roles/${task.roleId}/deliveries`
-      : `temp/sessions/${task.sessionId}/deliveries`,
-    summary,
+    resultsDir: task.assigneeRoleId
+      ? `temp/roles/${task.assigneeRoleId}/results`
+      : `temp/sessions/${task.executionSessionId}/results`,
+    report,
     status: "ready",
   });
-  await patchTaskEnvelope(systemFs, task.path, {
-    state: "delivered",
-    activeDeliveryId: delivery.id,
+  await patchTaskRecord(systemFs, task.path, {
+    state: "submitted",
+    currentResultId: result.id,
   });
-  return delivery;
+  return result;
 }
 
 test("workspace.collaboration joins multi-Node Role work and only user-actionable Inbox", async () => {
@@ -144,15 +143,15 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
     const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
     const selected = ids.get("selected")!;
     const child = ids.get("selected-child")!;
-    const deliveryNode = ids.get("user-delivery")!;
+    const resultNode = ids.get("user-result")!;
     const decisionNode = ids.get("user-decision")!;
 
     const roleTask = await writeTask(systemFs, {
       workNodeIds: [selected, child],
-      roleId: "rl-executor",
-      parentActor: { kind: "role", id: "rl-parent" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "role", id: "rl-parent" },
     });
-    const roleDelivery = await readyDelivery(
+    const roleTaskResult = await readyTaskResult(
       systemFs,
       roleTask,
       selected,
@@ -160,15 +159,15 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
       "2026-01-01T00:00:00.000Z"
     );
 
-    const userDeliveryTask = await writeTask(systemFs, {
-      workNodeIds: [deliveryNode],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+    const userTaskResultTask = await writeTask(systemFs, {
+      workNodeIds: [resultNode],
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    const userDelivery = await readyDelivery(
+    const userTaskResult = await readyTaskResult(
       systemFs,
-      userDeliveryTask,
-      deliveryNode,
+      userTaskResultTask,
+      resultNode,
       "User review summary",
       "2026-01-02T00:00:00.000Z"
     );
@@ -180,10 +179,10 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
     }) as { session: { sessionId: string } };
     const userDecisionTask = await writeTask(systemFs, {
       workNodeIds: [decisionNode],
-      sessionId: decisionSession.session.sessionId,
-      parentActor: { kind: "user", id: "user" },
+      executionSessionId: decisionSession.session.sessionId,
+      requester: { kind: "user", id: "user" },
     });
-    await patchTaskEnvelope(systemFs, userDecisionTask.path, {
+    await patchTaskRecord(systemFs, userDecisionTask.path, {
       state: "waiting",
       wait: {
         reason: "user-input",
@@ -192,7 +191,7 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
       },
     });
     await svc.runtime.registry.update(decisionSession.session.sessionId, {
-      lastTaskId: userDecisionTask.id,
+      currentTaskId: userDecisionTask.id,
     });
     const decision: PendingDecisionRequest = {
       id: "dr-0123456789",
@@ -211,14 +210,13 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
 
     const staleReadyTask = await writeTask(systemFs, {
       workNodeIds: [ids.get("history")!],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    await createDelivery(systemFs, { now: () => "2020-01-02T00:00:00.000Z" }, {
+    await createTaskResult(systemFs, { now: () => "2020-01-02T00:00:00.000Z" }, {
       taskId: staleReadyTask.id!,
-      sourceNodeId: ids.get("history")!,
-      deliveriesDir: "temp/roles/rl-executor/deliveries",
-      summary: "Stale ready history",
+      resultsDir: "temp/roles/rl-executor/results",
+      report: "Stale ready history",
       status: "ready",
     });
     await svc.ctx.decisionRequests.add({
@@ -235,14 +233,15 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
       },
     });
 
-    // Historical non-actionable Delivery is irrelevant even without a current Task.
-    await createDelivery(systemFs, { now: () => "2020-01-01T00:00:00.000Z" }, {
+    // Historical non-actionable TaskResult is irrelevant even without a current Task.
+    const acceptedHistory = await createTaskResult(systemFs, { now: () => "2020-01-01T00:00:00.000Z" }, {
       taskId: "tk-zzzzzzzz",
-      sourceNodeId: ids.get("history")!,
-      deliveriesDir: "temp/roles/rl-executor/deliveries",
-      summary: "Accepted history",
-      status: "accepted",
+      resultsDir: "temp/roles/rl-executor/results",
+      report: "Accepted history",
     });
+    acceptedHistory.status = "accepted";
+    acceptedHistory.review = { reviewer: "user", at: "2020-01-01T00:00:00.000Z" };
+    await writeTaskResult(systemFs, acceptedHistory);
 
     const result = await client.workspaceCollaboration(
       workspaceId,
@@ -252,25 +251,24 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
       nodeId: child,
       activeTask: {
         taskId: roleTask.id,
-        state: "delivered",
+        state: "submitted",
         responsibility: { kind: "role", roleId: "rl-parent", displayName: "Parent Role" },
         execution: { kind: "role", roleId: "rl-executor", displayName: "Executor Role" },
-        readyDelivery: {
-          deliveryId: roleDelivery.id,
+        readyResult: {
+          resultId: roleTaskResult.id,
           summary: "Role review summary",
           createdAt: "2026-01-01T00:00:00.000Z",
         },
         pendingDecision: null,
       },
-      lastReturn: null,
+      statusDetail: null,
     });
-    assert.deepEqual(result.inbox.counts, { delivery: 1, decision: 1, total: 2 });
-    assert.deepEqual(result.inbox.items.map((item) => item.kind), ["delivery", "decision"]);
+    assert.deepEqual(result.inbox.counts, { result: 1, decision: 1, total: 2 });
+    assert.deepEqual(result.inbox.items.map((item) => item.kind), ["result", "decision"]);
     assert.deepEqual(result.inbox.items[0], {
-      kind: "delivery",
-      deliveryId: userDelivery.id,
-      taskId: userDeliveryTask.id,
-      sourceNodeId: deliveryNode,
+      kind: "result",
+      resultId: userTaskResult.id,
+      taskId: userTaskResultTask.id,
       summary: "User review summary",
       createdAt: "2026-01-02T00:00:00.000Z",
     });
@@ -290,13 +288,14 @@ test("workspace.collaboration joins multi-Node Role work and only user-actionabl
 
     const serialized = JSON.stringify(result);
     for (const forbidden of [
-      "taskPath", "sessionId", "alive", "turnBusy", "provider", "adapterId",
+      "taskPath", "sessionId", "alive", "isTurnActive", "provider", "adapterId",
       "token", "commits", "targetHead", "name", "type", "mode",
     ]) {
       assert.equal(serialized.includes(`\"${forbidden}\"`), false, forbidden);
     }
   });
 });
+// End of workspace.collaboration projection coverage.
 
 test("workspace.collaboration keeps the latest terminal failed return visible on its Node", async () => {
   const { workspace, systemFs, ids } = await makeWorkspace();
@@ -305,12 +304,12 @@ test("workspace.collaboration keeps the latest terminal failed return visible on
     const nodeId = ids.get("selected")!;
     const older = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    await patchTaskEnvelope(systemFs, older.path, {
+    await patchTaskRecord(systemFs, older.path, {
       state: "failed",
-      lastReturn: {
+      statusDetail: {
         kind: "failed",
         error: "older failure",
         at: "2026-01-01T01:00:00+02:00",
@@ -319,10 +318,10 @@ test("workspace.collaboration keeps the latest terminal failed return visible on
     });
     const latest = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    await patchTaskEnvelope(systemFs, latest.path, {
+    await patchTaskRecord(systemFs, latest.path, {
       state: "running",
       updatedAt: "2026-01-02T00:00:00.000Z",
     });
@@ -330,41 +329,40 @@ test("workspace.collaboration keeps the latest terminal failed return visible on
       error: "latest terminal failure",
       code: "EXPLICIT_FAILURE",
     });
-    await patchTaskEnvelope(systemFs, latest.path, {
+    await patchTaskRecord(systemFs, latest.path, {
       updatedAt: "2025-12-31T23:30:00.000Z",
     });
 
     const result = await client.workspaceCollaboration(workspaceId, nodeId);
     assert.equal(result.selectedNode?.activeTask, null);
-    assert.equal(result.selectedNode?.lastReturn?.taskId, latest.id);
-    assert.equal(result.selectedNode?.lastReturn?.kind, "failed");
-    assert.equal(result.selectedNode?.lastReturn?.error, "latest terminal failure");
-    assert.equal(result.selectedNode?.lastReturn?.code, "EXPLICIT_FAILURE");
+    assert.equal(result.selectedNode?.statusDetail?.taskId, latest.id);
+    assert.equal(result.selectedNode?.statusDetail?.kind, "failed");
+    assert.equal(result.selectedNode?.statusDetail?.error, "latest terminal failure");
+    assert.equal(result.selectedNode?.statusDetail?.code, "EXPLICIT_FAILURE");
     assert.equal(
-      result.selectedNode?.lastReturn?.taskId,
+      result.selectedNode?.statusDetail?.taskId,
       latest.id,
       "numeric instant ordering must beat raw ISO offset lexicographic order"
     );
 
     const newerRunning = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    await patchTaskEnvelope(systemFs, newerRunning.path, {
+    await patchTaskRecord(systemFs, newerRunning.path, {
       state: "running",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     const current = await client.workspaceCollaboration(workspaceId, nodeId);
     assert.equal(current.selectedNode?.activeTask?.taskId, newerRunning.id);
     assert.equal(
-      current.selectedNode?.lastReturn,
+      current.selectedNode?.statusDetail,
       null,
       "a newer Task without a return supersedes historical failure on the Node surface"
     );
   });
 });
-
 test("workspace.collaboration distinguishes user responsibility from Connection execution", async () => {
   const { workspace, ids } = await makeWorkspace();
   await withService(async (svc, client) => {
@@ -375,8 +373,8 @@ test("workspace.collaboration distinguishes user responsibility from Connection 
       contextNodeIds: [],
       connectionId: FAKE_CONNECTION.connectionId,
       prompt: "connection execution",
-      parentActor: { kind: "user", id: "user" },
-    }) as { taskPath: string; sessionId: string };
+      requester: { kind: "user", id: "user" },
+    }) as { taskPath: string; executionSessionId: string };
     assert.ok(dispatched.taskPath);
 
     const result = await client.workspaceCollaboration(workspaceId, nodeId);
@@ -388,8 +386,8 @@ test("workspace.collaboration distinguishes user responsibility from Connection 
       displayName: "Machine K",
     });
 
-    await svc.runtime.registry.update(dispatched.sessionId, {
-      lastTaskId: "tk-other",
+    await svc.runtime.registry.update(dispatched.executionSessionId, {
+      currentTaskId: "tk-other",
     });
     await assert.rejects(
       () => client.workspaceCollaboration(workspaceId, nodeId),
@@ -410,15 +408,15 @@ test("workspace.collaboration exposes only an exact live Decision wait binding",
     const nodeId = ids.get("user-decision")!;
     const task = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      sessionId: entered.session.sessionId,
-      parentActor: { kind: "user", id: "user" },
+      executionSessionId: entered.session.sessionId,
+      requester: { kind: "user", id: "user" },
     });
     const requestId = "dr-binding001";
-    await patchTaskEnvelope(systemFs, task.path, {
+    await patchTaskRecord(systemFs, task.path, {
       state: "waiting",
       wait: { reason: "user-input", summary: "Choose", code: "decision_request:other" },
     });
-    await svc.runtime.registry.update(entered.session.sessionId, { lastTaskId: task.id });
+    await svc.runtime.registry.update(entered.session.sessionId, { currentTaskId: task.id });
     await svc.ctx.decisionRequests.add({
       workspaceId,
       taskPath: task.path,
@@ -436,7 +434,7 @@ test("workspace.collaboration exposes only an exact live Decision wait binding",
     const stale = await client.workspaceCollaboration(workspaceId);
     assert.equal(stale.inbox.counts.decision, 0, "wrong wait identity is stale inventory");
 
-    await patchTaskEnvelope(systemFs, task.path, {
+    await patchTaskRecord(systemFs, task.path, {
       wait: { reason: "user-input", summary: "Choose", code: `decision_request:${requestId}` },
     });
     assert.equal((await client.workspaceCollaboration(workspaceId)).inbox.counts.decision, 1);
@@ -462,12 +460,12 @@ test("workspace.collaboration keeps ordinary external Session execution private"
     const nodeId = ids.get("connection")!;
     const task = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      sessionId: entered.session.sessionId,
-      parentActor: { kind: "user", id: "user" },
+      executionSessionId: entered.session.sessionId,
+      requester: { kind: "user", id: "user" },
     });
-    await patchTaskEnvelope(systemFs, task.path, { state: "running" });
+    await patchTaskRecord(systemFs, task.path, { state: "running" });
     await svc.runtime.registry.update(entered.session.sessionId, {
-      lastTaskId: task.id,
+      currentTaskId: task.id,
     });
 
     const result = await client.workspaceCollaboration(workspaceId, nodeId);
@@ -477,124 +475,96 @@ test("workspace.collaboration keeps ordinary external Session execution private"
   });
 });
 
-test("workspace.collaboration fails closed when a current user Delivery is missing", async () => {
+test("workspace.collaboration fails closed when a current user TaskResult is missing", async () => {
   const { workspace, systemFs, ids } = await makeWorkspace();
   await withService(async (_svc, client) => {
     const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
-    const deliveryNode = ids.get("user-delivery")!;
+    const resultNode = ids.get("user-result")!;
     const task = await writeTask(systemFs, {
-      workNodeIds: [deliveryNode],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      workNodeIds: [resultNode],
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    const delivery = await readyDelivery(
+    const result = await readyTaskResult(
       systemFs,
       task,
-      deliveryNode,
+      resultNode,
       "Current summary",
       "2026-01-01T00:00:00.000Z"
     );
-    await patchTaskEnvelope(systemFs, task.path, { activeDeliveryId: "dl-missing" });
+    await patchTaskRecord(systemFs, task.path, { currentResultId: "rs-missing" });
     await assert.rejects(
       () => client.workspaceCollaboration(workspaceId, ids.get("selected")!),
       /WORKSPACE_COLLABORATION_STALE|consistency error/i
     );
-    await patchTaskEnvelope(systemFs, task.path, {
+    await patchTaskRecord(systemFs, task.path, {
       state: "running",
-      activeDeliveryId: delivery.id,
+      currentResultId: result.id,
     });
     await assert.rejects(
-      () => client.workspaceCollaboration(workspaceId, deliveryNode),
-      /User-reviewable Delivery identity is stale|ready Delivery outside delivered state/i
+      () => client.workspaceCollaboration(workspaceId, resultNode),
+      /User-reviewable Task Result identity is stale|ready Result outside submitted state/i
     );
   });
 });
 
-test("workspace.collaboration rejects current ready Delivery without durable createdAt", async () => {
+test("workspace.collaboration rejects current ready TaskResult without durable createdAt", async () => {
   const { workspace, systemFs, ids } = await makeWorkspace();
   await withService(async (_svc, client) => {
     const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
-    const nodeId = ids.get("user-delivery")!;
+    const nodeId = ids.get("user-result")!;
     const task = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    const delivery = await readyDelivery(
+    const result = await readyTaskResult(
       systemFs,
       task,
       nodeId,
       "Missing timestamp",
       "2026-01-01T00:00:00.000Z"
     );
-    const { createdAt: _createdAt, ...withoutCreatedAt } = delivery;
-    await writeDelivery(systemFs, withoutCreatedAt);
+    const raw = await systemFs.readFile(result.path);
+    await systemFs.writeFile(result.path, raw.replace(/^createdAt:.*\r?\n/m, ""));
 
     await assert.rejects(
       () => client.workspaceCollaboration(workspaceId, ids.get("selected")!),
-      /lacks durable createdAt|WORKSPACE_COLLABORATION_STALE/i
+      /Invalid Task Result format|lacks durable createdAt|Task Result identity is not unique|WORKSPACE_COLLABORATION_STALE/i
     );
   });
 });
 
-test("workspace.collaboration rejects duplicate identity for a current Delivery only", async () => {
+test("workspace.collaboration rejects duplicate identity for a current TaskResult only", async () => {
   const { workspace, systemFs, ids } = await makeWorkspace();
   await withService(async (_svc, client) => {
     const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
-    const nodeId = ids.get("user-delivery")!;
+    const nodeId = ids.get("user-result")!;
     const task = await writeTask(systemFs, {
       workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "user", id: "user" },
+      assigneeRoleId: "rl-executor",
+      requester: { kind: "user", id: "user" },
     });
-    const delivery = await readyDelivery(
+    const result = await readyTaskResult(
       systemFs,
       task,
       nodeId,
       "Current unique candidate",
       "2026-01-01T00:00:00.000Z"
     );
-    await createDelivery(systemFs, { now: () => "2020-01-01T00:00:00.000Z" }, {
-      id: delivery.id,
+    const duplicateHistory = await createTaskResult(systemFs, { now: () => "2020-01-01T00:00:00.000Z" }, {
+      id: result.id,
       taskId: "tk-history",
-      sourceNodeId: ids.get("history")!,
-      deliveriesDir: "temp/roles/rl-parent/deliveries",
-      summary: "Unrelated duplicate history",
-      status: "accepted",
+      resultsDir: "temp/roles/rl-parent/results",
+      report: "Unrelated duplicate history",
     });
+    duplicateHistory.status = "accepted";
+    duplicateHistory.review = { reviewer: "user", at: "2020-01-01T00:00:00.000Z" };
+    await writeTaskResult(systemFs, duplicateHistory);
 
     await assert.rejects(
       () => client.workspaceCollaboration(workspaceId, ids.get("selected")!),
-      /Delivery identity is not unique|WORKSPACE_COLLABORATION_STALE/i
-    );
-  });
-});
-
-test("workspace.collaboration rejects selected ready Delivery from a foreign Node", async () => {
-  const { workspace, systemFs, ids } = await makeWorkspace();
-  await withService(async (_svc, client) => {
-    const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
-    const nodeId = ids.get("user-delivery")!;
-    const task = await writeTask(systemFs, {
-      workNodeIds: [nodeId],
-      roleId: "rl-executor",
-      parentActor: { kind: "role", id: "rl-parent" },
-    });
-    const delivery = await createDelivery(systemFs, new SystemClock(), {
-      taskId: task.id!,
-      sourceNodeId: ids.get("selected")!,
-      deliveriesDir: "temp/roles/rl-executor/deliveries",
-      summary: "Foreign source",
-      status: "ready",
-    });
-    await patchTaskEnvelope(systemFs, task.path, {
-      state: "delivered",
-      activeDeliveryId: delivery.id,
-    });
-
-    await assert.rejects(
-      () => client.workspaceCollaboration(workspaceId, nodeId),
-      /foreign source Node|WORKSPACE_COLLABORATION_STALE/i
+      /Task Result identity is not unique|WORKSPACE_COLLABORATION_STALE/i
     );
   });
 });

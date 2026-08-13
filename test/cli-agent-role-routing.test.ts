@@ -30,9 +30,9 @@ function runCli(...args: string[]): Promise<{ code: number | null; stdout: strin
 test("top-level help presents the canonical public collaboration model", async () => {
   const help = await runCli("--help");
   assert.equal(help.code, 0, help.stderr);
-  assert.match(help.stdout, /Node, Role, Task, Delivery, and Agent Connection/);
+  assert.match(help.stdout, /Node, Role, Task, TaskResult, and Agent Connection/);
   assert.match(help.stdout, /tent role list\|show\|config/);
-  assert.match(help.stdout, /tent task list\|get\|claim\|deliver/);
+  assert.match(help.stdout, /tent task list\|get\|claim\|submit/);
   assert.doesNotMatch(help.stdout, /external session|pull-host|\bboxes\b/i);
 });
 

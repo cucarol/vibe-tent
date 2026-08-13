@@ -14,13 +14,14 @@ import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
   DEFAULT_ACCEPT_MODE,
   isAcceptMode,
+  isTaskResultId,
   isTaskId,
   makeTaskId,
   allowsNonReviewAcceptMode,
   parseTaskActorRef,
   type AcceptMode,
   type TaskActorRef,
-  type TaskLastReturn,
+  type TaskStatusDetail,
   type TaskState,
   type TaskWait,
   type WorkspaceLane,
@@ -49,7 +50,7 @@ export interface RoleWorkspaceContract {
   /**
    * Exact branch tip (full SHA) at ensure/create time.
    * Written as Task baseCommit + roleBranchBase when the execution lane is first bound
-   * (first claim for Role responsibility; startSession/asSub for a Connection Session).
+   * (first claim for Role responsibility or first execution binding).
    */
   baseCommit?: string;
 }
@@ -65,17 +66,17 @@ export type BaseCommitCapture = {
   source: BaseCommitCaptureSource;
   /** Exact full SHA captured (same as Task.baseCommit). */
   baseCommit: string;
-  /** Authorizing parentActor for first-claim capture. */
+  /** Authorizing requester for first-claim capture. */
   actor: TaskActorRef;
   /** ISO-8601 capture timestamp. */
   capturedAt: string;
 };
 
-export interface TaskEnvelopeInput {
+export interface TaskRecordInput {
   /** Durable Role responsibility/handoff. Orthogonal to exact Session execution. */
-  roleId?: string;
+  assigneeRoleId?: string;
   /** Exact executing Session. Connection identity is never stored on a Task. */
-  sessionId?: string;
+  executionSessionId?: string;
   /** Exact writable Nodes occupied by this Task. */
   workNodeIds: string[];
   /** Shared read-only context Nodes. */
@@ -83,16 +84,10 @@ export interface TaskEnvelopeInput {
   /** Frozen semantic snapshots ordered work then context. */
   nodeSnapshots: TaskNodeSnapshot[];
   manifestPath: string;
-  userPrompt: string;
+  prompt: string;
   workspace?: RoleWorkspaceContract;
   /** Sole parent and review authority. Required on every canonical write. */
-  parentActor: TaskActorRef;
-  /**
-   * Sub-dispatch Git lane flag. Missing on disk reads as false (peer).
-   * When true, targetBranch is the parent role branch. Review authority uses
-   * parentActor, not this flag. asSub is lane-only.
-   */
-  asSub?: boolean;
+  requester: TaskActorRef;
   /** Full operational id (tk-…). Generated if omitted. */
   id?: string;
   acceptMode?: AcceptMode;
@@ -101,10 +96,10 @@ export interface TaskEnvelopeInput {
 }
 
 /** Operational task record. */
-export interface TaskEnvelope extends TaskNodeContext {
+export interface TaskRecord extends TaskNodeContext {
   path: string;
   /** Durable Role responsibility/handoff, when this is a Role Task. */
-  roleId?: string;
+  assigneeRoleId?: string;
   manifest: string;
   /** Canonical lifecycle state (task-api §2). */
   state: TaskState;
@@ -114,25 +109,20 @@ export interface TaskEnvelope extends TaskNodeContext {
    * Sole parent and review authority. Required on persisted Tasks.
    * Optional only on synthetic/partial fixtures before write.
    */
-  parentActor?: TaskActorRef;
-  /**
-   * Peer vs sub Git lane. Missing field reads as false.
-   * Persisted only when true; see taskAsSub(). Not used for review authority.
-   */
-  asSub?: boolean;
+  requester?: TaskActorRef;
   workspace?: string;
   worktree?: string;
   branch?: string;
   targetBranch?: string;
   /**
    * Immutable full SHA of the role branch tip at first Git-lane bind for this task.
-   * Optional; absent on non-Git / pre-baseline envelopes until backfilled once.
+   * Optional; absent on non-Git records until captured once.
    * Kept in sync with baseCommit for managed collection (same capture-once baseline).
    */
   roleBranchBase?: string;
   /**
    * Exact full SHA of the Task worktree start (cx-5q6za6).
-   * Authoritative for pre-ready Delivery history gate; capture-once with roleBranchBase.
+   * Authoritative for the pre-submit history gate; capture-once with roleBranchBase.
    */
   baseCommit?: string;
   /**
@@ -142,7 +132,7 @@ export interface TaskEnvelope extends TaskNodeContext {
    */
   baseCommitCapture?: BaseCommitCapture;
   /**
-   * Integration authority on the workspace lane (actor = parentActor, mutator = service).
+   * Integration authority on the workspace lane (actor = requester, mutator = service).
    * Ordinary executors never mutate target; Service integrates after parent accept.
    */
   integrationAuthority?: IntegrationAuthority;
@@ -152,11 +142,11 @@ export interface TaskEnvelope extends TaskNodeContext {
   contextGeneration?: string;
   acceptMode: AcceptMode;
   /** Exact executing Session; required for Session-only Tasks. */
-  sessionId?: string;
+  executionSessionId?: string;
   wait?: TaskWait;
-  activeDeliveryId?: string;
-  /** Latest formal non-Delivery return; one bounded last-write-wins slot. */
-  lastReturn?: TaskLastReturn;
+  currentResultId?: string;
+  /** Latest formal blocked/failed status; one bounded last-write-wins slot. */
+  statusDetail?: TaskStatusDetail;
   createdAt?: string;
   updatedAt?: string;
   /** Immutable user prompt body (after frontmatter). */
@@ -164,12 +154,12 @@ export interface TaskEnvelope extends TaskNodeContext {
 }
 
 /**
- * Discover canonical Task envelopes under Role and Session namespaces.
- * - Role: temp/roles/<roleId>/tasks/*.md
- * - Session-only: temp/sessions/<sessionId>/tasks/*.md
+ * Discover canonical Task records under Role and Session namespaces.
+ * - Role: temp/roles/<assigneeRoleId>/tasks/*.md
+ * - Session-only: temp/sessions/<executionSessionId>/tasks/*.md
  */
-export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> {
-  const tasks: TaskEnvelope[] = [];
+export async function loadTaskRecords(fs: FsAdapter): Promise<TaskRecord[]> {
+  const tasks: TaskRecord[] = [];
   if (!(await fs.exists(TEMP_DIR))) return tasks;
 
   for (const entry of await fs.listDir(TEMP_DIR)) {
@@ -187,47 +177,42 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
 async function collectTaskFiles(
   fs: FsAdapter,
   taskDir: string,
-  tasks: TaskEnvelope[]
+  tasks: TaskRecord[]
 ): Promise<void> {
   if (!(await fs.exists(taskDir))) return;
   for (const entry of await fs.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path = join(taskDir, entry.name);
-    tasks.push(await loadTaskEnvelope(fs, path));
+    tasks.push(await loadTaskRecord(fs, path));
   }
 }
 
 /** True when the Task carries durable Role responsibility. */
-export function taskHasRole(task: Pick<TaskEnvelope, "roleId">): boolean {
-  return typeof task.roleId === "string";
+export function taskHasRole(task: Pick<TaskRecord, "assigneeRoleId">): boolean {
+  return typeof task.assigneeRoleId === "string";
 }
 
 /** Compact diagnostic only; never parsed as an assignment wire. */
 export function taskExecutionLabel(
-  task: Pick<TaskEnvelope, "roleId" | "sessionId">
+  task: Pick<TaskRecord, "assigneeRoleId" | "executionSessionId">
 ): string {
-  return [task.roleId ? `roleId=${task.roleId}` : "", task.sessionId ? `sessionId=${task.sessionId}` : ""]
+  return [task.assigneeRoleId ? `assigneeRoleId=${task.assigneeRoleId}` : "", task.executionSessionId ? `executionSessionId=${task.executionSessionId}` : ""]
     .filter(Boolean)
     .join(" ");
 }
 
-/** Effective sub-dispatch Git-lane flag; missing field reads as false (peer). */
-export function taskAsSub(task: Pick<TaskEnvelope, "asSub">): boolean {
-  return task.asSub === true;
-}
-
 /** Parent is a durable Role (Role-dispatched Task). */
 export function taskParentIsRole(
-  task: Pick<TaskEnvelope, "parentActor">
+  task: Pick<TaskRecord, "requester">
 ): boolean {
-  return task.parentActor?.kind === "role";
+  return task.requester?.kind === "role";
 }
 
 /** Durable parent role id, or undefined when parent is user. */
 export function taskParentRoleId(
-  task: Pick<TaskEnvelope, "parentActor">
+  task: Pick<TaskRecord, "requester">
 ): string | undefined {
-  return task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
+  return task.requester?.kind === "role" ? task.requester.id : undefined;
 }
 
 /**
@@ -274,54 +259,54 @@ export function assertIsoTimestamp(value: string, label: string): string {
   return raw;
 }
 
-export const TASK_LAST_RETURN_REPORT_MAX_BYTES = 64 * 1024;
-export const TASK_LAST_RETURN_ERROR_MAX_BYTES = 8 * 1024;
-export const TASK_LAST_RETURN_CODE_MAX_BYTES = 128;
+export const TASK_STATUS_DETAIL_REPORT_MAX_BYTES = 64 * 1024;
+export const TASK_STATUS_DETAIL_ERROR_MAX_BYTES = 8 * 1024;
+export const TASK_STATUS_DETAIL_CODE_MAX_BYTES = 128;
 
 /** Strict parser shared by disk load, lifecycle writes, and public projection. */
-export function parseTaskLastReturn(value: unknown): TaskLastReturn | undefined {
+export function parseTaskStatusDetail(value: unknown): TaskStatusDetail | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Task lastReturn must be an object.");
+    throw new Error("Task statusDetail must be an object.");
   }
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  const allowed = new Set(["kind", "report", "error", "code", "at", "executionSessionId"]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) {
-    throw new Error("Task lastReturn contains unknown fields.");
+    throw new Error("Task statusDetail contains unknown fields.");
   }
   const kind = raw.kind;
-  if (kind !== "blocked" && kind !== "needs-input" && kind !== "failed") {
-    throw new Error("Task lastReturn.kind must be blocked, needs-input, or failed.");
+  if (kind !== "blocked" && kind !== "failed") {
+    throw new Error("Task statusDetail.kind must be blocked or failed.");
   }
-  const report = parseBoundedTaskLastReturnString(
+  const report = parseBoundedTaskStatusDetailString(
     raw.report,
     "report",
-    TASK_LAST_RETURN_REPORT_MAX_BYTES
+    TASK_STATUS_DETAIL_REPORT_MAX_BYTES
   );
-  const error = parseBoundedTaskLastReturnString(
+  const error = parseBoundedTaskStatusDetailString(
     raw.error,
     "error",
-    TASK_LAST_RETURN_ERROR_MAX_BYTES
+    TASK_STATUS_DETAIL_ERROR_MAX_BYTES
   );
   if (!report && !error) {
-    throw new Error("Task lastReturn requires report or error.");
+    throw new Error("Task statusDetail requires report or error.");
   }
-  const code = parseBoundedTaskLastReturnString(
+  const code = parseBoundedTaskStatusDetailString(
     raw.code,
     "code",
-    TASK_LAST_RETURN_CODE_MAX_BYTES
+    TASK_STATUS_DETAIL_CODE_MAX_BYTES
   );
   if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
-    throw new Error("Task lastReturn.code must be a stable machine identifier.");
+    throw new Error("Task statusDetail.code must be a stable machine identifier.");
   }
   const at = raw.at === undefined
     ? undefined
-    : assertIsoTimestamp(String(raw.at), "Task lastReturn.at");
-  const sessionId = raw.sessionId === undefined
+    : assertIsoTimestamp(String(raw.at), "Task statusDetail.at");
+  const executionSessionId = raw.executionSessionId === undefined
     ? undefined
-    : String(raw.sessionId).trim();
-  if (sessionId && !isSessionId(sessionId)) {
-    throw new Error(`Invalid Task lastReturn.sessionId: ${sessionId}.`);
+    : String(raw.executionSessionId).trim();
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task statusDetail.executionSessionId: ${executionSessionId}.`);
   }
   return {
     kind,
@@ -329,24 +314,24 @@ export function parseTaskLastReturn(value: unknown): TaskLastReturn | undefined 
     ...(error ? { error } : {}),
     ...(code ? { code } : {}),
     ...(at ? { at } : {}),
-    ...(sessionId ? { sessionId } : {}),
+    ...(executionSessionId ? { executionSessionId } : {}),
   };
 }
 
-function parseBoundedTaskLastReturnString(
+function parseBoundedTaskStatusDetailString(
   value: unknown,
   field: "report" | "error" | "code",
   maxBytes: number
 ): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
-    throw new Error(`Task lastReturn.${field} must be a string.`);
+    throw new Error(`Task statusDetail.${field} must be a string.`);
   }
   const text = value.trim();
   if (!text) return undefined;
   const bytes = Buffer.byteLength(text, "utf8");
   if (bytes > maxBytes) {
-    throw new Error(`Task lastReturn.${field} exceeds ${maxBytes} UTF-8 bytes.`);
+    throw new Error(`Task statusDetail.${field} exceeds ${maxBytes} UTF-8 bytes.`);
   }
   return text;
 }
@@ -381,93 +366,106 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
     capturedAtRaw,
     "Task baseCommitCapture.capturedAt"
   );
-  // Reuse parentActor wire shape; re-label errors for capture audit.
+  // Reuse requester wire shape; re-label errors for capture audit.
   let actor: TaskActorRef;
   try {
-    actor = parseTaskActorRef(raw.actor, "parentActor");
+    actor = parseTaskActorRef(raw.actor, "requester");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+    throw new Error(msg.replace(/Task requester/g, "Task baseCommitCapture.actor"));
   }
   return { source, baseCommit, actor, capturedAt };
 }
 
 /**
- * Resolve parentActor for a **new** dispatch write.
+ * Resolve requester for a **new** dispatch write.
  * There is no independent reviewer input or persisted reviewer field.
  */
-export function resolveDispatchParentActor(input: {
-  parentActor?: TaskActorRef;
+export function resolveDispatchRequester(input: {
+  requester?: TaskActorRef;
 }): TaskActorRef {
-  if (!input.parentActor) {
+  if (!input.requester) {
     throw new Error(
-      "task.dispatch requires explicit parentActor { kind, id }."
+      "task.dispatch requires explicit requester { kind, id }."
     );
   }
-  return parseTaskActorRef(input.parentActor, "parentActor");
+  return parseTaskActorRef(input.requester, "requester");
 }
 
-export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
-  if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
+export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskRecord> {
+  if (!(await fs.exists(path))) throw new Error(`Task record not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
   if (data.type !== "task" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task envelope format: ${path}.`);
+    throw new Error(`Invalid task record format: ${path}.`);
   }
-  const roleId = typeof data.roleId === "string" ? data.roleId.trim() : "";
-  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
-  if (!roleId && !sessionId) {
-    throw new Error(`Invalid task envelope format: ${path} (roleId or sessionId is required).`);
+  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
+  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error(`Invalid Task record format: ${path} (assigneeRoleId or executionSessionId is required).`);
   }
-  if (roleId && !isRoleId(roleId)) {
-    throw new Error(`Invalid task envelope format: ${path} (invalid roleId).`);
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) {
+    throw new Error(`Invalid Task record format: ${path} (invalid assigneeRoleId).`);
   }
-  if (sessionId && !isSessionId(sessionId)) {
-    throw new Error(`Invalid task envelope format: ${path} (invalid sessionId).`);
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task record format: ${path} (invalid executionSessionId).`);
+  }
+  const normalizedTaskPath = path.replace(/\\/g, "/");
+  const authoritativeOwnerDir = assigneeRoleId
+    ? `temp/${ROLES_TEMP_DIR}/${assigneeRoleId}/tasks/`
+    : undefined;
+  const sessionOwnerMatch = normalizedTaskPath.match(
+    new RegExp(`^temp/${SESSIONS_TEMP_DIR}/([^/]+)/tasks/`)
+  );
+  const ownerIsValid = assigneeRoleId
+    ? normalizedTaskPath.startsWith(authoritativeOwnerDir!)
+    : !!sessionOwnerMatch && isSessionId(sessionOwnerMatch[1]!);
+  if (!ownerIsValid) {
+    throw new Error(
+      `Invalid Task record owner namespace: ${path}.`
+    );
   }
   if (typeof data.id !== "string" || !isTaskId(data.id)) {
-    throw new Error(`Invalid task envelope format: ${path} (canonical task id is required).`);
+    throw new Error(`Invalid task record format: ${path} (canonical task id is required).`);
   }
 
   const state = parseTaskState(data.state);
 
   // Resolve actors before Context Card so actor mismatch errors are not masked
   // by missing-card errors.
-  const parentActor = resolveParentActorFromDisk(data);
+  const requester = resolveRequesterFromDisk(data);
 
   // Complete Context Card v2 is the sole frozen Node context. Incomplete → fail loud.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
   if (!contextCard) {
     throw new Error(
-      `Invalid task envelope format: ${path} (missing Task Context Card v2).`
-    );
-  }
-  if ("deliveryPolicy" in data) {
-    throw new Error(
-      `Invalid task envelope format: ${path} (retired deliveryPolicy field; use acceptMode).`
+      `Invalid task record format: ${path} (missing Task Context Card v2).`
     );
   }
   if (!isAcceptMode(data.acceptMode)) {
     throw new Error(
-      `Invalid task envelope format: ${path} (acceptMode must be review-required, auto-accept, or agent-decide).`
+      `Invalid task record format: ${path} (acceptMode must be review-required, auto-accept, or agent-decide).`
     );
   }
 
-  const task: TaskEnvelope = {
+  const prompt = body.trim();
+  if (!prompt) {
+    throw new Error(`Invalid Task record format: ${path} (non-empty prompt is required).`);
+  }
+  const task: TaskRecord = {
     path,
-    ...(roleId ? { roleId } : {}),
-    ...(sessionId ? { sessionId } : {}),
+    ...(assigneeRoleId ? { assigneeRoleId } : {}),
+    ...(executionSessionId ? { executionSessionId } : {}),
     manifest: data.manifest,
     state,
     id: data.id,
-    parentActor,
-    prompt: body.trim() || undefined,
+    requester,
+    prompt,
     contextCard,
     workNodeIds: contextCard.workNodeIds,
     contextNodeIds: contextCard.contextNodeIds,
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode,
   };
-  if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
@@ -476,7 +474,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     task.roleBranchBase = data.roleBranchBase.trim();
   }
   // Exact workspaceLane.baseCommit only — never silently substitute roleBranchBase.
-  // Legacy envelopes without baseCommit stay without it until explicit migration / new bind.
+  // Records without a Git lane legitimately have no base commit.
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
@@ -488,37 +486,46 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     const recordedBase = task.baseCommit?.trim() || "";
     if (!recordedBase) {
       throw new Error(
-        `Invalid task envelope format: ${path} (baseCommitCapture present but baseCommit missing).`
+        `Invalid task record format: ${path} (baseCommitCapture present but baseCommit missing).`
       );
     }
     if (recordedBase !== baseCommitCapture.baseCommit) {
       throw new Error(
-        `Invalid task envelope format: ${path} (baseCommit ${recordedBase} !== ` +
+        `Invalid task record format: ${path} (baseCommit ${recordedBase} !== ` +
           `baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
       );
     }
     task.baseCommitCapture = baseCommitCapture;
   }
-  // Recorded lane truth: only set TaskEnvelope.integrationAuthority when the on-disk
-  // bag exists and validates against parentActor + service mutator.
+  // Recorded lane truth: only set TaskRecord.integrationAuthority when the on-disk
+  // bag exists and validates against requester + service mutator.
   // Absence stays absent so ensureTaskWorkspaceLane can detect and persist the
   // canonical derived bag (no in-memory phantom that skips the write).
   // Context / workspaceLane projections derive separately via deriveIntegrationAuthority.
   if (
     data.integrationAuthority !== undefined &&
     data.integrationAuthority !== null &&
-    task.parentActor
+    task.requester
   ) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
-      task.parentActor
+      task.requester
     );
   }
   // Context Card v2 already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
-  if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
-  const lastReturn = parseTaskLastReturn(data.lastReturn);
-  if (lastReturn) task.lastReturn = lastReturn;
+  if (data.currentResultId !== undefined) {
+    if (
+      typeof data.currentResultId !== "string" ||
+      data.currentResultId !== data.currentResultId.trim() ||
+      !isTaskResultId(data.currentResultId)
+    ) {
+      throw new Error(`Invalid Task currentResultId: ${String(data.currentResultId)}.`);
+    }
+    task.currentResultId = data.currentResultId;
+  }
+  const statusDetail = parseTaskStatusDetail(data.statusDetail);
+  if (statusDetail) task.statusDetail = statusDetail;
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
@@ -530,17 +537,11 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
  * Resolve the sole parent/review authority from on-disk frontmatter.
  * Retired authority fields are rejected rather than migrated or aliased.
  */
-function resolveParentActorFromDisk(data: Record<string, unknown>): TaskActorRef {
-  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
-    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
+function resolveRequesterFromDisk(data: Record<string, unknown>): TaskActorRef {
+  if (data.requester === undefined || data.requester === null) {
+    throw new Error("Invalid Task record: missing requester.");
   }
-  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
-    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
-  }
-  if (data.parentActor === undefined || data.parentActor === null) {
-    throw new Error("Invalid task envelope: missing parentActor.");
-  }
-  return parseTaskActorRef(data.parentActor, "parentActor");
+  return parseTaskActorRef(data.requester, "requester");
 }
 
 /**
@@ -580,36 +581,36 @@ export function resolveTaskPromptRoots(
  * Dynamic task pointers only — no workspaceRoot/CLI/file-read tutorial.
  * Path contract lives once on Context Card (managed) or in external relay path block.
  */
-function formatTaskPointers(task: TaskEnvelope): string {
+function formatTaskPointers(task: TaskRecord): string {
   const lines = [
-    `Task envelope: ${task.path}`,
+    `Task record: ${task.path}`,
     `Manifest: ${task.manifest}`,
   ];
   if (task.contextCard) {
     lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
     lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
   }
-  if (task.parentActor) {
+  if (task.requester) {
     lines.push(
-      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+      `requester: ${task.requester.kind}:${task.requester.id}`
     );
   }
   lines.push(`acceptMode: ${task.acceptMode}`);
-  if (task.roleId) {
-    const initCli = join("temp", ROLES_TEMP_DIR, task.roleId, "init.md");
+  if (task.assigneeRoleId) {
+    const initCli = join("temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md");
     const initFile = join(".tent", initCli);
-    lines.push(`roleId: ${task.roleId}`);
+    lines.push(`assigneeRoleId: ${task.assigneeRoleId}`);
     lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   }
-  if (task.sessionId) lines.push(`sessionId: ${task.sessionId}`);
-  if (!task.roleId) lines.push(`Session-only execution (no durable Role responsibility).`);
+  if (task.executionSessionId) lines.push(`executionSessionId: ${task.executionSessionId}`);
+  if (!task.assigneeRoleId) lines.push(`Session-only execution (no durable Role responsibility).`);
   return lines.join("\n");
 }
 
 /**
  * Path roots for external relay only (managed bootstrap uses Context Card once).
  */
-function formatExternalPathBlock(task: TaskEnvelope, roots: TaskPromptRoots): string {
+function formatExternalPathBlock(task: TaskRecord, roots: TaskPromptRoots): string {
   const taskFile = join(".tent", task.path);
   const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
   return [
@@ -625,72 +626,71 @@ function formatExternalPathBlock(task: TaskEnvelope, roots: TaskPromptRoots): st
  * Used for clipboard relay and dispatch.relayPrompt, NOT for service startSession bootstrap.
  */
 export function relayPromptForTask(
-  task: TaskEnvelope,
+  task: TaskRecord,
   roots: string | TaskPromptRoots
 ): string {
   const resolved = resolveTaskPromptRoots(roots);
   const assigneeLine =
-    task.roleId
-      ? `A Tent task has been handed to Role ${task.roleId}.\n`
-      : `A Tent task is bound to Session ${task.sessionId}.\n`;
+    task.assigneeRoleId
+      ? `A Tent task has been handed to Role ${task.assigneeRoleId}.\n`
+      : `A Tent task is bound to Session ${task.executionSessionId}.\n`;
   const initStep =
-    task.roleId
+    task.assigneeRoleId
       ? `4. If this is a new session for this Role, complete Role init first (read the init file above).`
-      : `4. Read the task envelope and task-scoped manifest pointers above; no Role init applies.`;
+      : `4. Read the Task record and task-scoped manifest pointers above; no Role init applies.`;
   return (
     assigneeLine +
     `${formatExternalPathBlock(task, resolved)}\n` +
     `${formatTaskPointers(task)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
-    `2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the envelope file). Resolve current Node state by id only when comparing drift.\n` +
-    `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
+    `2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the Task record). Resolve current Node state by id only when comparing drift.\n` +
+    `3. When finished, run \`tent task submit ${task.path} --report <text>\` (optional: --commits sha,sha).\n` +
     initStep
   );
 }
 
 /**
- * Extract the near-field user prompt from a task envelope body.
+ * Extract the near-field prompt from a Task record body.
  * Envelope layout: Context Pointers + `## User Prompt` — never the node/manifest body.
  */
-export function extractTaskUserPrompt(task: TaskEnvelope): string {
+export function extractTaskPrompt(task: TaskRecord): string {
   const body = task.prompt?.trim() || "";
   if (!body) return "";
   const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
   if (match) return match[1].trim();
-  // Legacy / override bodies without the section header: treat whole body as the prompt.
+  // Bodies without the section header are themselves the prompt.
   return body;
 }
 
 /**
  * Managed ACP startSession bootstrap body (service already claimed).
  * Dynamic task pointers + near-field user prompt only.
- * Path tutorial is owned by Context Card; no claim/get/deliver CLI steps.
- * Final assistant response is captured by Local Service and auto-delivered.
+ * Path tutorial is owned by Context Card; no claim/get/submit CLI steps.
+ * Final assistant response is captured by Local Service and submitted as a Result.
  *
  * `roots` is accepted for call-site compatibility but not repeated here —
  * managed bootstrap prefixes Context Card (which carries workspaceRoot/systemRoot).
  */
 export function sessionBootstrapPromptForTask(
-  task: TaskEnvelope,
+  task: TaskRecord,
   _roots?: string | TaskPromptRoots
 ): string {
-  const userPrompt = extractTaskUserPrompt(task);
+  const prompt = extractTaskPrompt(task);
+  if (!prompt) throw new Error(`Task bootstrap requires a non-empty prompt: ${task.path}.`);
   const readyLine =
-    task.roleId
-      ? `A Tent Session is executing a Task for Role ${task.roleId}.\n`
+    task.assigneeRoleId
+      ? `A Tent Session is executing a Task for Role ${task.assigneeRoleId}.\n`
       : `A Tent managed ACP Session is executing this Task.\n`;
   return (
     readyLine +
     `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. ` +
-    `Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.\n` +
-    (!task.roleId
+    `Managed path: Local Service already claimed this task. A non-empty final report is submitted by default after turn settle. ` +
+    `Use \`outcome: blocked\` only as an explicit control signal; request user input through a Decision Request. Never self-accept.\n` +
+    (!task.assigneeRoleId
       ? `Session-only Task: rely on Task/Node pointers only — no Role init or Role identity.\n`
       : "") +
-    (userPrompt
-      ? `\n## User Prompt\n\n${userPrompt}\n`
-      : `\n## User Prompt\n\n(no user prompt on envelope)\n`)
+    `\n## Prompt\n\n${prompt}\n`
   );
 }
 
@@ -716,27 +716,24 @@ export async function ensureRoleInit(
   return path;
 }
 
-export async function writeTaskEnvelope(
+export async function writeTaskRecord(
   fs: FsAdapter,
   clock: Clock,
-  input: TaskEnvelopeInput
+  input: TaskRecordInput
 ): Promise<string> {
-  const userPrompt = input.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  const prompt = input.prompt?.trim() || "";
+  if (!prompt) throw new Error("Dispatch requires a prompt.");
 
-  if ("deliveryPolicy" in input) {
-    throw new Error("Task input contains retired deliveryPolicy; use acceptMode.");
+  const assigneeRoleId = input.assigneeRoleId?.trim() || "";
+  const executionSessionId = input.executionSessionId?.trim() || "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error("Task requires assigneeRoleId or executionSessionId at creation.");
   }
-  const roleId = input.roleId?.trim() || "";
-  const sessionId = input.sessionId?.trim() || "";
-  if (!roleId && !sessionId) {
-    throw new Error("Task requires roleId or sessionId at creation.");
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
   }
-  if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Task roleId: ${roleId}.`);
-  if (sessionId && !isSessionId(sessionId)) {
-    throw new Error(`Invalid Task sessionId: ${sessionId}.`);
-  }
-  const dir = roleId ? roleTasksDir(roleId) : sessionTasksDir(sessionId);
+  const dir = assigneeRoleId ? roleTasksDir(assigneeRoleId) : sessionTasksDir(executionSessionId);
   await ensureDir(fs, dir);
   const requestedId = input.id?.trim() || "";
   if (requestedId && !isTaskId(requestedId)) {
@@ -754,7 +751,7 @@ export async function writeTaskEnvelope(
   const path = await uniqueMarkdownPath(fs, dir, stem);
   input.onPathAllocated?.(path);
   const now = clock.now();
-  const parentActor = resolveDispatchParentActor({ parentActor: input.parentActor });
+  const requester = resolveDispatchRequester({ requester: input.requester });
   const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
   if (!isAcceptMode(acceptMode)) {
     throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
@@ -765,12 +762,12 @@ export async function writeTaskEnvelope(
   if (
     acceptMode !== "review-required" &&
     !allowsNonReviewAcceptMode({
-      parentActor,
+      requester,
     })
   ) {
     throw new Error(
       `acceptMode=${acceptMode} is only legal for a user-facing Task; ` +
-        `downstream Task Agent → parent must use review-required (parent=${parentActor.kind}:${parentActor.id}).`
+        `downstream Task Agent → requester must use review-required (requester=${requester.kind}:${requester.id}).`
     );
   }
 
@@ -784,9 +781,9 @@ export async function writeTaskEnvelope(
     type: "task",
     id,
     state: "queued",
-    ...(roleId ? { roleId } : {}),
-    ...(sessionId ? { sessionId } : {}),
-    parentActor: serializeTaskActorRef(parentActor),
+    ...(assigneeRoleId ? { assigneeRoleId } : {}),
+    ...(executionSessionId ? { executionSessionId } : {}),
+    requester: serializeTaskActorRef(requester),
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     acceptMode,
@@ -794,16 +791,15 @@ export async function writeTaskEnvelope(
     updatedAt: now,
   };
   // Persist only when true; missing means peer (false). Git-lane sub marker only.
-  if (input.asSub === true) data.asSub = true;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
-    // Lane exists: persist exact tip as Delivery baseCommit + legacy collection baseline.
+    // Lane exists: persist the exact Task-lane base once.
     // Role assignee dispatch omits workspace entirely (base captured at first claim).
     // Connection execution / non-Git also omit workspace (no fake base).
-    // Connection-asSub may still bind tent-task lane + tip at dispatch.
+    // Connection execution may still bind a task lane + tip at dispatch.
     const tip =
       typeof input.workspace.baseCommit === "string"
         ? input.workspace.baseCommit.trim()
@@ -821,33 +817,33 @@ export async function writeTaskEnvelope(
     `## Context Pointers\n\n${pointers || "(none)"}\n\n` +
     `- Manifest: ${input.manifestPath}\n` +
     (input.id || id ? `- Task id: ${id}\n` : "") +
-    `\n## User Prompt\n\n${userPrompt}\n`;
+    `\n## Prompt\n\n${prompt}\n`;
   await fs.writeFile(path, serializeFrontmatter(data, body));
   return path;
 }
 
-export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
-  await patchTaskEnvelope(fs, path, {
+export async function ackTaskRecord(fs: FsAdapter, path: string): Promise<void> {
+  await patchTaskRecord(fs, path, {
     state: "running",
   });
 }
 
-export async function cancelTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
-  const task = await loadTaskEnvelope(fs, path);
+export async function cancelTaskRecord(fs: FsAdapter, path: string): Promise<void> {
+  const task = await loadTaskRecord(fs, path);
   if (task.state !== "queued") {
-    throw new Error("Only queued task envelopes can be cancelled.");
+    throw new Error("Only queued Task records can be cancelled.");
   }
   await fs.remove(path);
 }
 
-export interface TaskEnvelopePatch {
+export interface TaskRecordPatch {
   state?: TaskState;
   /** Exact Session rebind (replaceSession); clearing is forbidden. */
-  sessionId?: string;
+  executionSessionId?: string;
   wait?: TaskWait | null;
-  activeDeliveryId?: string | null;
-  parentActor?: TaskActorRef;
-  lastReturn?: TaskLastReturn | null;
+  currentResultId?: string | null;
+  requester?: TaskActorRef;
+  statusDetail?: TaskStatusDetail | null;
   updatedAt?: string;
   /** Role WorkspaceLane fields (real workspace Git only). */
   workspace?: string | null;
@@ -878,12 +874,12 @@ export interface TaskEnvelopePatch {
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
-export async function patchTaskEnvelope(
+export async function patchTaskRecord(
   fs: FsAdapter,
   path: string,
-  patch: TaskEnvelopePatch
-): Promise<TaskEnvelope> {
-  if ("acceptMode" in patch || "deliveryPolicy" in patch) {
+  patch: TaskRecordPatch
+): Promise<TaskRecord> {
+  if ("acceptMode" in patch) {
     throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
   }
   if ("contextCard" in patch) {
@@ -891,24 +887,18 @@ export async function patchTaskEnvelope(
       "Task Context Card Node snapshots are frozen; patch contextGeneration only."
     );
   }
-  if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
+  if (!(await fs.exists(path))) throw new Error(`Task record not found: ${path}.`);
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path}.`);
-  if (Object.prototype.hasOwnProperty.call(data, "reviewer")) {
-    throw new Error("Invalid task envelope: retired reviewer field; use parentActor.");
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "dispatchedBy")) {
-    throw new Error("Invalid task envelope: retired dispatchedBy field; use parentActor.");
-  }
+  if (data.type !== "task") throw new Error(`Invalid Task record format: ${path}.`);
 
   if (patch.state) {
     data.state = patch.state;
   }
-  if (typeof patch.sessionId === "string") {
-    const sessionId = patch.sessionId.trim();
-    if (!isSessionId(sessionId)) throw new Error(`Invalid Task sessionId: ${sessionId}.`);
-    data.sessionId = sessionId;
+  if (typeof patch.executionSessionId === "string") {
+    const executionSessionId = patch.executionSessionId.trim();
+    if (!isSessionId(executionSessionId)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
+    data.executionSessionId = executionSessionId;
   }
 
   if (patch.wait === null) {
@@ -923,22 +913,29 @@ export async function patchTaskEnvelope(
     else delete data.waitCode;
   }
 
-  if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
-  else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
+  if (patch.currentResultId === null) delete data.currentResultId;
+  else if (typeof patch.currentResultId === "string") {
+    if (
+      patch.currentResultId !== patch.currentResultId.trim() ||
+      !isTaskResultId(patch.currentResultId)
+    ) {
+      throw new Error(`Invalid Task currentResultId: ${patch.currentResultId}.`);
+    }
+    data.currentResultId = patch.currentResultId;
+  }
 
-  if (patch.parentActor) {
-    const nextParent = parseTaskActorRef(patch.parentActor, "parentActor");
-    data.parentActor = serializeTaskActorRef(nextParent);
-    // Authority is a projection of parentActor + service — re-derive on actor write.
-    const derived = deriveIntegrationAuthority({ parentActor: nextParent });
+  if (patch.requester) {
+    const nextRequester = parseTaskActorRef(patch.requester, "requester");
+    data.requester = serializeTaskActorRef(nextRequester);
+    const derived = deriveIntegrationAuthority({ requester: nextRequester });
     data.integrationAuthority = {
       actor: { kind: derived.actor.kind, id: derived.actor.id },
       mutator: "service",
     };
   }
-  if (patch.lastReturn === null) delete data.lastReturn;
-  else if (patch.lastReturn !== undefined) {
-    data.lastReturn = parseTaskLastReturn(patch.lastReturn);
+  if (patch.statusDetail === null) delete data.statusDetail;
+  else if (patch.statusDetail !== undefined) {
+    data.statusDetail = parseTaskStatusDetail(patch.statusDetail);
   }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
 
@@ -966,13 +963,12 @@ export async function patchTaskEnvelope(
 
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
-    // Persist only after validating against envelope parentActor. Reject forged bags.
-    if (data.parentActor === undefined || data.parentActor === null) {
+    if (data.requester === undefined || data.requester === null) {
       throw new Error(
-        "patchTaskEnvelope integrationAuthority requires parentActor on the envelope."
+        "patchTaskRecord integrationAuthority requires requester on the Task record."
       );
     }
-    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
+    const parentForAuth = parseTaskActorRef(data.requester, "requester");
     const validated = assertIntegrationAuthorityMatchesParent(
       patch.integrationAuthority,
       parentForAuth
@@ -985,11 +981,11 @@ export async function patchTaskEnvelope(
 
   if (patch.contextGeneration !== undefined) {
     if (!/^cg-v1-[a-f0-9]{64}$/.test(patch.contextGeneration)) {
-      throw new Error("patchTaskEnvelope contextGeneration must be a canonical cg-v1 digest.");
+      throw new Error("patchTaskRecord contextGeneration must be a canonical cg-v1 digest.");
     }
     const currentCard = loadTaskContextCardFromFrontmatter(data);
     if (!currentCard) {
-      throw new Error(`Invalid task envelope format: ${path} (missing Task Context Card v2).`);
+      throw new Error(`Invalid Task record format: ${path} (missing Task Context Card v2).`);
     }
     data.contextCard = serializeTaskContextCardForFrontmatter({
       ...currentCard,
@@ -998,19 +994,19 @@ export async function patchTaskEnvelope(
     delete data.contextGeneration;
   }
 
-  const roleId = typeof data.roleId === "string" ? data.roleId.trim() : "";
-  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
-  if (!roleId && !sessionId) {
-    throw new Error("patchTaskEnvelope cannot remove the final Task roleId/sessionId binding.");
+  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
+  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error("patchTaskRecord cannot remove the final assigneeRoleId/executionSessionId binding.");
   }
-  if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Task roleId: ${roleId}.`);
-  if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Task sessionId: ${sessionId}.`);
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
+  if (executionSessionId && !isSessionId(executionSessionId)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs, path);
+  return loadTaskRecord(fs, path);
 }
 
-export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
+export function workspaceLaneOf(task: TaskRecord): WorkspaceLane | undefined {
   if (
     !task.workspace &&
     !task.worktree &&
@@ -1022,12 +1018,12 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
     return undefined;
   }
   // baseCommit is exact only — never substitute roleBranchBase in the projection.
-  // integrationAuthority on the lane projection: prefer recorded envelope field;
-  // otherwise derive for Context projection only (does not invent envelope truth).
+  // integrationAuthority on the lane projection: prefer the recorded field;
+  // otherwise derive for Context projection only (does not invent record truth).
   const integrationAuthority = task.integrationAuthority
     ? task.integrationAuthority
-    : task.parentActor
-      ? deriveIntegrationAuthority({ parentActor: task.parentActor })
+    : task.requester
+      ? deriveIntegrationAuthority({ requester: task.requester })
       : undefined;
   return {
     workspace: task.workspace,
@@ -1039,7 +1035,7 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
   };
 }
 
-export function primaryNodeId(task: TaskEnvelope): string | undefined {
+export function primaryNodeId(task: TaskRecord): string | undefined {
   return taskReferencedNodeIds(task)[0];
 }
 
@@ -1048,7 +1044,7 @@ function parseTaskState(value: unknown): TaskState {
     value === "queued" ||
     value === "running" ||
     value === "waiting" ||
-    value === "delivered" ||
+    value === "submitted" ||
     value === "accepted" ||
     value === "rejected" ||
     value === "interrupted" ||

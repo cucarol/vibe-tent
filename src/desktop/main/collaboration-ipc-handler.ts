@@ -56,15 +56,14 @@ function normalizeRequest(raw: unknown): DesktopCollaborationRequest | null {
       raw.acceptMode === "agent-decide")
   ) return raw as DesktopCollaborationRequest;
   if (
-    raw.operation === "acceptDelivery" &&
-    exactKeys(raw, ["operation", "workspaceId", "deliveryId", "outputNodeIds"]) &&
-    nonEmpty(raw.deliveryId) &&
-    uniqueStrings(raw.outputNodeIds, true)
+    raw.operation === "acceptTaskResult" &&
+    exactKeys(raw, ["operation", "workspaceId", "resultId"]) &&
+    nonEmpty(raw.resultId)
   ) return raw as DesktopCollaborationRequest;
   if (
-    raw.operation === "rejectDelivery" &&
-    exactKeys(raw, ["operation", "workspaceId", "deliveryId", "note", "resume"]) &&
-    nonEmpty(raw.deliveryId) &&
+    raw.operation === "rejectTaskResult" &&
+    exactKeys(raw, ["operation", "workspaceId", "resultId", "note", "resume"]) &&
+    nonEmpty(raw.resultId) &&
     nonEmpty(raw.note) &&
     raw.resume === true
   ) return raw as DesktopCollaborationRequest;
@@ -145,28 +144,26 @@ export async function handleDesktopCollaborationRequest(
     }
     if (request.operation === "dispatch") {
       const target = request.target.kind === "role"
-        ? { roleId: request.target.id }
+        ? { assigneeRoleId: request.target.id }
         : { connectionId: request.target.id };
       const result = await client.call("task.dispatch", {
         workspaceId: request.workspaceId,
         workNodeIds: request.workNodeIds,
         contextNodeIds: request.contextNodeIds,
         prompt: request.prompt,
-        parentActor: { kind: "user", id: "user" },
-        asSub: false,
+        requester: { kind: "user", id: "user" },
         acceptMode: request.acceptMode,
         ...target,
       });
-      if (!isRecord(result) || result.workspaceId !== request.workspaceId || !nonEmpty(result.taskPath)) {
+      if (!isRecord(result) || result.workspaceId !== request.workspaceId) {
         throw new InvalidCollaborationResponseError("task.dispatch response is corrupt");
       }
       return { ok: true, value: { workspaceId: request.workspaceId } };
     }
-    if (request.operation === "acceptDelivery") {
+    if (request.operation === "acceptTaskResult") {
       const result = await client.call("task.accept", {
         workspaceId: request.workspaceId,
-        deliveryId: request.deliveryId,
-        outputNodeIds: request.outputNodeIds,
+        resultId: request.resultId,
         actor: "user",
       });
       if (!isRecord(result) || result.workspaceId !== request.workspaceId) {
@@ -174,10 +171,10 @@ export async function handleDesktopCollaborationRequest(
       }
       return { ok: true, value: { workspaceId: request.workspaceId } };
     }
-    if (request.operation === "rejectDelivery") {
+    if (request.operation === "rejectTaskResult") {
       const result = await client.call("task.reject", {
         workspaceId: request.workspaceId,
-        deliveryId: request.deliveryId,
+        resultId: request.resultId,
         actor: "user",
         note: request.note,
         resume: request.resume,

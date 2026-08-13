@@ -1,6 +1,6 @@
 /**
  * Unified A2U pending projection: interaction.listPending.
- * Aggregates DecisionRequest / toolApproval / ready Delivery — no new store.
+ * Aggregates DecisionRequest / toolApproval / ready TaskResult — no new store.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { createDelivery } from "../src/core/delivery.js";
+import { createTaskResult } from "../src/core/task-result.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { createServiceClient } from "../src/service/client.js";
@@ -63,7 +63,7 @@ test("CLIENT_METHODS includes interaction.listPending", () => {
   assert.equal(isClientMethod("interaction.resolve"), false);
 });
 
-test("interaction.listPending aggregates three kinds with stable sort and counts", async () => {
+test("interaction.listPending aggregates actionable Result and tool approval with stable sort", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -90,30 +90,21 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     const dispatched = (await client.taskDispatch(workspaceId, {
       workNodeIds: [nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "Need decisions and review",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; task?: { id?: string } };
     const taskPath = dispatched.taskPath;
     await roleClient.taskClaim(workspaceId, taskPath);
 
     const taskGot = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { id?: string; sessionId?: string; roleId?: string };
+      task: { id?: string; executionSessionId?: string; assigneeRoleId?: string };
     };
     const taskId = taskGot.task.id;
-    assert.ok(taskId, "task id required for delivery + pointers");
+    assert.ok(taskId, "task id required for result + pointers");
 
-    // 1) Decision Request pending from the exact executing Role Session
-    const requested = (await roleClient.taskRequestDecision(workspaceId, taskPath, {
-      question: "Ship v1 or v2?",
-      options: [
-        { id: "v1", label: "Ship v1" },
-        { id: "v2", label: "Ship v2" },
-      ],
-    })) as { request: { id: string; createdAt: string } };
-
-    // 2) Tool approval pending (safe options only; no raw args in store row)
+    // Tool approval pending (safe options only; no raw args in store row)
     const toolId = makeToolApprovalId();
     await svc.ctx.toolApprovals.add({
       id: toolId,
@@ -133,23 +124,21 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
 
-    // 3) Ready Delivery via core writer under the mounted system root
+    // Ready TaskResult via core writer under the mounted system root
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const clock = { now: () => "2022-01-01T00:00:00.000Z" };
-    const delivery = await createDelivery(fsa, clock, {
+    const readyResult = await createTaskResult(fsa, clock, {
       taskId,
-      sourceNodeId: nodeId,
-      deliveriesDir: "temp/roles/rl-executor/deliveries",
-      summary: "Ready for human review — must not appear in interaction projection",
+      resultsDir: "temp/roles/rl-executor/results",
+      report: "Ready for human review — must not appear in interaction projection",
       status: "ready",
     });
 
-    // Non-ready delivery must not appear
-    await createDelivery(fsa, clock, {
+    // Non-ready result must not appear
+    await createTaskResult(fsa, clock, {
       taskId,
-      sourceNodeId: nodeId,
-      deliveriesDir: "temp/roles/rl-executor/deliveries",
-      summary: "Already accepted history",
+      resultsDir: "temp/roles/rl-executor/results",
+      report: "Already accepted history",
       status: "accepted",
     });
 
@@ -158,29 +147,19 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     )) as PendingInteractionListResult;
 
     assert.equal(result.workspaceId, workspaceId);
-    assert.equal(result.counts.total, 3);
-    assert.equal(result.counts.decisionRequest, 1);
+    assert.equal(result.counts.total, 2);
+    assert.equal(result.counts.decisionRequest, 0);
     assert.equal(result.counts.toolApproval, 1);
-    assert.equal(result.counts.delivery, 1);
-    assert.equal(result.items.length, 3);
+    assert.equal(result.counts.result, 1);
+    assert.equal(result.items.length, 2);
 
     // Stable sort: createdAt ASC, then kind, then id
     const times = result.items.map((i) => i.createdAt);
     assert.deepEqual(times, [...times].sort((a, b) => a.localeCompare(b)));
     assert.equal(result.items[0]!.kind, "toolApproval");
     assert.equal(result.items[0]!.id, toolId);
-    assert.equal(result.items[1]!.kind, "delivery");
-    assert.equal(result.items[1]!.id, delivery.id);
-    assert.equal(result.items[2]!.kind, "decisionRequest");
-    assert.equal(result.items[2]!.id, requested.request.id);
-
-    const decisionRequest = result.items.find((i) => i.kind === "decisionRequest");
-    assert.ok(decisionRequest && decisionRequest.kind === "decisionRequest");
-    assert.equal(decisionRequest.taskPath, taskPath);
-    assert.equal(decisionRequest.taskId, taskId);
-    assert.equal("nodeId" in decisionRequest, false);
-    assert.equal(decisionRequest.question, "Ship v1 or v2?");
-    assert.equal(decisionRequest.options.length, 2);
+    assert.equal(result.items[1]!.kind, "result");
+    assert.equal(result.items[1]!.id, readyResult.id);
 
     const tool = result.items.find((i) => i.kind === "toolApproval");
     assert.ok(tool && tool.kind === "toolApproval");
@@ -192,21 +171,20 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     assert.equal((tool as { args?: unknown }).args, undefined);
     assert.equal((tool as { rawInput?: unknown }).rawInput, undefined);
 
-    const del = result.items.find((i) => i.kind === "delivery");
-    assert.ok(del && del.kind === "delivery");
+    const del = result.items.find((i) => i.kind === "result");
+    assert.ok(del && del.kind === "result");
     assert.equal(del.status, "ready");
     assert.equal(del.taskId, taskId);
-    assert.equal(del.sourceNodeId, nodeId);
-    assert.equal(del.taskPath, taskPath);
-    // Delivery summary is intentionally not projected on the unified inbox
+    assert.equal(del.path.endsWith(`/${readyResult.id}.md`), true);
+    // TaskResult summary is intentionally not projected on the unified inbox
     assert.equal((del as { summary?: string }).summary, undefined);
 
-    // ServiceClient delivery wrappers
-    const listed = await client.deliveryList(workspaceId, { taskId });
-    assert.ok(listed.deliveries.some((d) => d.id === delivery.id && d.status === "ready"));
-    const got = await client.deliveryGet(workspaceId, delivery.id);
-    assert.equal(got.delivery.id, delivery.id);
-    assert.equal(got.delivery.summary.includes("Ready for human review"), true);
+    // ServiceClient result wrappers
+    const listed = await client.taskResultList(workspaceId, { taskId });
+    assert.ok(listed.results.some((item) => item.id === readyResult.id && item.status === "ready"));
+    const got = await client.taskResultGet(workspaceId, readyResult.id);
+    assert.equal(got.result.id, readyResult.id);
+    assert.equal(got.result.report.includes("Ready for human review"), true);
   });
 });
 
@@ -232,6 +210,6 @@ test("interaction.listPending empty workspace returns zero counts", async () => 
     assert.deepEqual(result.items, []);
     assert.equal(result.counts.decisionRequest, 0);
     assert.equal(result.counts.toolApproval, 0);
-    assert.equal(result.counts.delivery, 0);
+    assert.equal(result.counts.result, 0);
   });
 });

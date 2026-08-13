@@ -1,6 +1,6 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
-import type { AcceptMode, TaskLastReturn, TaskState } from "../core/task-model.js";
+import type { AcceptMode, TaskState, TaskStatusDetail } from "../core/task-model.js";
 export type { ArtifactRef } from "../core/artifact.js";
 
 /** Common wire wrapper for all service fan-out events. */
@@ -41,7 +41,7 @@ export type NodeProjection = {
   nodeId: string;
   path: string;
   name: string;
-  type: string;
+  type?: string;
   tags: string[];
   /** Effective mode after inheritance (archived cascades). */
   mode: NodeMode;
@@ -50,69 +50,6 @@ export type NodeProjection = {
   invalid: boolean;
   bodyPreview?: string;
   children?: NodeProjection[];
-};
-
-/**
- * Direct-ref Task pointer on a Node (V0.2 `node.collaboration`).
- * Raw lifecycle fields only — never maps to universal todo/doing/done.
- */
-export type NodeCollaborationTaskSummary = {
-  /** Operational task id (tk-…) when present; otherwise envelope path. */
-  id: string;
-  /** Raw Task lifecycle state (queued|running|waiting|delivered|…). */
-  state: string;
-  roleId?: string;
-  sessionId?: string;
-  activeDeliveryId?: string;
-  /** Optional createdAt for clients that re-sort (server already orders). */
-  createdAt?: string;
-  path?: string;
-};
-
-/** Session summary attached only via Task.sessionId (never inferred). */
-export type NodeCollaborationSessionSummary = {
-  id: string;
-  state: string;
-  alive: boolean;
-  turnBusy: boolean;
-};
-
-/** Delivery summary attached only via Task.activeDeliveryId (never inferred). */
-export type NodeCollaborationDeliverySummary = {
-  id: string;
-  status: string;
-};
-
-/**
- * One active Task entry on a Node (multi-Task wire, cx-tsw53f).
- * Joined only by explicit Task.sessionId / activeDeliveryId.
- */
-export type NodeCollaborationActiveTask = {
-  task: NodeCollaborationTaskSummary;
-  session: NodeCollaborationSessionSummary | null;
-  delivery: NodeCollaborationDeliverySummary | null;
-};
-
-/**
- * Protocol-3 Node-keyed collaboration projection (`node.collaboration` item).
- * Exact Node occupation is singular; one Task may still reference many Nodes.
- * Idle Node → activeTask: null. Corrupt multiple occupation fails loud.
- * No Node owner/status/coordination fields.
- *
- */
-export type NodeCollaboration = {
-  workspaceId: string;
-  nodeId: string;
-  activeTask: NodeCollaborationActiveTask | null;
-};
-
-/**
- * Batch Node collaboration projection (`node.collaborations`).
- * `items` order matches the input `ids` order one-for-one.
- */
-export type NodeCollaborationsResult = {
-  workspaceId: string;
-  items: NodeCollaboration[];
 };
 
 export type WorkspaceCollaborationResponsibility =
@@ -135,29 +72,28 @@ export type WorkspaceCollaborationActiveTask = {
   state: TaskState;
   responsibility: WorkspaceCollaborationResponsibility;
   execution: WorkspaceCollaborationExecution | null;
-  readyDelivery: {
-    deliveryId: string;
+  readyResult: {
+    resultId: string;
     summary: string;
     createdAt: string;
   } | null;
   pendingDecision: WorkspaceCollaborationDecision | null;
 };
 
-export type WorkspaceCollaborationLastReturn = TaskLastReturn & {
+export type WorkspaceCollaborationStatusDetail = TaskStatusDetail & {
   taskId: string;
 };
 
 export type WorkspaceCollaborationSelectedNode = {
   nodeId: string;
   activeTask: WorkspaceCollaborationActiveTask | null;
-  lastReturn: WorkspaceCollaborationLastReturn | null;
+  statusDetail: WorkspaceCollaborationStatusDetail | null;
 };
 
-export type WorkspaceUserInboxDelivery = {
-  kind: "delivery";
-  deliveryId: string;
+export type WorkspaceUserInboxResult = {
+  kind: "result";
+  resultId: string;
   taskId: string;
-  sourceNodeId: string;
   summary: string;
   createdAt: string;
 };
@@ -173,7 +109,7 @@ export type WorkspaceUserInboxDecision = {
 };
 
 export type WorkspaceUserInboxItem =
-  | WorkspaceUserInboxDelivery
+  | WorkspaceUserInboxResult
   | WorkspaceUserInboxDecision;
 
 /**
@@ -185,17 +121,17 @@ export type WorkspaceCollaborationProjection = {
   selectedNode: WorkspaceCollaborationSelectedNode | null;
   inbox: {
     items: WorkspaceUserInboxItem[];
-    counts: { delivery: number; decision: number; total: number };
+    counts: { result: number; decision: number; total: number };
   };
 };
 
 /**
  * V0.2 Output provenance read model (`output.provenance`).
- * Authority is Output frontmatter `deliveryId` only — no taskId/sourceNodeId/artifactRefs denorm.
- * Delivery artifact refs are projected through the live id join; missing heat → incomplete.
+ * Authority is Output frontmatter `resultId` only — no taskId/sourceNodeId/artifactRefs denorm.
+ * Task Result artifact refs are projected through the live id join; missing heat → incomplete.
  */
 export type OutputProvenanceIncompleteReason =
-  | "delivery_missing"
+  | "result_missing"
   | "task_missing"
   | "source_missing"
   | "mismatch";
@@ -205,12 +141,11 @@ export type OutputProvenance = {
   outputId: string;
   path: string;
   bound: boolean;
-  deliveryId: string | null;
-  delivery: {
+  resultId: string | null;
+  result: {
     id: string;
     status: string;
     taskId: string;
-    sourceNodeId: string;
     artifactRefs: import("../core/artifact.js").ArtifactRef[];
   } | null;
   task: {
@@ -237,7 +172,7 @@ export type GraphNodeSummary = {
   etag: string;
   path: string;
   name: string;
-  type: string;
+  type?: string;
   tags: string[];
   mode: NodeMode;
   archived: boolean;
@@ -360,7 +295,7 @@ export type TaskProjection = {
   path: string;
   id?: string;
   /** Durable Role responsibility/handoff, when the Task belongs to a Role. */
-  roleId?: string;
+  assigneeRoleId?: string;
   /** Exact writable Nodes occupied by this Task. */
   workNodeIds: string[];
   /** Shared read-only context Nodes. */
@@ -369,15 +304,13 @@ export type TaskProjection = {
   state: string;
   manifest: string;
   /** Sole parent/review authority. */
-  parentActor: TaskActorRefWire;
-  /** Peer vs sub Git lane; missing/false = peer. */
-  asSub?: boolean;
+  requester: TaskActorRefWire;
   acceptMode: AcceptMode;
-  sessionId?: string;
+  executionSessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
-  activeDeliveryId?: string;
-  /** Latest formal non-Delivery return, from the Task authority. */
-  lastReturn?: TaskLastReturn;
+  currentResultId?: string;
+  /** Latest blocked/failed formal status detail, from Task authority. */
+  statusDetail?: TaskStatusDetail;
   workspaceLane?: {
     workspace?: string;
     worktree?: string;
@@ -385,7 +318,7 @@ export type TaskProjection = {
     targetBranch?: string;
     /** Exact Task lane start SHA (cx-5q6za6). */
     baseCommit?: string;
-    /** actor = parentActor; mutator = service. */
+    /** actor = requester; mutator = service. */
     integrationAuthority?: {
       actor: TaskActorRefWire;
       mutator: "service";
@@ -410,24 +343,23 @@ export type TaskProjection = {
   contextGeneration?: string;
 };
 
-export type DeliveryProjection = {
+export type TaskResultProjection = {
   path: string;
   id: string;
   taskId: string;
-  sourceNodeId: string;
   status: string;
-  summary: string;
+  report: string;
   commits: string[];
   /**
    * Full SHA of the integration target branch HEAD snapshotted when a
-   * commit-bearing ready Delivery was created. Absent when commits are empty
-   * or on legacy rows written before this field existed.
+   * commit-bearing ready Task Result was created. Absent when commits are empty.
    */
   targetHead?: string;
-  integrationMode: string | null;
-  review?: { by: string; decision: string; note?: string };
-  createdAt?: string;
-  updatedAt?: string;
+  checks: import("../core/task-model.js").TaskResultCheck[];
+  artifactRefs: import("../core/artifact.js").ArtifactRef[];
+  integrationMode: "auto-accept" | "agent-decided-integrate" | null;
+  review?: { reviewer: string; at: string; note?: string };
+  createdAt: string;
 };
 
 /**
@@ -437,7 +369,7 @@ export type DeliveryProjection = {
 export type PendingInteractionKind =
   | "decisionRequest"
   | "toolApproval"
-  | "delivery";
+  | "result";
 
 /** Shared entity pointers + stable identity for one pending A2U item. */
 export type PendingInteractionBase = {
@@ -475,13 +407,12 @@ export type PendingToolApprovalInteraction = PendingInteractionBase & {
 };
 
 /**
- * Ready Delivery awaiting review.
- * Entity pointers only — does not project delivery summary body.
+ * Ready Task Result awaiting review.
+ * Entity pointers only — does not project result report body.
  */
-export type PendingDeliveryInteraction = PendingInteractionBase & {
-  kind: "delivery";
+export type PendingTaskResultInteraction = PendingInteractionBase & {
+  kind: "result";
   taskId: string;
-  sourceNodeId: string;
   path: string;
   status: "ready";
 };
@@ -489,12 +420,12 @@ export type PendingDeliveryInteraction = PendingInteractionBase & {
 export type PendingInteractionItem =
   | PendingDecisionRequestInteraction
   | PendingToolApprovalInteraction
-  | PendingDeliveryInteraction;
+  | PendingTaskResultInteraction;
 
 export type PendingInteractionCounts = {
   decisionRequest: number;
   toolApproval: number;
-  delivery: number;
+  result: number;
   total: number;
 };
 
@@ -509,7 +440,7 @@ export type PendingInteractionListResult = {
 };
 
 /**
- * Proposal projection for triage — separate from task delivery review.
+ * Proposal projection for triage — separate from Task Result review.
  * Maps core Proposal; status is pending | accepted | rejected.
  */
 export type ProposalProjection = {
@@ -531,14 +462,14 @@ export type SessionProjection = {
   state: string;
   roleId?: string;
   /** PID is machine-local diagnostic; clients may show status only. */
-  alive: boolean;
-  resumeCapable: boolean;
+  isAlive: boolean;
+  canResume: boolean;
   /**
    * Continuity honesty: true only for provider-native same-context restore;
    * false when Tent opened an independent Session after resume failure / no capability.
-   * Omitted when the row makes no continuity claim (legacy / ordinary first start).
+   * Omitted when the row makes no continuity claim for an ordinary first start.
    */
-  contextRestored?: boolean;
+  providerContextRestored?: boolean;
   /**
    * Stable restore / replace reason when the Session was rebound without native continuity
    * (e.g. task.reject.resume.* or task.replaceSession.fresh).
@@ -549,26 +480,17 @@ export type SessionProjection = {
   /** Successor Tent session id when this Session was replaced (audit). */
   replacedBySessionId?: string;
   /**
-   * Managed turn in flight (session/prompt settling). Distinct from `alive`:
+   * Managed turn in flight (session/prompt settling). Distinct from `isAlive`:
    * a live role session may be turn-idle between prompts. Optional for wire
-   * compatibility; omitted/false when no managed turn is busy.
+   * omitted/false when no managed turn is busy.
    */
-  turnBusy?: boolean;
-  lastTaskId?: string;
+  isTurnActive?: boolean;
+  currentTaskId?: string;
   workspace?: string;
   /** Stable pull-host key when registered via externalKey (hooks / GUI). */
   externalKey?: string;
   createdAt?: string;
   updatedAt?: string;
-};
-
-/**
- * Project type registry row (read-only projection for clients).
- * V0.2 Core stores name + tier only.
- */
-export type TypeRegistryEntryProjection = {
-  name: string;
-  tier: "base" | "modifier";
 };
 
 /** Project role registry row (read-only projection for clients). */
@@ -602,8 +524,6 @@ export type AgentConnectionProjection = {
   args?: string[];
   /** Model id when known (e.g. grok-4.5); never secrets. */
   model?: string;
-  /** Absolute path to provider executable on this machine (optional). */
-  executable?: string;
   /** Process env *name* for API token — never the value. */
   envKey?: string;
   /**
@@ -613,10 +533,8 @@ export type AgentConnectionProjection = {
   launchSecretRef?: string;
   /** true when launchSecretRef resolves to an existing encrypted entry. */
   launchSecretExists?: boolean;
-  /** Process env *name* for base URL — never the value. */
-  baseUrlEnvKey?: string;
-  /** Optional machine-local literal base URL (not a workspace secret). */
-  baseUrl?: string;
+  /** Optional machine-local provider endpoint (not a workspace secret). */
+  endpoint?: string;
   /** Non-secret permission policy name for real providers. */
   permissionPolicy?: string;
   promptTimeoutMs?: number;
@@ -800,17 +718,6 @@ export const CLIENT_METHODS = [
   "relation.create",
   "relation.update",
   "relation.delete",
-  "registry.types",
-  /**
-   * User-only custom secondary type create (MutationBus).
-   * Primaries and built-in secondaries cannot be created. Success emits registry.types.updated.
-   */
-  "registry.type.create",
-  /**
-   * User-only custom secondary type delete (MutationBus).
-   * Built-ins and in-use types fail loud. Success emits registry.types.updated.
-   */
-  "registry.type.delete",
   /** Read-only global tag vocabulary (tags.json). */
   "registry.tags",
   /**
@@ -862,7 +769,7 @@ export const CLIENT_METHODS = [
    * Durable Role self-execution: atomically create + claim from exact
    * workNodeIds[] with optional shared contextNodeIds[].
    * Service derives parent/review authority from persisted Task/Session responsibility;
-   * callers cannot provide actor, target, asSub, or Delivery authority fields.
+   * callers cannot provide actor, target, or Task Result authority fields.
    */
   "task.claimDirect",
   "task.wait",
@@ -876,8 +783,7 @@ export const CLIENT_METHODS = [
    * Not chat; does not answer a pending Decision Request; does not mutate Agent Connections.
    */
   "task.sendInput",
-  "task.deliver",
-  "task.requestReview",
+  "task.submit",
   "task.accept",
   "task.reject",
   "task.interrupt",
@@ -889,34 +795,21 @@ export const CLIENT_METHODS = [
    * Agent Connection availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
    * Preserves frozen Node context/worktree/branch/lane/pending TaskInputs/acceptMode;
-   * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
-   * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
+   * stops the old Session first; new ss- has providerContextRestored=false + stable restoreReason.
+   * isTurnActive → fail-loud TURN_BUSY (retryable); no force flag in this contract.
    * waiting only when durable waitCode=session_unavailable (not user-input/tool).
    */
   "task.replaceSession",
   "task.list",
   "task.get",
-  "delivery.list",
-  "delivery.get",
+  "taskResult.list",
+  "taskResult.get",
   /**
-   * V0.2 Node-keyed collaboration projection (task-api §2.3).
-   * Params: workspaceId + nodeId.
-   * Result: { workspaceId, nodeId, activeTask }.
-   */
-  "node.collaboration",
-  /**
-   * V0.2 Output provenance (Output → Delivery → Task → sourceNode).
+   * V0.2 Output provenance (Output → Task Result → Task → sourceNode).
    * Params: workspaceId + canonical nodeId.
    * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
    */
   "output.provenance",
-  /**
-   * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
-   * Params: workspaceId + nodeIds: string[] (stable cx- handles).
-   * Result: { workspaceId, items } ordered as nodeIds. Empty nodeIds → empty items.
-   * Loads tent/tasks/sessions/deliveries once per batch (no N+1).
-   */
-  "node.collaborations",
   /**
    * Workspace-level graph projection for Working-set Canvas.
    * Params: workspaceId.
@@ -926,7 +819,7 @@ export const CLIENT_METHODS = [
    * Placement / view state is never projected or persisted here.
    */
   "graph.projection",
-  /** Proposal triage — separate from task delivery review (task-api §3). */
+  /** Proposal triage — separate from Task Result review (task-api §3). */
   "proposal.list",
   "proposal.submit",
   "proposal.resolve",
@@ -957,7 +850,7 @@ export const CLIENT_METHODS = [
   /**
    * Unified A2U pending read projection (workspace-scoped).
    * Aggregates user-targeted Decision Requests, ACP tool approval, and
-   * status=ready Delivery. No new store / state machine; resolve stays on
+   * status=ready Task Result. No new store / state machine; resolve stays on
    * domain RPCs (decisionRequest.* / toolApproval.* / task.accept|reject).
    * Fail-loud on any source failure — never a partial authoritative inbox.
    */
@@ -1011,7 +904,7 @@ export const RESERVED_DOCS_WRITE_FIELDS = [
   "mode",
   "archived",
   /** Output provenance — only formal task.accept bind path may write. */
-  "deliveryId",
+  "resultId",
   ...PROTECTED_COLLAB_FIELDS,
 ] as const;
 

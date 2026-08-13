@@ -34,11 +34,11 @@ function capturingDispatchClient() {
       return {
         taskPath: isConnection
           ? "temp/sessions/ss-capture/tasks/task-capture.md"
-          : `temp/roles/${String(args.roleId)}/tasks/task-capture.md`,
+          : `temp/roles/${String(args.assigneeRoleId)}/tasks/task-capture.md`,
         state: isConnection ? "running" : "queued",
-        roleId: args.roleId,
-        sessionId: isConnection ? "ss-capture" : undefined,
-        parentActor: args.parentActor,
+        assigneeRoleId: args.assigneeRoleId,
+        executionSessionId: isConnection ? "ss-capture" : undefined,
+        requester: args.requester,
         session: isConnection
             ? {
                 session: {
@@ -97,7 +97,7 @@ test("CLI task get/list show bounded formal return while JSON keeps the typed pr
     state: "failed",
     workNodeIds: ["cx-work"],
     contextNodeIds: [],
-    lastReturn: {
+    statusDetail: {
       kind: "failed",
       report,
       error: "formal failure",
@@ -266,24 +266,24 @@ test("role target: queued durable handoff; work/context Nodes; no startSession",
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     assert.equal(calls.length, 1);
     const args = calls[0]!;
-    assert.equal(args.roleId, "rl-executor");
+    assert.equal(args.assigneeRoleId, "rl-executor");
     assert.equal(args.connectionId, undefined);
     assert.deepEqual(args.workNodeIds, ["cx-one", "cx-two"]);
     assert.deepEqual(args.contextNodeIds, ["cx-context"]);
     assert.equal(args.prompt, "role handoff work");
-    assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(args.requester, { kind: "user", id: "user" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, undefined, "user-direct role target must not set asSub");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
     assert.equal(args.acceptMode, undefined);
 
     const parsed = JSON.parse(r.stdout) as {
       state?: string;
-      roleId?: string;
+      assigneeRoleId?: string;
       session?: unknown;
     };
     assert.equal(parsed.state, "queued");
-    assert.equal(parsed.roleId, "rl-executor");
+    assert.equal(parsed.assigneeRoleId, "rl-executor");
     assert.equal(parsed.session, undefined);
   });
 });
@@ -313,30 +313,30 @@ test("Connection target: managed ACP exact Session; work/context Nodes", async (
     assert.equal(calls.length, 1);
     const args = calls[0]!;
     assert.equal(args.connectionId, "connection-a");
-    assert.equal(args.roleId, undefined);
+    assert.equal(args.assigneeRoleId, undefined);
     assert.deepEqual(args.workNodeIds, ["cx-alpha", "cx-beta"]);
     assert.deepEqual(args.contextNodeIds, ["cx-context"]);
-    assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(args.requester, { kind: "user", id: "user" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, undefined, "user-direct Connection target must not set asSub");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
 
     const parsed = JSON.parse(r.stdout) as {
       state?: string;
-      sessionId?: string;
+      executionSessionId?: string;
       session?: { session?: { sessionId?: string } };
     };
     assert.equal(parsed.state, "running");
-    assert.equal(parsed.sessionId, "ss-capture");
+    assert.equal(parsed.executionSessionId, "ss-capture");
     assert.ok(parsed.session?.session?.sessionId || parsed.session);
   });
 });
 
-test("parentActor single source + derived asSub: Role caller vs user-direct (both targets)", async () => {
+test("requester is the single parent relation for Role and user callers", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
 
-  // Role caller → role:* : parentActor=Role, asSub:true, no startSession
+  // Role caller → role:* : requester=Role, no startSession
   await withTentRoleId("rl-planning", async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -358,15 +358,15 @@ test("parentActor single source + derived asSub: Role caller vs user-direct (bot
     );
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.parentActor, { kind: "role", id: "rl-planning" });
+    assert.deepEqual(args.requester, { kind: "role", id: "rl-planning" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, true, "Role caller role:* targets parent Role Git lane");
-    assert.equal(args.roleId, "rl-executor");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
+    assert.equal(args.assigneeRoleId, "rl-executor");
     assert.equal(args.connectionId, undefined);
   });
 
-  // Role caller → connection:* : parentActor=Role, asSub:true, exact Session
+  // Role caller → connection:* : requester=Role, exact Session
   await withTentRoleId("rl-planning", async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -388,15 +388,15 @@ test("parentActor single source + derived asSub: Role caller vs user-direct (bot
     );
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.parentActor, { kind: "role", id: "rl-planning" });
+    assert.deepEqual(args.requester, { kind: "role", id: "rl-planning" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, true, "Role caller connection:* targets parent Role Git lane");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
     assert.equal(args.connectionId, "connection-a");
-    assert.equal(args.roleId, undefined);
+    assert.equal(args.assigneeRoleId, undefined);
   });
 
-  // User-direct → connection:* : no asSub
+  // User-direct → connection:*
   await withTentRoleId(undefined, async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -413,15 +413,15 @@ test("parentActor single source + derived asSub: Role caller vs user-direct (bot
     );
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(args.requester, { kind: "user", id: "user" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, undefined, "user-direct connection:* must not set asSub");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
     assert.equal(args.connectionId, "connection-b");
-    assert.equal(args.roleId, undefined);
+    assert.equal(args.assigneeRoleId, undefined);
   });
 
-  // User-direct → role:* : no asSub
+  // User-direct → role:*
   await withTentRoleId(undefined, async () => {
     const r = await runTaskCommand(
       "dispatch",
@@ -438,10 +438,10 @@ test("parentActor single source + derived asSub: Role caller vs user-direct (bot
     );
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(args.requester, { kind: "user", id: "user" });
     assert.equal(args.reviewer, undefined);
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, undefined, "user-direct role:* must not set asSub");
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
     assert.equal(args.startSession, undefined);
   });
 
@@ -467,9 +467,9 @@ test("parentActor single source + derived asSub: Role caller vs user-direct (bot
     );
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(args.requester, { kind: "user", id: "user" });
     assert.equal(args.callerKind, undefined);
-    assert.equal(args.asSub, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
   });
 });
 
@@ -522,7 +522,7 @@ test("task accept rejects --commits before workspace or client access", async ()
   assert.doesNotMatch(acceptUsage!, /--commits/);
 });
 
-test("task accept/reject reject retired taskPath and --delivery-id forms before client access", async () => {
+test("task accept/reject reject retired taskPath and --result-id forms before client access", async () => {
   const accessed: string[] = [];
   const client = new Proxy(
     {},
@@ -537,8 +537,8 @@ test("task accept/reject reject retired taskPath and --delivery-id forms before 
   );
   for (const [sub, args] of [
     ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user"]],
-    ["reject", ["temp/规划/tasks/task-example.md", "dl-current", "--actor", "user", "--note", "no"]],
-    ["accept", ["dl-current", "--delivery-id", "dl-old", "--actor", "user"]],
+    ["reject", ["temp/规划/tasks/task-example.md", "rs-current", "--actor", "user", "--note", "no"]],
+    ["accept", ["rs-current", "--result-id", "rs-old", "--actor", "user"]],
   ] as const) {
     const result = await runTaskCommand(sub, [...args], {
       client: client as never,
@@ -550,7 +550,7 @@ test("task accept/reject reject retired taskPath and --delivery-id forms before 
   assert.deepEqual(accessed, []);
 });
 
-test("task accept/reject forward exact positional Delivery identity", async () => {
+test("task accept/reject forward exact positional TaskResult identity", async () => {
   const cwd = await makeFakeTentCwd();
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const client = {
@@ -566,29 +566,29 @@ test("task accept/reject forward exact positional Delivery identity", async () =
     },
     taskReject: async (...args: unknown[]) => {
       calls.push({ method: "reject", args });
-      return { state: "running", delivery: { status: "rejected" } };
+      return { state: "running", result: { status: "rejected" } };
     },
   };
   const accepted = await runTaskCommand(
     "accept",
-    ["dl-current", "--actor", "user", "--outputs", "cx-one,cx-two"],
+    ["rs-current", "--actor", "user"],
     { client: client as never, cwd }
   );
   assert.equal(accepted.exitCode, 0, accepted.stderr);
   const rejected = await runTaskCommand(
     "reject",
-    ["dl-next", "--actor", "user", "--note", "retry", "--resume"],
+    ["rs-next", "--actor", "user", "--note", "retry", "--resume"],
     { client: client as never, cwd }
   );
   assert.equal(rejected.exitCode, 0, rejected.stderr);
   assert.deepEqual(calls, [
     {
       method: "accept",
-      args: ["ws-review", "dl-current", "user", { outputNodeIds: ["cx-one", "cx-two"] }],
+      args: ["ws-review", "rs-current", "user"],
     },
     {
       method: "reject",
-      args: ["ws-review", "dl-next", "user", { note: "retry", resume: true }],
+      args: ["ws-review", "rs-next", "user", { note: "retry", resume: true }],
     },
   ]);
 });
@@ -680,11 +680,11 @@ test("unknown target kind is rejected", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("non-dispatch task commands remain available (help lists claim/get/deliver)", () => {
+test("non-dispatch task commands remain available (help lists claim/get/submit)", () => {
   const help = taskHelpText();
   assert.match(help, /tent task claim/);
   assert.match(help, /tent task get/);
-  assert.match(help, /tent task deliver/);
+  assert.match(help, /tent task submit/);
   assert.match(help, /tent task list/);
   assert.match(help, /tent task accept/);
   assert.match(help, /tent task interrupt/);

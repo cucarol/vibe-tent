@@ -1,7 +1,6 @@
 // Grok ACP ProviderAdapter — first real push provider for Tent Desktop MVP.
 // Machine-local credentials + Grok2API/OpenAI-compatible base URL via process env.
 
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
@@ -55,14 +54,9 @@ export interface GrokAcpAdapterOptions {
    */
   resolveApiKey?: (envKey: string, planEnv: Record<string, string>) => string | undefined;
   /**
-   * Resolve CPA base URL for baseUrlEnvKey / route.baseUrl.
-   * Default: planEnv[key] ?? process.env[key] ?? route.baseUrl.
+   * Resolve the canonical machine-local provider endpoint.
    */
-  resolveBaseUrl?: (
-    baseUrlEnvKey: string,
-    planEnv: Record<string, string>,
-    routeBaseUrl?: string
-  ) => string | undefined;
+  resolveEndpoint?: (endpoint: string | undefined) => string | undefined;
   /**
    * Optional permission ask resolver (Local Service tool-approval bridge / tests).
    * When omitted and policy=ask, permissions deny (safe default; never auto-allow).
@@ -77,7 +71,7 @@ export interface GrokAcpAdapterOptions {
   }) => Promise<"allow" | "deny">;
 }
 
-function defaultGrokExecutable(): string {
+export function defaultGrokExecutable(): string {
   if (process.platform === "win32") {
     const home = process.env.USERPROFILE || os.homedir();
     return path.join(home, ".grok", "bin", "grok.exe");
@@ -89,13 +83,6 @@ function defaultGrokExecutable(): string {
 function defaultGrokIsolatedHome(): string {
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   return path.join(home, ".grok-acp", "home");
-}
-
-function injectFlagBeforeStdio(args: string[], flag: string, value?: string): void {
-  if (args.includes(flag)) return;
-  const stdioIdx = args.indexOf("stdio");
-  if (stdioIdx < 0) return;
-  args.splice(stdioIdx, 0, flag, ...(value === undefined ? [] : [value]));
 }
 
 const DISABLED_COMPATIBILITY_ENV = [
@@ -118,7 +105,6 @@ function normalizeGrokOpts(raw: unknown): Required<
     GrokAcpRouteOptions,
     | "model"
     | "envKey"
-    | "baseUrlEnvKey"
     | "promptTimeoutMs"
     | "permissionPolicy"
     | "permissionTimeoutMs"
@@ -130,17 +116,12 @@ function normalizeGrokOpts(raw: unknown): Required<
   const permissionPolicy: GrokAcpPermissionPolicy =
     policy === "allow" || policy === "ask" || policy === "deny" ? policy : "deny";
   return {
-    executable: o.executable,
     model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : DEFAULT_GROK_MODEL,
     envKey:
       typeof o.envKey === "string" && o.envKey.trim()
         ? o.envKey.trim()
         : DEFAULT_GROK_ENV_KEY,
-    baseUrlEnvKey:
-      typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim()
-        ? o.baseUrlEnvKey.trim()
-        : DEFAULT_GROK_BASE_URL_ENV_KEY,
-    baseUrl: typeof o.baseUrl === "string" && o.baseUrl.trim() ? o.baseUrl.trim() : undefined,
+    endpoint: typeof o.endpoint === "string" && o.endpoint.trim() ? o.endpoint.trim() : undefined,
     promptTimeoutMs:
       typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0
         ? o.promptTimeoutMs
@@ -167,23 +148,14 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     envKey: string,
     planEnv: Record<string, string>
   ) => string | undefined;
-  private readonly resolveBaseUrl: (
-    baseUrlEnvKey: string,
-    planEnv: Record<string, string>,
-    routeBaseUrl?: string
-  ) => string | undefined;
+  private readonly resolveEndpoint: (endpoint: string | undefined) => string | undefined;
   private readonly onPermissionAsk?: GrokAcpAdapterOptions["onPermissionAsk"];
 
   constructor(options: GrokAcpAdapterOptions = {}) {
     this.resolveApiKey =
       options.resolveApiKey ??
       ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
-    this.resolveBaseUrl =
-      options.resolveBaseUrl ??
-      ((baseUrlEnvKey, planEnv, routeBaseUrl) =>
-        normalizeCpaBaseUrl(
-          planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? routeBaseUrl
-        ));
+    this.resolveEndpoint = options.resolveEndpoint ?? normalizeCpaBaseUrl;
     this.onPermissionAsk = options.onPermissionAsk;
   }
 
@@ -198,64 +170,27 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
    */
   resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
-    const command = plan.command || opts.executable || defaultGrokExecutable();
+    const command = plan.command?.trim();
+    if (!command) throw new Error("Agent Connection is missing canonical command");
+    if (!Array.isArray(plan.args)) throw new Error("Agent Connection is missing canonical args");
     const model = opts.model;
     const envKey = opts.envKey;
-    const baseUrlEnvKey = opts.baseUrlEnvKey;
     const apiKey = this.resolveApiKey(envKey, plan.env);
-    const baseUrl = this.resolveBaseUrl(baseUrlEnvKey, plan.env, opts.baseUrl);
+    const endpoint = this.resolveEndpoint(opts.endpoint);
 
     if (!apiKey || !apiKey.trim()) {
       throw new Error(
         `未配置环境变量 ${envKey}：grok-acp 需要本机 CPA Grok API key（仅 service 进程环境）。` +
           `不会回退官方 xAI（api.x.ai），也不会回退 fake provider。` +
           `请在启动 Local Service 前设置 ${envKey}` +
-          (baseUrlEnvKey ? `（可选 ${baseUrlEnvKey}=CPA base URL）` : "") +
           `；切勿把 key/URL 写入 workspace/Node/Task。`
       );
-    }
-
-    if (!plan.command && opts.executable) {
-      if (!fs.existsSync(opts.executable)) {
-        throw new Error(
-          `Grok 可执行文件不存在: ${opts.executable}。请在 machine-local Agent Connection 中配置正确路径。`
-        );
-      }
-    } else if (!plan.command) {
-      if (!fs.existsSync(command)) {
-        throw new Error(
-          `未找到 Grok 可执行文件: ${command}。请安装 grok CLI 或在 Agent Connection 中设置 executable。`
-        );
-      }
     }
 
     // Tent is the ACP client. Do not launch the one-shot invoke-grok-acp wrapper
     // (it is another ACP client). Instead absorb its transparent provider launch
     // contract here: isolated Grok config, no leader, and both proxy base URLs.
-    // When plan.args is custom (tests/explicit executable), preserve it and only
-    // complete the same grok-agent-stdio flag contract.
-    let args: string[];
-    if (plan.args && plan.args.length > 0) {
-      args = [...plan.args];
-      if (args.includes("agent") && args.includes("stdio")) {
-        injectFlagBeforeStdio(args, "--no-leader");
-        if (baseUrl) {
-          injectFlagBeforeStdio(args, "--cli-chat-proxy-base-url", baseUrl);
-          injectFlagBeforeStdio(args, "--xai-api-base-url", baseUrl);
-        }
-      }
-    } else {
-      args = ["agent", "--model", model, "--no-leader"];
-      if (baseUrl) {
-        args.push(
-          "--cli-chat-proxy-base-url",
-          baseUrl,
-          "--xai-api-base-url",
-          baseUrl
-        );
-      }
-      args.push("stdio");
-    }
+    const args = [...plan.args];
 
     const env: Record<string, string> = {
       ...plan.env,
@@ -267,18 +202,17 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       TENT_GROK_MODEL: model,
     };
 
-    if (baseUrl) {
+    if (endpoint) {
       // Propagate CPA base URL through common env names Grok / OpenAI-compat stacks read.
-      env[baseUrlEnvKey] = baseUrl;
-      env.XAI_API_BASE_URL = baseUrl;
-      env.OPENAI_BASE_URL = baseUrl;
-      env.OPENAI_API_BASE = baseUrl;
-      env.TENT_GROK_BASE_URL = baseUrl;
-      env.GROK_MODELS_BASE_URL = baseUrl;
-      env.GROK_MODELS_LIST_URL = `${baseUrl}/models`;
+      env.XAI_API_BASE_URL = endpoint;
+      env.OPENAI_BASE_URL = endpoint;
+      env.OPENAI_API_BASE = endpoint;
+      env.TENT_GROK_BASE_URL = endpoint;
+      env.GROK_MODELS_BASE_URL = endpoint;
+      env.GROK_MODELS_LIST_URL = `${endpoint}/models`;
     }
 
-    // Resolve the executable before these child-only overrides. Managed workers
+    // Resolve the exact command before these child-only overrides. Managed workers
     // use the dedicated config (chat-completions main model + Responses search
     // helper) and do not inherit unrelated Claude/Cursor skills, hooks or MCPs.
     const isolatedHome = defaultGrokIsolatedHome();
@@ -379,25 +313,25 @@ export function createGrokAcpAdapter(
   return new GrokAcpProviderAdapter(options);
 }
 
-/** Machine-local Connection template — secrets only via env key names/optional baseUrl. */
+/** Machine-local Connection template with exact command + complete argv. */
 export function grokAcpRouteTemplate(overrides?: {
   connectionId?: string;
-  executable?: string;
+  command?: string;
+  args?: string[];
   model?: string;
   envKey?: string;
-  baseUrlEnvKey?: string;
-  baseUrl?: string;
+  endpoint?: string;
   permissionPolicy?: GrokAcpPermissionPolicy;
   promptTimeoutMs?: number;
 }): {
   connectionId: string;
   provider: string;
   adapterId: string;
-  executable?: string;
+  command: string;
+  args: string[];
   model: string;
   envKey: string;
-  baseUrlEnvKey: string;
-  baseUrl?: string;
+  endpoint?: string;
   permissionPolicy: GrokAcpPermissionPolicy;
   promptTimeoutMs?: number;
 } {
@@ -405,11 +339,20 @@ export function grokAcpRouteTemplate(overrides?: {
     connectionId: overrides?.connectionId ?? "grok-acp-default",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
-    executable: overrides?.executable,
+    command: overrides?.command ?? defaultGrokExecutable(),
+    args: overrides?.args ?? [
+      "agent",
+      "--model",
+      overrides?.model ?? DEFAULT_GROK_MODEL,
+      "--no-leader",
+      ...(overrides?.endpoint
+        ? ["--cli-chat-proxy-base-url", overrides.endpoint, "--xai-api-base-url", overrides.endpoint]
+        : []),
+      "stdio",
+    ],
     model: overrides?.model ?? DEFAULT_GROK_MODEL,
     envKey: overrides?.envKey ?? DEFAULT_GROK_ENV_KEY,
-    baseUrlEnvKey: overrides?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY,
-    baseUrl: overrides?.baseUrl,
+    endpoint: overrides?.endpoint,
     permissionPolicy: overrides?.permissionPolicy ?? "deny",
     promptTimeoutMs: overrides?.promptTimeoutMs,
   };

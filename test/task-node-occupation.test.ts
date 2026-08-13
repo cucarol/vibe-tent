@@ -34,7 +34,7 @@ test("context Nodes are shared read context and never occupy", () => {
 });
 
 test("only active Tasks occupy their work Nodes", () => {
-  const activeStates = ["queued", "running", "waiting", "delivered"] as const;
+  const activeStates = ["queued", "running", "waiting", "submitted"] as const;
   for (const state of activeStates) {
     const active = task(`tk-${state}`, ["cx-work"], [], state);
     assert.deepEqual(listDirectActiveTasksForNode("cx-work", [active]), [active]);

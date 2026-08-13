@@ -24,7 +24,9 @@ export type CanvasNodeSnapshot = {
   etag?: string;
 };
 
-export type CanvasSnapshotSource = Omit<CanvasNodeSnapshot, "version" | "etag"> & {
+export type CanvasSnapshotSource = Omit<CanvasNodeSnapshot, "version" | "etag" | "type"> & {
+  /** Graph preserves an omitted Node.type. Canvas only needs a local label. */
+  type?: string;
   etag: string;
 };
 
@@ -55,7 +57,7 @@ export function captureCanvasNodeSnapshot(
     name: source.name,
     ...(source.title?.trim() ? { title: source.title } : {}),
     path: source.path,
-    type: source.type,
+    type: source.type ?? "",
     tags: [...source.tags],
     mode: source.mode,
     archived: source.archived,

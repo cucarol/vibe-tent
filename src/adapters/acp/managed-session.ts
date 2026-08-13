@@ -1,4 +1,4 @@
-// Provider-neutral managed ACP session: connect + bootstrap prompt + delivery events.
+// Provider-neutral managed ACP session: connect + bootstrap prompt + result events.
 // Adapters supply a connected-ready client (AcpClient or thin wrapper); no argv/auth here.
 
 import type {
@@ -45,7 +45,7 @@ export type AcpPermissionAskHooks = {
 
 export class AcpManagedSession implements ManagedSession {
   /** Depth of in-flight managed session/prompt turns (bootstrap + U2A). */
-  private turnBusyDepth = 0;
+  private turnActiveDepth = 0;
   private bootstrapDone: Promise<void>;
 
   constructor(
@@ -77,8 +77,8 @@ export class AcpManagedSession implements ManagedSession {
    * Turn busy ≠ session live. Session may remain alive between turns;
    * busy means a managed prompt is still settling (tools/response not done).
    */
-  isTurnBusy(): boolean {
-    return this.turnBusyDepth > 0;
+  isTurnActive(): boolean {
+    return this.turnActiveDepth > 0;
   }
 
   /** Tests / callers may await bootstrap completion (prompt path finished). */
@@ -88,7 +88,7 @@ export class AcpManagedSession implements ManagedSession {
 
   /**
    * U2A follow-up: send a fixed-format user answer as the next session/prompt.
-   * Same delivery rules as bootstrap — end_turn + non-empty text → prompt_complete.
+   * Same result rules as bootstrap — end_turn + non-empty text → prompt_complete.
    */
   async sendFollowUpPrompt(prompt: string): Promise<void> {
     if (this.stopRequested || !this.client.isAlive()) {
@@ -131,11 +131,11 @@ export class AcpManagedSession implements ManagedSession {
 
   /** Track turn busy/idle around one managed session/prompt. */
   private async runTurn(work: () => Promise<void>): Promise<void> {
-    this.turnBusyDepth += 1;
+    this.turnActiveDepth += 1;
     try {
       await work();
     } finally {
-      this.turnBusyDepth = Math.max(0, this.turnBusyDepth - 1);
+      this.turnActiveDepth = Math.max(0, this.turnActiveDepth - 1);
     }
   }
 }
@@ -245,13 +245,13 @@ function runManagedBootstrapPrompt(
       // Only successful end_turn with non-empty message is a deliverable report.
       if (stopReason !== "end_turn") {
         client.reportFailed(
-          `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
+          `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-result)`
         );
         await stopAcpClientQuiet(client);
         return;
       }
       if (!assistantText) {
-        client.reportFailed("ACP assistant response empty (no auto-delivery)");
+        client.reportFailed("ACP assistant response empty (no auto-result)");
         await stopAcpClientQuiet(client);
         return;
       }
@@ -339,7 +339,7 @@ export async function resumeManagedAcpSession(
   }
 
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
-  // Optional post-load/resume prompt only — empty means stay live without auto-delivery.
+  // Optional post-load/resume prompt only — empty means stay live without auto-result.
   const session = new AcpManagedSession(plan.sessionId, client, emit);
   if (bootstrap) {
     session.beginBackgroundTurn(() =>

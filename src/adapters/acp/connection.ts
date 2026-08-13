@@ -116,22 +116,16 @@ export function normalizeAcpPermissionPolicy(
 
 /** Shared timeout + permissionPolicy normalization; does not invent model/envKey defaults. */
 export function normalizeSharedAcpOpts(raw: unknown): {
-  executable?: string;
   model?: string;
   envKey?: string;
   launchSecretRef?: string;
-  baseUrlEnvKey?: string;
-  baseUrl?: string;
+  endpoint?: string;
   promptTimeoutMs: number;
   permissionPolicy: AcpPermissionPolicy;
   permissionTimeoutMs: number;
 } {
   const o = (raw && typeof raw === "object" ? raw : {}) as AcpRouteOptions;
   return {
-    executable:
-      typeof o.executable === "string" && o.executable.trim()
-        ? o.executable.trim()
-        : undefined,
     model:
       typeof o.model === "string" && o.model.trim() ? o.model.trim() : undefined,
     envKey:
@@ -142,13 +136,9 @@ export function normalizeSharedAcpOpts(raw: unknown): {
       typeof o.launchSecretRef === "string" && o.launchSecretRef.trim()
         ? o.launchSecretRef.trim()
         : undefined,
-    baseUrlEnvKey:
-      typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim()
-        ? o.baseUrlEnvKey.trim()
-        : undefined,
-    baseUrl:
-      typeof o.baseUrl === "string" && o.baseUrl.trim()
-        ? o.baseUrl.trim()
+    endpoint:
+      typeof o.endpoint === "string" && o.endpoint.trim()
+        ? o.endpoint.trim()
         : undefined,
     promptTimeoutMs:
       typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0
@@ -196,7 +186,7 @@ export function defaultNpxLaunch(): { command: string; argsPrefix: string[] } {
   const npxCli = candidates.find((candidate) => fs.existsSync(candidate));
   if (!npxCli) {
     throw new Error(
-      "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an explicit ACP executable"
+      "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an exact Connection command"
     );
   }
   const adjacentNode = path.resolve(npxCli, "..", "..", "..", "..", "node.exe");
@@ -207,31 +197,16 @@ export function defaultNpxLaunch(): { command: string; argsPrefix: string[] } {
 }
 
 /**
- * Resolve command/args for npx-based ACP bridges.
- * Precedence: plan.command/args → Connection executable → package defaults.
+ * Read exact command/args already materialized on the Connection.
  */
 export function resolveNpxAcpLaunch(input: {
   planCommand?: string;
   planArgs?: string[];
-  executable?: string;
-  defaultPackage: string;
 }): { command: string; args: string[] } {
-  const defaultArgs = ["--yes", input.defaultPackage];
-  const usingDefaultLauncher =
-    !(typeof input.planCommand === "string" && input.planCommand.trim()) &&
-    !input.executable;
-  const defaultLaunch = usingDefaultLauncher ? defaultNpxLaunch() : undefined;
-  const command =
-    (typeof input.planCommand === "string" && input.planCommand.trim()
-      ? input.planCommand.trim()
-      : undefined) ||
-    input.executable ||
-    defaultLaunch!.command;
-  const args =
-    input.planArgs && input.planArgs.length > 0
-      ? [...input.planArgs]
-      : usingDefaultLauncher
-        ? [...defaultLaunch!.argsPrefix, ...defaultArgs]
-        : [];
-  return { command, args };
+  const command = input.planCommand?.trim();
+  if (!command) throw new Error("Agent Connection is missing canonical command");
+  if (!Array.isArray(input.planArgs)) {
+    throw new Error("Agent Connection is missing canonical args");
+  }
+  return { command, args: [...input.planArgs] };
 }

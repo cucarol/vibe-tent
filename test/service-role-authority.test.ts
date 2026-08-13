@@ -318,7 +318,7 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
     assert.ok(!note.error, JSON.stringify(note.error));
     const nodeId = (note.result as { nodeId: string }).nodeId;
     const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -375,7 +375,7 @@ test("registry.role.delete ignores unrelated live Connection Session", async () 
       contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "unrelated Connection work",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     assert.ok(!started.error, JSON.stringify(started.error));
 
@@ -415,7 +415,7 @@ test("Connection dispatch starts an exact Session without writing Role state", a
       if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
     });
     const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],

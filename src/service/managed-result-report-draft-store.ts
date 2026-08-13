@@ -1,13 +1,13 @@
-// Machine-local managed Delivery *report draft* preservation.
+// Machine-local managed TaskResult *report draft* preservation.
 //
 // Scope: the complete bounded final assistantText for one managed turn, including
 // blocked/needs-input control reports. Not chat history, not a sixth pending-
-// interaction surface, and not a ready Delivery under temp/*/deliveries.
+// interaction surface, and not a ready TaskResult under temp/*/results.
 //
 // Survives service restart so seal / dirty-worktree / collect / integrate /
-// task.deliver failures can retry without re-prompting the Agent.
-// Cleared only after a successful Delivery publish or after the full return is
-// durably projected into Task.lastReturn (including terminal promotion).
+// task.submit failures can retry without re-prompting the Agent.
+// Cleared only after a successful TaskResult publish or after the full return is
+// durably projected into Task.statusDetail (including terminal promotion).
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -18,7 +18,7 @@ import {
   writeJsonAtomic,
 } from "../machine-state.js";
 
-export interface ManagedDeliveryReportDraft {
+export interface ManagedTaskResultReportDraft {
   id: string;
   workspaceId: string;
   taskPath: string;
@@ -34,11 +34,11 @@ export interface ManagedDeliveryReportDraft {
   attemptCount: number;
 }
 
-export type ManagedDeliveryReportDraftStoreOptions = {
+export type ManagedTaskResultReportDraftStoreOptions = {
   writeState?: (filePath: string, value: unknown) => Promise<void>;
 };
 
-function cloneDraft(item: ManagedDeliveryReportDraft): ManagedDeliveryReportDraft {
+function cloneDraft(item: ManagedTaskResultReportDraft): ManagedTaskResultReportDraft {
   return { ...item };
 }
 
@@ -63,7 +63,7 @@ function draftKey(workspaceId: string, taskPath: string): string {
 }
 
 /** Parse untrusted machine state before any clone/projection touches it. */
-function parseDraft(value: unknown): ManagedDeliveryReportDraft | null {
+function parseDraft(value: unknown): ManagedTaskResultReportDraft | null {
   if (!isRecord(value)) return null;
   const {
     id,
@@ -117,7 +117,7 @@ function parseDraft(value: unknown): ManagedDeliveryReportDraft | null {
   };
 }
 
-export function makeManagedDeliveryReportDraftId(
+export function makeManagedTaskResultReportDraftId(
   rand: () => number = Math.random
 ): string {
   const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -130,18 +130,18 @@ export function makeManagedDeliveryReportDraftId(
  * Single-process store for managed auto-deliver report drafts.
  * One open draft per workspaceId+taskPath. Mutations + disk are serialized.
  */
-export class ManagedDeliveryReportDraftStore {
+export class ManagedTaskResultReportDraftStore {
   private readonly file: string;
   /** Key = workspaceId::taskPath */
-  private items = new Map<string, ManagedDeliveryReportDraft>();
+  private items = new Map<string, ManagedTaskResultReportDraft>();
   private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private loaded = false;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(dataDir: string, options?: ManagedDeliveryReportDraftStoreOptions) {
-    this.file = path.join(dataDir, "managed-delivery-report-drafts.json");
+  constructor(dataDir: string, options?: ManagedTaskResultReportDraftStoreOptions) {
+    this.file = path.join(dataDir, "managed-result-report-drafts.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
 
@@ -184,7 +184,7 @@ export class ManagedDeliveryReportDraftStore {
           this.loaded = true;
           return;
         }
-        const loaded = new Map<string, ManagedDeliveryReportDraft>();
+        const loaded = new Map<string, ManagedTaskResultReportDraft>();
         for (const item of items ?? []) {
           const restored = parseDraft(item);
           if (!restored) {
@@ -212,10 +212,10 @@ export class ManagedDeliveryReportDraftStore {
   async get(
     workspaceId: string,
     taskPath: string
-  ): Promise<ManagedDeliveryReportDraft | undefined> {
+  ): Promise<ManagedTaskResultReportDraft | undefined> {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
       throw new Error(
-        "ManagedDeliveryReportDraft.get requires workspaceId and taskPath"
+        "ManagedTaskResultReportDraft.get requires workspaceId and taskPath"
       );
     }
     await this.ensureLoaded();
@@ -226,7 +226,7 @@ export class ManagedDeliveryReportDraftStore {
   /**
    * List open drafts (optional workspace filter). Operational diagnostics only.
    */
-  async list(workspaceId?: string): Promise<ManagedDeliveryReportDraft[]> {
+  async list(workspaceId?: string): Promise<ManagedTaskResultReportDraft[]> {
     await this.ensureLoaded();
     return [...this.items.values()]
       .filter((i) => !workspaceId || i.workspaceId === workspaceId)
@@ -244,25 +244,25 @@ export class ManagedDeliveryReportDraftStore {
     taskId?: string;
     sessionId: string;
     assistantText: string;
-  }): Promise<ManagedDeliveryReportDraft> {
-    if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+  }): Promise<ManagedTaskResultReportDraft> {
+    if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
     const workspaceId = input.workspaceId?.trim();
     const taskPath = input.taskPath?.trim();
     const sessionId = input.sessionId?.trim();
     const assistantText = input.assistantText?.trim();
     if (!workspaceId || !taskPath || !sessionId || !assistantText) {
       throw new Error(
-        "ManagedDeliveryReportDraft.preserve requires workspaceId, taskPath, sessionId, and non-empty assistantText"
+        "ManagedTaskResultReportDraft.preserve requires workspaceId, taskPath, sessionId, and non-empty assistantText"
       );
     }
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+      if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
       const key = draftKey(workspaceId, taskPath);
       const now = new Date().toISOString();
       const existing = this.items.get(key);
       const taskId = input.taskId?.trim();
-      const nextRow: ManagedDeliveryReportDraft = existing
+      const nextRow: ManagedTaskResultReportDraft = existing
         ? {
             ...existing,
             sessionId,
@@ -272,7 +272,7 @@ export class ManagedDeliveryReportDraftStore {
             ...(taskId ? { taskId } : existing.taskId ? { taskId: existing.taskId } : {}),
           }
         : {
-            id: makeManagedDeliveryReportDraftId(),
+            id: makeManagedTaskResultReportDraftId(),
             workspaceId,
             taskPath,
             ...(taskId ? { taskId } : {}),
@@ -300,23 +300,23 @@ export class ManagedDeliveryReportDraftStore {
     workspaceId: string,
     taskPath: string,
     error: string
-  ): Promise<ManagedDeliveryReportDraft | undefined> {
-    if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+  ): Promise<ManagedTaskResultReportDraft | undefined> {
+    if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
     if (!workspaceId?.trim() || !taskPath?.trim()) {
       throw new Error(
-        "ManagedDeliveryReportDraft.markFailed requires workspaceId and taskPath"
+        "ManagedTaskResultReportDraft.markFailed requires workspaceId and taskPath"
       );
     }
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+      if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
       const key = draftKey(workspaceId, taskPath);
       const item = this.items.get(key);
       if (!item) return undefined;
       const now = new Date().toISOString();
       const message =
-        (error || "managed auto-deliver failed").trim() || "managed auto-deliver failed";
-      const nextRow: ManagedDeliveryReportDraft = {
+        (error || "managed auto-submit failed").trim() || "managed auto-submit failed";
+      const nextRow: ManagedTaskResultReportDraft = {
         ...item,
         updatedAt: now,
         lastError: message,
@@ -330,19 +330,19 @@ export class ManagedDeliveryReportDraftStore {
   }
 
   /**
-   * Remove draft after successful Delivery or durable Task return projection.
+   * Remove draft after successful TaskResult or durable Task return projection.
    * Idempotent when already absent.
    */
   async clear(workspaceId: string, taskPath: string): Promise<boolean> {
-    if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+    if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
     if (!workspaceId?.trim() || !taskPath?.trim()) {
       throw new Error(
-        "ManagedDeliveryReportDraft.clear requires workspaceId and taskPath"
+        "ManagedTaskResultReportDraft.clear requires workspaceId and taskPath"
       );
     }
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
+      if (this.closed) throw new Error("ManagedTaskResultReportDraft store is closed");
       const key = draftKey(workspaceId, taskPath);
       if (!this.items.has(key)) return false;
       const next = new Map(this.items);
@@ -367,7 +367,7 @@ export class ManagedDeliveryReportDraftStore {
   }
 
   private async persistSnapshot(
-    snapshot: Map<string, ManagedDeliveryReportDraft>
+    snapshot: Map<string, ManagedTaskResultReportDraft>
   ): Promise<void> {
     // Only open drafts are retained; published rows are deleted via clear().
     const items = [...snapshot.values()];

@@ -14,7 +14,7 @@ export type UndoPolicy = "layout" | "reversible-domain" | "lifecycle";
 
 /** Base fields shared by every UI intent. */
 export type UiIntentBase = {
-  /** Stable intent type id (e.g. "canvas.pan", "task.deliver"). */
+  /** Stable intent type id (e.g. "canvas.pan", "task.submit"). */
   type: string;
   undoPolicy: UndoPolicy;
   /** Optional correlation for projection invalidation / tracing. */

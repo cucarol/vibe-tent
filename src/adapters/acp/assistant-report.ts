@@ -1,5 +1,5 @@
 /**
- * Shared contract: managed Delivery.summary is the final user-facing assistant
+ * Shared contract: managed TaskResult.summary is the final user-facing assistant
  * reply for one session/prompt turn — not intermediate narrations, tool chatter,
  * or status/thought diagnostics.
  *

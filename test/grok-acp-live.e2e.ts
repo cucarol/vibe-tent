@@ -24,9 +24,9 @@ async function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("live start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
-  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
-  return runtime.startSession({ ...start, lastTaskId, workspace });
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, currentTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, currentTaskId, workspace });
 }
 
 async function pollUntil<T>(
@@ -39,7 +39,7 @@ async function pollUntil<T>(
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("Timed out waiting for real Grok ACP delivery");
+  throw new Error("Timed out waiting for real Grok ACP result");
 }
 
 function waitForRuntimeEvent(
@@ -63,7 +63,6 @@ function liveConnection() {
     adapterId: GROK_ACP_ADAPTER_ID,
     model: process.env.CPA_GROK_MODEL || "grok-4.5",
     envKey: DEFAULT_GROK_ENV_KEY,
-    baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
     permissionPolicy: "deny" as const,
     promptTimeoutMs: 180_000,
   };
@@ -114,12 +113,12 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     assert.ok(!created.error, JSON.stringify(created.error));
     const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc("task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
       connectionId: "grok-live-e2e",
-      prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
+      prompt: "Reply with a short result report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -129,11 +128,11 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       const got = await rpc("task.get", { workspaceId, taskPath });
       assert.ok(!got.error, JSON.stringify(got.error));
       const task = (got.result as { task: { state: string } }).task;
-      return task.state === "delivered" ? task : null;
+      return task.state === "submitted" ? task : null;
     });
-    assert.equal(delivered.state, "delivered");
+    assert.equal(delivered.state, "submitted");
 
-    const deliveries = await rpc("delivery.list", { workspaceId });
+    const deliveries = await rpc("taskResult.list", { workspaceId });
     assert.ok(!deliveries.error, JSON.stringify(deliveries.error));
     const rows = (deliveries.result as { deliveries: Array<{ id: string; summary: string }> }).deliveries;
     assert.equal(rows.length, 1);
@@ -142,7 +141,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     const accepted = await rpc("task.accept", {
       workspaceId,
       taskPath,
-      deliveryId: rows[0]!.id,
+      resultId: rows[0]!.id,
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));

@@ -67,10 +67,7 @@ test("scaffoldTent:core 生成自包含帐骨架(index,不进 SPEC/CLAUDE/AGENTS
   assert.equal(await fsa.exists(".tent/skills.json"), false);
   assert.deepEqual((await loadRolesRegistry(fsa)).roles, []);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, []);
-  assert.deepEqual(
-    JSON.parse(await fsa.readFile("types.json")),
-    tent.typeRegistry,
-  );
+  assert.equal(await fsa.exists("types.json"), false);
   assert.equal(await fsa.exists(".gitignore"), false, "system-root scaffold 不写 workspace gitignore");
 
   const invalidDir = await fs.mkdtemp(
@@ -342,15 +339,6 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    // Custom secondary may be present; V0.2 normalize strips R/W/color chrome to tier only
-    typeRegistry: {
-      goal: { tier: "base" },
-      prompt: { tier: "base" },
-      output: { tier: "base" },
-      reference: { tier: "modifier" },
-      asset: { tier: "modifier" },
-      task: { tier: "modifier" },
-    },
     rolesRegistry: {
       roles: [
         {
@@ -360,8 +348,6 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
       ],
     },
   });
-  // loadTent normalizes to slim tier-only defs (no color / R/W axes)
-  assert.deepEqual((await loadTent(fsa)).typeRegistry.task, { tier: "modifier" });
   assert.deepEqual(
     (await loadRolesRegistry(fsa)).roles.map((role) => role.name),
     ["analyst"],

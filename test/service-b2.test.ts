@@ -741,7 +741,7 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     const nodeId = (created.result as { nodeId: string }).nodeId;
 
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -777,9 +777,9 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     const collaboration = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
     assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
     const projection = collaboration.result as {
-      activeTask: null | { task: { roleId?: string; sessionId?: string } };
+      activeTask: null | { task: { assigneeRoleId?: string; executionSessionId?: string } };
     };
-    assert.equal(projection.activeTask?.task.roleId, "rl-executor");
+    assert.equal(projection.activeTask?.task.assigneeRoleId, "rl-executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
@@ -1148,7 +1148,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
       contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "seed dead session reconciliation",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const dispatchedResult = dispatched.result as {

@@ -21,7 +21,7 @@ test("Role and Task Skills keep the lightweight durable-work contract", async ()
     const normalized = text.replace(/\s+/g, " ");
     assert.match(
       normalized,
-      /Task and (?:its )?Delivery report (?:are|is) the default durable/i
+      /Task and (?:its )?TaskResult report (?:are|is) the default durable/i
     );
     assert.match(normalized, /across Tasks or Sessions/i);
     assert.match(normalized, /existing relevant writable Node/i);

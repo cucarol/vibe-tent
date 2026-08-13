@@ -704,7 +704,7 @@ test("delayed Canvas API sync applies the latest direct-mount viewport after mou
     applyViewport: (value) => applied.push(value),
   });
 
-  assert.deepEqual(applied, [], "API delivery does not synchronously update an unmounted engine");
+  assert.deepEqual(applied, [], "API result does not synchronously update an unmounted engine");
   viewport = { x: -210, y: -95, zoom: 1 };
   assert.ok(queued);
   (queued as () => void)();

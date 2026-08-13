@@ -375,18 +375,18 @@ function startConnection(
   const { connectionId, ...start } = request;
   const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
   if (!workspace) throw new Error("test start requires a workspace");
-  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  const currentTaskId = start.currentTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
   return runtime.reserveSession({
     sessionId: start.sessionId,
     connectionId,
-    lastTaskId,
+    currentTaskId,
     workspace,
     workspaceLane: start.workspaceLane,
     runtimeWorkspace: start.runtimeWorkspace,
     cwd: start.cwd,
   }).then(() => runtime.startSession({
     ...start,
-    lastTaskId,
+    currentTaskId,
     workspace,
     env: { ...mockLaunchEnvByConnection.get(connectionId), ...start.env },
   }));
@@ -468,7 +468,6 @@ test("resolveLaunch fails loud without API key (Chinese, no fake/xAI fallback)",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY" } },
-        // Skip filesystem executable check by providing command override path that exists
         command: process.execPath,
         args: ["agent", "--model", "grok-4.5", "stdio"],
       }),
@@ -493,11 +492,11 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
     cwd: process.cwd(),
     env: {},
     command: process.execPath,
+    args: ["agent", "--model", "grok-4.5", "stdio"],
     extras: {
       acp: {
         model: "grok-4.5",
         envKey: "CPA_GROK_API_KEY",
-        executable: process.execPath,
       },
     },
   });
@@ -520,16 +519,18 @@ test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
     sessionId: "ss-base01",
     connectionId: "grok-acp-default",
     cwd: process.cwd(),
-    env: {
-      [DEFAULT_GROK_BASE_URL_ENV_KEY]: "http://127.0.0.1:8320/v1/",
-    },
+    env: {},
     command: process.execPath,
+    args: [
+      "agent", "--model", "grok-4.5", "--no-leader",
+      "--cli-chat-proxy-base-url", "http://127.0.0.1:8320/v1",
+      "--xai-api-base-url", "http://127.0.0.1:8320/v1", "stdio",
+    ],
     extras: {
       acp: {
         model: "grok-4.5",
         envKey: DEFAULT_GROK_ENV_KEY,
-        baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
-        executable: process.execPath,
+        endpoint: "http://127.0.0.1:8320/v1",
       },
     },
   });
@@ -547,7 +548,6 @@ test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
   assert.equal(launch.env.XAI_API_BASE_URL, "http://127.0.0.1:8320/v1");
   assert.equal(launch.env.OPENAI_BASE_URL, "http://127.0.0.1:8320/v1");
   assert.equal(launch.env.OPENAI_API_BASE, "http://127.0.0.1:8320/v1");
-  assert.equal(launch.env[DEFAULT_GROK_BASE_URL_ENV_KEY], "http://127.0.0.1:8320/v1");
   assert.equal(launch.env.TENT_GROK_BASE_URL, "http://127.0.0.1:8320/v1");
   assert.equal(launch.env.GROK_MODELS_BASE_URL, "http://127.0.0.1:8320/v1");
   assert.equal(launch.env.GROK_MODELS_LIST_URL, "http://127.0.0.1:8320/v1/models");
@@ -559,11 +559,9 @@ test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
   assert.doesNotMatch(launch.args.join(" "), /api\.x\.ai/);
 });
 
-test("resolveLaunch accepts machine-local Connection baseUrl when env unset", () => {
+test("resolveLaunch projects the canonical endpoint to provider env without changing argv", () => {
   const adapter = createGrokAcpAdapter({
     resolveApiKey: () => "k",
-    resolveBaseUrl: (_key, planEnv, connectionBaseUrl) =>
-      planEnv.CPA_GROK_BASE_URL ?? connectionBaseUrl,
   });
   const launch = adapter.resolveLaunch({
     sessionId: "ss-base02",
@@ -571,27 +569,28 @@ test("resolveLaunch accepts machine-local Connection baseUrl when env unset", ()
     cwd: process.cwd(),
     env: {},
     command: process.execPath,
+    args: ["agent", "--model", "grok-4.5", "stdio"],
     extras: {
       acp: {
         model: "grok-4.5",
         envKey: "CPA_GROK_API_KEY",
-        baseUrl: "http://10.0.0.2:8320/v1",
-        executable: process.execPath,
+        endpoint: "http://10.0.0.2:8320/v1",
       },
     },
   });
   assert.equal(launch.env.XAI_API_BASE_URL, "http://10.0.0.2:8320/v1");
-  assert.ok(launch.args.includes("--xai-api-base-url"));
-  assert.ok(launch.args.includes("--cli-chat-proxy-base-url"));
+  assert.deepEqual(launch.args, ["agent", "--model", "grok-4.5", "stdio"]);
 });
 
-test("Grok Agent Connection template includes baseUrlEnvKey name only", () => {
-  const t = grokAcpRouteTemplate({ model: "grok-4.5" });
-  assert.equal(t.baseUrlEnvKey, DEFAULT_GROK_BASE_URL_ENV_KEY);
-  assert.equal(t.baseUrl, undefined);
-  const json = JSON.stringify(t);
-  assert.ok(json.includes("CPA_GROK_BASE_URL"));
-  assert.doesNotMatch(json, /127\.0\.0\.1|8320/);
+test("Grok Agent Connection template materializes exact command and complete argv", () => {
+  const t = grokAcpRouteTemplate({ model: "grok-4.5", endpoint: "http://127.0.0.1:8320/v1" });
+  assert.equal(t.endpoint, "http://127.0.0.1:8320/v1");
+  assert.ok(t.command);
+  assert.deepEqual(t.args, [
+    "agent", "--model", "grok-4.5", "--no-leader",
+    "--cli-chat-proxy-base-url", "http://127.0.0.1:8320/v1",
+    "--xai-api-base-url", "http://127.0.0.1:8320/v1", "stdio",
+  ]);
 });
 
 test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
@@ -642,7 +641,7 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
   );
 
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, true);
+  assert.equal(probe.isAlive, true);
   assert.equal(probe.state, "live");
 
   // Session registry is machine-local under dataDir — not cwd/workspace
@@ -657,7 +656,7 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
   await runtime.stopSession(sessionId, "user");
   await waitFor(events, "session.exited", sessionId);
   const probeStopped = await runtime.probe(sessionId);
-  assert.equal(probeStopped.alive, false);
+  assert.equal(probeStopped.isAlive, false);
 
   // Mock log: explicit model, no api.x.ai, prompt received
   const logRaw = await fs.readFile(logPath, "utf8");
@@ -1398,7 +1397,7 @@ test("spontaneous child exit emits session.failed once (deduped)", async () => {
   );
 
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   const observation = await waitForObservation(
     runtime,
     sessionId,
@@ -1532,10 +1531,10 @@ test("mock ACP: multi-segment turn keeps only final assistant reply in prompt_co
     sessionId,
     8000
   )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
-  // Delivery report must be the post-tool final segment only.
+  // TaskResult report must be the post-tool final segment only.
   assert.equal(complete.assistantText, "FINAL_DELIVERY_REPORT_ONLY");
   assert.doesNotMatch(complete.assistantText, /inspect the codebase|thinking|read_file/i);
-  // Intermediate narration still surfaces as diagnostics, not delivery text.
+  // Intermediate narration still surfaces as diagnostics, not result text.
   assert.ok(
     events.some(
       (e) =>
@@ -1782,7 +1781,7 @@ test("mock ACP load: load failure cleans process and does not emit prompt_comple
 
   assert.ok(!events.some((e) => e.type === "session.prompt_complete"));
   const probe = await runtime.probe(sessionId);
-  assert.equal(probe.alive, false);
+  assert.equal(probe.isAlive, false);
   assert.equal(probe.state, "failed");
   await runtime.shutdown();
 });
@@ -1938,6 +1937,6 @@ test("runtime resume failure redacts provider session token from errors and proj
   const record = await runtime.registry.read(sessionId);
   assert.ok(record?.lastError);
   assert.doesNotMatch(record!.lastError!, new RegExp(privateToken));
-  assert.equal((await runtime.probe(sessionId)).alive, false);
+  assert.equal((await runtime.probe(sessionId)).isAlive, false);
   await runtime.shutdown();
 });

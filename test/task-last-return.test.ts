@@ -3,61 +3,61 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { createDelivery, loadDelivery } from "../src/core/delivery.js";
+import { createTaskResult, loadTaskResult } from "../src/core/task-result.js";
 import { contentEtag } from "../src/core/etag.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import {
-  loadTaskEnvelope,
-  parseTaskLastReturn,
-  patchTaskEnvelope,
-  TASK_LAST_RETURN_ERROR_MAX_BYTES,
-  TASK_LAST_RETURN_REPORT_MAX_BYTES,
-  writeTaskEnvelope,
+  loadTaskRecord,
+  parseTaskStatusDetail,
+  patchTaskRecord,
+  TASK_STATUS_DETAIL_ERROR_MAX_BYTES,
+  TASK_STATUS_DETAIL_REPORT_MAX_BYTES,
+  writeTaskRecord,
 } from "../src/core/task.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 
-test("Task lastReturn parser enforces exact bounded formal-return wire", () => {
-  assert.deepEqual(parseTaskLastReturn({
+test("Task statusDetail parser enforces exact bounded formal-return wire", () => {
+  assert.deepEqual(parseTaskStatusDetail({
     kind: "failed",
     report: "formal report",
     error: "formal error",
     code: "TASK_FAILED",
     at: "2026-08-13T00:00:00.000Z",
-    sessionId: "SS-ABC",
+    executionSessionId: "SS-ABC",
   }), {
     kind: "failed",
     report: "formal report",
     error: "formal error",
     code: "TASK_FAILED",
     at: "2026-08-13T00:00:00.000Z",
-    sessionId: "SS-ABC",
+    executionSessionId: "SS-ABC",
   });
-  assert.doesNotThrow(() => parseTaskLastReturn({
+  assert.doesNotThrow(() => parseTaskStatusDetail({
     kind: "blocked",
-    report: "a".repeat(TASK_LAST_RETURN_REPORT_MAX_BYTES),
+    report: "a".repeat(TASK_STATUS_DETAIL_REPORT_MAX_BYTES),
   }));
-  assert.throws(() => parseTaskLastReturn({
+  assert.throws(() => parseTaskStatusDetail({
     kind: "blocked",
-    report: "a".repeat(TASK_LAST_RETURN_REPORT_MAX_BYTES + 1),
+    report: "a".repeat(TASK_STATUS_DETAIL_REPORT_MAX_BYTES + 1),
   }), /exceeds 65536 UTF-8 bytes/);
-  assert.throws(() => parseTaskLastReturn({
+  assert.throws(() => parseTaskStatusDetail({
     kind: "failed",
-    error: "a".repeat(TASK_LAST_RETURN_ERROR_MAX_BYTES + 1),
+    error: "a".repeat(TASK_STATUS_DETAIL_ERROR_MAX_BYTES + 1),
   }), /exceeds 8192 UTF-8 bytes/);
-  assert.throws(() => parseTaskLastReturn({ kind: "failed" }), /requires report or error/);
+  assert.throws(() => parseTaskStatusDetail({ kind: "failed" }), /requires report or error/);
   assert.throws(
-    () => parseTaskLastReturn({ kind: "failed", error: "x", extra: true }),
+    () => parseTaskStatusDetail({ kind: "failed", error: "x", extra: true }),
     /unknown fields/
   );
 });
 
-test("retired raw Task and Delivery outcome keys remain inert typed data", async () => {
+test("retired raw Task and TaskResult outcome keys remain inert typed data", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-last-return-wire-"));
   const adapter = new NodeFs(dir);
   const clock = new SystemClock();
   await adapter.mkdir("temp/roles/rl-test/tasks");
-  const taskPath = await writeTaskEnvelope(adapter, clock, {
-    roleId: "rl-test",
+  const taskPath = await writeTaskRecord(adapter, clock, {
+    assigneeRoleId: "rl-test",
     workNodeIds: ["cx-work"],
     contextNodeIds: [],
     nodeSnapshots: [{
@@ -69,8 +69,8 @@ test("retired raw Task and Delivery outcome keys remain inert typed data", async
       etag: contentEtag("# work\n"),
     }],
     manifestPath: "temp/roles/rl-test/manifest.yml",
-    userPrompt: "work",
-    parentActor: { kind: "user", id: "user" },
+    prompt: "work",
+    requester: { kind: "user", id: "user" },
   });
   const retiredTaskKey = ["last", "Outcome"].join("");
   const taskRaw = parseFrontmatter(await adapter.readFile(taskPath));
@@ -79,32 +79,31 @@ test("retired raw Task and Delivery outcome keys remain inert typed data", async
     taskPath,
     serializeFrontmatter(taskRaw.data, taskRaw.body, taskRaw.keyOrder)
   );
-  const loadedTask = await loadTaskEnvelope(adapter, taskPath);
+  const loadedTask = await loadTaskRecord(adapter, taskPath);
   assert.equal((loadedTask as unknown as Record<string, unknown>)[retiredTaskKey], undefined);
-  await patchTaskEnvelope(adapter, taskPath, { updatedAt: clock.now() });
+  await patchTaskRecord(adapter, taskPath, { updatedAt: clock.now() });
   assert.equal(
     parseFrontmatter(await adapter.readFile(taskPath)).data[retiredTaskKey],
     "delivered",
     "generic Task frontmatter preservation remains raw and inert"
   );
 
-  const delivery = await createDelivery(adapter, clock, {
+  const result = await createTaskResult(adapter, clock, {
     taskId: loadedTask.id!,
-    sourceNodeId: "cx-work",
-    deliveriesDir: "temp/roles/rl-test/deliveries",
-    summary: "formal Delivery",
+    resultsDir: "temp/roles/rl-test/results",
+    report: "formal TaskResult",
     status: "ready",
   });
-  const retiredDeliveryKey = ["task", "Last", "Outcome"].join("");
-  const deliveryRaw = parseFrontmatter(await adapter.readFile(delivery.path));
-  deliveryRaw.data[retiredDeliveryKey] = "delivered";
+  const retiredTaskResultKey = ["task", "Last", "Outcome"].join("");
+  const resultRaw = parseFrontmatter(await adapter.readFile(result.path));
+  resultRaw.data[retiredTaskResultKey] = "delivered";
   await adapter.writeFile(
-    delivery.path,
-    serializeFrontmatter(deliveryRaw.data, deliveryRaw.body, deliveryRaw.keyOrder)
+    result.path,
+    serializeFrontmatter(resultRaw.data, resultRaw.body, resultRaw.keyOrder)
   );
-  const loadedDelivery = await loadDelivery(adapter, delivery.path);
+  const loadedTaskResult = await loadTaskResult(adapter, result.path);
   assert.equal(
-    (loadedDelivery as unknown as Record<string, unknown>)[retiredDeliveryKey],
+    (loadedTaskResult as unknown as Record<string, unknown>)[retiredTaskResultKey],
     undefined
   );
 });

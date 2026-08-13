@@ -443,10 +443,10 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Node, Role, Task, Delivery, and Agent Connection:
+Node, Role, Task, TaskResult, and Agent Connection:
   tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
-  tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
+  tent task list|get|claim|submit|…   Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
 
 Service-backed workspace operations:

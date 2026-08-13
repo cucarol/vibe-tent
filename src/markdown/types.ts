@@ -7,7 +7,8 @@ export type NodeProjection = {
   nodeId: string;
   path: string;
   name: string;
-  type: string;
+  /** Optional ordinary document label; omission is authoritative. */
+  type?: string;
   tags: string[];
   title?: string;
   mode: NodeMode;
@@ -21,7 +22,8 @@ export type NodeEditSnapshot = {
   nodeId: string;
   path: string;
   name: string;
-  type: string;
+  /** Optional ordinary document label; omission is authoritative. */
+  type?: string;
   body: string;
   frontmatter: Record<string, unknown>;
   raw: string;

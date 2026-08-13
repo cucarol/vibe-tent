@@ -1,6 +1,6 @@
 import { SurfacePlaceholder } from "./SurfacePlaceholder.js";
 
-/** Inbox: pending A2U / deliveries / task inputs — projections only. */
+/** Inbox: pending user decisions and Task Results — projections only. */
 export function InboxSurface() {
   return (
     <SurfacePlaceholder

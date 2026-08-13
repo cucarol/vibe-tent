@@ -2,14 +2,16 @@
 
 import { cloneAgentConnection, type AgentConnectionConfig } from "../runtime/agent-connection.js";
 import {
-  SECRET_CONNECTION_FIELD_HINTS, parseBaseUrlValue, parseLaunchSecretRefValue, parseEnvKeyValue,
+  SECRET_CONNECTION_FIELD_HINTS, parseEndpointValue, parseLaunchSecretRefValue, parseEnvKeyValue,
   parseNonEmptyStringValue, parsePermissionPolicyValue, parsePositiveTimeoutValue, parseConnectionIdValue,
   type FieldResult,
 } from "./connection-field-rules.js";
 import {
   AGENT_CONNECTION_CREATE_FIELDS,
   AGENT_CONNECTION_UPDATE_FIELDS,
+  materializeAgentConnectionLaunch,
   saveAgentConnections,
+  withAgentConnectionEndpoint,
 } from "./connections.js";
 import { RpcError } from "./rpc-error.js";
 import { defaultAllowedSkillRoots, parseMcpServersArrayValue, parseSkillsArrayValue } from "../adapters/acp/mcp-skills.js";
@@ -56,18 +58,20 @@ function parseCreate(raw: Record<string, unknown>): AgentConnectionConfig {
   assign("displayName", optional(raw, "displayName", (v) => parseNonEmptyStringValue(v, "displayName")));
   assign("command", optional(raw, "command", (v) => parseNonEmptyStringValue(v, "command")));
   assign("args", optional(raw, "args", parseArgsValue));
-  assign("executable", optional(raw, "executable", (v) => parseNonEmptyStringValue(v, "executable")));
   assign("model", optional(raw, "model", (v) => parseNonEmptyStringValue(v, "model")));
   assign("envKey", optional(raw, "envKey", (v) => parseEnvKeyValue(v, "envKey")));
   assign("launchSecretRef", optional(raw, "launchSecretRef", parseLaunchSecretRefValue));
-  assign("baseUrlEnvKey", optional(raw, "baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")));
-  assign("baseUrl", optional(raw, "baseUrl", parseBaseUrlValue));
+  assign("endpoint", optional(raw, "endpoint", parseEndpointValue));
   assign("permissionPolicy", optional(raw, "permissionPolicy", parsePermissionPolicyValue));
   assign("promptTimeoutMs", optional(raw, "promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs")));
   assign("permissionTimeoutMs", optional(raw, "permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs")));
   if (raw.skills !== undefined && raw.skills !== null) connection.skills = unwrap(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
   if (raw.mcpServers !== undefined && raw.mcpServers !== null) connection.mcpServers = unwrap(parseMcpServersArrayValue(raw.mcpServers));
-  return connection;
+  try {
+    return materializeAgentConnectionLaunch(connection);
+  } catch (error) {
+    throw new RpcError(-32602, error instanceof Error ? error.message : "Invalid Connection launch");
+  }
 }
 
 function applyPatch(current: AgentConnectionConfig, raw: Record<string, unknown>): AgentConnectionConfig {
@@ -77,10 +81,9 @@ function applyPatch(current: AgentConnectionConfig, raw: Record<string, unknown>
   }
   const next = cloneAgentConnection(current);
   const scalar: Array<[keyof AgentConnectionConfig, (v: unknown) => FieldResult<unknown>]> = [
-    ["displayName", (v) => parseNonEmptyStringValue(v, "displayName")], ["executable", (v) => parseNonEmptyStringValue(v, "executable")],
+    ["displayName", (v) => parseNonEmptyStringValue(v, "displayName")],
     ["model", (v) => parseNonEmptyStringValue(v, "model")], ["envKey", (v) => parseEnvKeyValue(v, "envKey")],
-    ["launchSecretRef", parseLaunchSecretRefValue], ["baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")],
-    ["baseUrl", parseBaseUrlValue], ["permissionPolicy", parsePermissionPolicyValue],
+    ["launchSecretRef", parseLaunchSecretRefValue], ["permissionPolicy", parsePermissionPolicyValue],
     ["promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs")], ["permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs")],
   ];
   for (const [key, parse] of scalar) {
@@ -98,6 +101,10 @@ function applyPatch(current: AgentConnectionConfig, raw: Record<string, unknown>
   }
   if ("mcpServers" in raw && raw.mcpServers !== undefined) {
     if (raw.mcpServers === null) delete next.mcpServers; else next.mcpServers = unwrap(parseMcpServersArrayValue(raw.mcpServers));
+  }
+  if ("endpoint" in raw && raw.endpoint !== undefined) {
+    const endpoint = raw.endpoint === null ? undefined : unwrap(parseEndpointValue(raw.endpoint));
+    return withAgentConnectionEndpoint(next, endpoint);
   }
   return next;
 }

@@ -83,9 +83,8 @@ export class ServiceDocsClient implements DocsClient {
       (typeof result.frontmatter?.name === "string"
         ? result.frontmatter.name
         : result.path.split("/").pop() || result.path);
-    const type =
-      result.type ??
-      (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
+    const type = result.type ??
+      (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : undefined);
 
     return {
       nodeId: result.nodeId,
@@ -166,7 +165,7 @@ export class ServiceDocsClient implements DocsClient {
     const result = await this.rpc.call<{ nodeId: string; path: string }>("docs.createNote", {
       workspaceId: this.workspaceId,
       name: input.name,
-      type: input.type ?? "prompt",
+      ...(input.type?.trim() ? { type: input.type.trim() } : {}),
       parentPath: input.parentPath ?? "",
       body: input.body,
     });

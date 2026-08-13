@@ -10,7 +10,7 @@ export type CanvasViewportFrameScheduler = {
 
 /**
  * Apply the latest local viewport only after the Canvas engine has mounted.
- * Reading at frame time prevents a resize or pan between API delivery and
+ * Reading at frame time prevents a resize or pan between API result and
  * mount completion from reapplying an older camera.
  */
 export function schedulePostMountCanvasViewportSync(options: {

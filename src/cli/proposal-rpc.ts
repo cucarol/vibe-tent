@@ -1,4 +1,4 @@
-// Proposal submit via Local Service RPC (task-api §3 — separate from delivery).
+// Proposal submit via Local Service RPC (task-api §3 — separate from result).
 // In-workspace tent propose MUST go through this path — no direct core mutation.
 
 import type { ServiceClient } from "../service/client.js";

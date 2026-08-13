@@ -5,7 +5,6 @@
 export const TENT_SYSTEM_DIR = ".tent";
 
 /** 相对 system root 的注册表与锁（adapter 已指向 system root 时无前缀）。 */
-export const TYPE_REGISTRY_PATH = "types.json";
 export const ROLES_REGISTRY_PATH = "roles.json";
 export const TAGS_REGISTRY_PATH = "tags.json";
 export const ORDER_PATH = "order.json";
@@ -42,7 +41,6 @@ export const OPERATIONAL_TOP_LEVEL = new Set([
 
 /** 系统注册表文件名（非 Node）。 */
 export const SYSTEM_REGISTRY_FILES = new Set([
-  TYPE_REGISTRY_PATH,
   ROLES_REGISTRY_PATH,
   TAGS_REGISTRY_PATH,
   ORDER_PATH,
@@ -119,8 +117,8 @@ export function roleTasksDir(roleId: string): string {
   return `${roleTempRoot(roleId)}/tasks`;
 }
 
-export function roleDeliveriesDir(roleId: string): string {
-  return `${roleTempRoot(roleId)}/deliveries`;
+export function roleTaskResultsDir(roleId: string): string {
+  return `${roleTempRoot(roleId)}/results`;
 }
 
 /** `temp/sessions/<sessionId>` root for Session-only Task records. */
@@ -132,8 +130,8 @@ export function sessionTasksDir(sessionId: string): string {
   return `${sessionTempRoot(sessionId)}/tasks`;
 }
 
-export function sessionDeliveriesDir(sessionId: string): string {
-  return `${sessionTempRoot(sessionId)}/deliveries`;
+export function sessionTaskResultsDir(sessionId: string): string {
+  return `${sessionTempRoot(sessionId)}/results`;
 }
 
 /** Task-scoped immutable manifest path (never shared `manifest.yml`). */

@@ -1,5 +1,5 @@
 import { isSessionId } from "../../../core/id.js";
-import { isTaskId, type TaskLastReturn, type TaskState } from "../../../core/task-model.js";
+import { isTaskId, type TaskState, type TaskStatusDetail } from "../../../core/task-model.js";
 
 export type CollaborationResponsibility =
   | { kind: "user" }
@@ -15,40 +15,41 @@ export type CollaborationDecision = {
   options: readonly { id: string; label: string }[];
 };
 
-export type CollaborationDelivery = {
-  deliveryId: string;
+export type CollaborationTaskResult = {
+  resultId: string;
   summary: string;
   createdAt: string;
 };
 
 export type CollaborationActiveTask = {
+  taskId: string;
   state: TaskState;
   responsibility: CollaborationResponsibility;
   execution: CollaborationExecution | null;
-  readyDelivery: CollaborationDelivery | null;
+  readyResult: CollaborationTaskResult | null;
   pendingDecision: CollaborationDecision | null;
 };
 
-export type CollaborationLastReturn = TaskLastReturn & { taskId: string };
+export type CollaborationStatusDetail = TaskStatusDetail & { taskId: string };
 
 export type CollaborationInboxItem =
-  | ({ kind: "delivery"; sourceNodeId: string } & CollaborationDelivery)
+  | ({ kind: "result" } & CollaborationTaskResult)
   | ({ kind: "decision"; nodeIds: readonly string[]; createdAt: string } & CollaborationDecision);
 
 /**
  * Product-facing renderer projection. Task ids exist only inside Service joins;
- * the renderer owns exact Delivery / Decision identities and no Session facts.
+ * the renderer owns exact Task Result / Decision identities and no Session facts.
  */
 export type WorkspaceCollaborationView = {
   workspaceId: string;
   selectedNode: {
     nodeId: string;
     activeTask: CollaborationActiveTask | null;
-    lastReturn: CollaborationLastReturn | null;
+    statusDetail: CollaborationStatusDetail | null;
   } | null;
   inbox: {
     items: readonly CollaborationInboxItem[];
-    counts: { delivery: number; decision: number; total: number };
+    counts: { result: number; decision: number; total: number };
   };
 };
 
@@ -56,7 +57,7 @@ const TASK_STATES = new Set<TaskState>([
   "queued",
   "running",
   "waiting",
-  "delivered",
+  "submitted",
   "accepted",
   "rejected",
   "interrupted",
@@ -77,71 +78,71 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function parseLastReturn(raw: unknown): TaskLastReturn | null {
+function parseStatusDetail(raw: unknown): TaskStatusDetail | null {
   if (raw === null) return null;
-  if (!isRecord(raw)) throw new Error("workspace.collaboration lastReturn is corrupt");
-  const allowed = new Set(["kind", "report", "error", "code", "at", "sessionId"]);
+  if (!isRecord(raw)) throw new Error("workspace.collaboration statusDetail is corrupt");
+  const allowed = new Set(["kind", "report", "error", "code", "at", "executionSessionId"]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) {
-    throw new Error("workspace.collaboration lastReturn is corrupt");
+    throw new Error("workspace.collaboration statusDetail is corrupt");
   }
-  if (raw.kind !== "blocked" && raw.kind !== "needs-input" && raw.kind !== "failed") {
-    throw new Error("workspace.collaboration lastReturn kind is corrupt");
+  if (raw.kind !== "blocked" && raw.kind !== "failed") {
+    throw new Error("workspace.collaboration statusDetail kind is corrupt");
   }
-  const report = parseBoundedLastReturnString(raw.report, 64 * 1024);
-  const error = parseBoundedLastReturnString(raw.error, 8 * 1024);
-  if (!report && !error) throw new Error("workspace.collaboration lastReturn is empty");
-  const code = parseBoundedLastReturnString(raw.code, 128);
+  const report = parseBoundedStatusDetailString(raw.report, 64 * 1024);
+  const error = parseBoundedStatusDetailString(raw.error, 8 * 1024);
+  if (!report && !error) throw new Error("workspace.collaboration statusDetail is empty");
+  const code = parseBoundedStatusDetailString(raw.code, 128);
   if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
-    throw new Error("workspace.collaboration lastReturn code is corrupt");
+    throw new Error("workspace.collaboration statusDetail code is corrupt");
   }
-  const at = raw.at === undefined ? undefined : parseLastReturnTimestamp(raw.at);
-  const sessionId = raw.sessionId === undefined
+  const at = raw.at === undefined ? undefined : parseStatusDetailTimestamp(raw.at);
+  const executionSessionId = raw.executionSessionId === undefined
     ? undefined
-    : parseLastReturnSessionId(raw.sessionId);
+    : parseStatusDetailSessionId(raw.executionSessionId);
   return {
     kind: raw.kind,
     ...(report ? { report } : {}),
     ...(error ? { error } : {}),
     ...(code ? { code } : {}),
     ...(at ? { at } : {}),
-    ...(sessionId ? { sessionId } : {}),
+    ...(executionSessionId ? { executionSessionId } : {}),
   };
 }
 
-function parseSelectedNodeLastReturn(raw: unknown): CollaborationLastReturn | null {
+function parseSelectedNodeStatusDetail(raw: unknown): CollaborationStatusDetail | null {
   if (raw === null) return null;
   if (!isRecord(raw) || typeof raw.taskId !== "string" || !isTaskId(raw.taskId)) {
-    throw new Error("workspace.collaboration selected lastReturn identity is corrupt");
+    throw new Error("workspace.collaboration selected statusDetail identity is corrupt");
   }
-  const { taskId, ...lastReturn } = raw;
-  const parsed = parseLastReturn(lastReturn);
-  if (!parsed) throw new Error("workspace.collaboration selected lastReturn is corrupt");
+  const { taskId, ...statusDetail } = raw;
+  const parsed = parseStatusDetail(statusDetail);
+  if (!parsed) throw new Error("workspace.collaboration selected statusDetail is corrupt");
   return { taskId, ...parsed };
 }
 
-function parseBoundedLastReturnString(value: unknown, maxBytes: number): string | undefined {
+function parseBoundedStatusDetailString(value: unknown, maxBytes: number): string | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") throw new Error("workspace.collaboration lastReturn text is corrupt");
+  if (typeof value !== "string") throw new Error("workspace.collaboration statusDetail text is corrupt");
   const text = value.trim();
   if (!text) return undefined;
   if (new TextEncoder().encode(text).byteLength > maxBytes) {
-    throw new Error("workspace.collaboration lastReturn text exceeds its bound");
+    throw new Error("workspace.collaboration statusDetail text exceeds its bound");
   }
   return text;
 }
 
-function parseLastReturnTimestamp(value: unknown): string {
+function parseStatusDetailTimestamp(value: unknown): string {
   if (
     typeof value !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(value) ||
     !Number.isFinite(Date.parse(value))
-  ) throw new Error("workspace.collaboration lastReturn timestamp is corrupt");
+  ) throw new Error("workspace.collaboration statusDetail timestamp is corrupt");
   return value;
 }
 
-function parseLastReturnSessionId(value: unknown): string {
+function parseStatusDetailSessionId(value: unknown): string {
   if (typeof value !== "string" || !isSessionId(value)) {
-    throw new Error("workspace.collaboration lastReturn Session is corrupt");
+    throw new Error("workspace.collaboration statusDetail Session is corrupt");
   }
   return value;
 }
@@ -178,17 +179,17 @@ function parseDecision(raw: unknown, label: string): CollaborationDecision | nul
   };
 }
 
-function parseDelivery(raw: unknown, label: string): CollaborationDelivery | null {
+function parseTaskResult(raw: unknown, label: string): CollaborationTaskResult | null {
   if (raw === null) return null;
   if (
     !isRecord(raw) ||
-    !exactKeys(raw, ["deliveryId", "summary", "createdAt"]) ||
-    !nonEmpty(raw.deliveryId) ||
+    !exactKeys(raw, ["resultId", "summary", "createdAt"]) ||
+    !nonEmpty(raw.resultId) ||
     typeof raw.summary !== "string" ||
     !nonEmpty(raw.createdAt)
   ) throw new Error(`${label} is corrupt`);
   return {
-    deliveryId: raw.deliveryId,
+    resultId: raw.resultId,
     summary: raw.summary,
     createdAt: raw.createdAt,
   };
@@ -237,17 +238,18 @@ function parseActiveTask(raw: unknown): CollaborationActiveTask | null {
       "state",
       "responsibility",
       "execution",
-      "readyDelivery",
+      "readyResult",
       "pendingDecision",
     ]) ||
     !nonEmpty(raw.taskId) ||
     !TASK_STATES.has(raw.state as TaskState)
   ) throw new Error("workspace.collaboration activeTask is corrupt");
   return {
+    taskId: raw.taskId,
     state: raw.state as TaskState,
     responsibility: parseResponsibility(raw.responsibility),
     execution: parseExecution(raw.execution),
-    readyDelivery: parseDelivery(raw.readyDelivery, "selected Delivery"),
+    readyResult: parseTaskResult(raw.readyResult, "selected Task Result"),
     pendingDecision: parseDecision(raw.pendingDecision, "selected Decision"),
   };
 }
@@ -266,7 +268,7 @@ export function normalizeWorkspaceCollaboration(
       !exactKeys(raw.inbox, ["items", "counts"]) ||
       !Array.isArray(raw.inbox.items) ||
       !isRecord(raw.inbox.counts) ||
-      !exactKeys(raw.inbox.counts, ["delivery", "decision", "total"])
+      !exactKeys(raw.inbox.counts, ["result", "decision", "total"])
     ) throw new Error("workspace.collaboration envelope is corrupt");
 
     let selectedNode: WorkspaceCollaborationView["selectedNode"] = null;
@@ -277,13 +279,13 @@ export function normalizeWorkspaceCollaboration(
     } else {
       if (
         !isRecord(raw.selectedNode) ||
-        !exactKeys(raw.selectedNode, ["nodeId", "activeTask", "lastReturn"]) ||
+        !exactKeys(raw.selectedNode, ["nodeId", "activeTask", "statusDetail"]) ||
         raw.selectedNode.nodeId !== expectedNodeId
       ) throw new Error("workspace.collaboration selected Node mismatch");
       selectedNode = {
         nodeId: expectedNodeId,
         activeTask: parseActiveTask(raw.selectedNode.activeTask),
-        lastReturn: parseSelectedNodeLastReturn(raw.selectedNode.lastReturn),
+        statusDetail: parseSelectedNodeStatusDetail(raw.selectedNode.statusDetail),
       };
     }
 
@@ -292,24 +294,21 @@ export function normalizeWorkspaceCollaboration(
         throw new Error(`workspace.collaboration inbox[${index}] is corrupt`);
       }
       if (
-        item.kind === "delivery" &&
+        item.kind === "result" &&
         exactKeys(item, [
           "kind",
-          "deliveryId",
+          "resultId",
           "taskId",
-          "sourceNodeId",
           "summary",
           "createdAt",
         ]) &&
-        nonEmpty(item.deliveryId) &&
-        nonEmpty(item.sourceNodeId) &&
+        nonEmpty(item.resultId) &&
         typeof item.summary === "string" &&
         nonEmpty(item.createdAt)
       ) {
         return {
-          kind: "delivery",
-          deliveryId: item.deliveryId,
-          sourceNodeId: item.sourceNodeId,
+          kind: "result",
+          resultId: item.resultId,
           summary: item.summary,
           createdAt: item.createdAt,
         };
@@ -345,16 +344,16 @@ export function normalizeWorkspaceCollaboration(
       throw new Error(`workspace.collaboration inbox[${index}] is corrupt`);
     });
 
-    const delivery = items.filter((item) => item.kind === "delivery").length;
+    const result = items.filter((item) => item.kind === "result").length;
     const decision = items.filter((item) => item.kind === "decision").length;
     if (
-      raw.inbox.counts.delivery !== delivery ||
+      raw.inbox.counts.result !== result ||
       raw.inbox.counts.decision !== decision ||
       raw.inbox.counts.total !== items.length
     ) throw new Error("workspace.collaboration counts are corrupt");
 
     const identities = items.map((item) =>
-      item.kind === "delivery" ? `delivery:${item.deliveryId}` : `decision:${item.requestId}`
+      item.kind === "result" ? `result:${item.resultId}` : `decision:${item.requestId}`
     );
     if (new Set(identities).size !== identities.length) {
       throw new Error("workspace.collaboration inbox identities are duplicated");
@@ -365,7 +364,7 @@ export function normalizeWorkspaceCollaboration(
       value: {
         workspaceId: expectedWorkspaceId,
         selectedNode,
-        inbox: { items, counts: { delivery, decision, total: items.length } },
+        inbox: { items, counts: { result, decision, total: items.length } },
       },
     };
   } catch (error) {

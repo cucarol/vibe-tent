@@ -71,18 +71,11 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
 
   resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
-    const hasCommandOverride = !!plan.command?.trim();
     const base = resolveNpxAcpLaunch({
       planCommand: plan.command,
       planArgs: plan.args,
-      executable: opts.executable,
-      defaultPackage: COPILOT_ACP_NPX_PACKAGE,
     });
     const args = [...base.args];
-    if (!plan.args && !hasCommandOverride) args.push("--acp", "--stdio");
-    if (!plan.args && !hasCommandOverride && opts.model) {
-      args.push("--model", opts.model);
-    }
 
     const env: Record<string, string> = {
       ...plan.env,

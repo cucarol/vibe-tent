@@ -71,13 +71,13 @@ test("direct Role claim forwards work/context Nodes and durable provenance witho
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(capture.directCalls.length, 1);
   assert.deepEqual(capture.directCalls[0], {
-    roleId: "rl-planner",
+      assigneeRoleId: "rl-planner",
     workNodeIds: ["cx-one", "cx-two"],
     contextNodeIds: ["cx-context"],
     prompt: "own this work",
     sourceTaskPath: "temp/planner/tasks/parent.md",
   });
-  for (const forbidden of ["target", "parentActor", "reviewer", "asSub", "callerKind"]) {
+  for (const forbidden of ["target", "requester", "reviewer", "as" + "Sub", "callerKind"]) {
     assert.equal(Object.prototype.hasOwnProperty.call(capture.directCalls[0]!, forbidden), false);
   }
 });

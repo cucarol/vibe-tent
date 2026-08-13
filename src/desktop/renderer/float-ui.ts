@@ -16,7 +16,7 @@ let hintResetTimer: ReturnType<typeof setTimeout> | null = null;
 const cardKindLabels: Record<string, string> = {
   node: "节点",
   task: "任务",
-  delivery: "交付",
+  result: "交付",
   handoff: "交接",
   selection: "选区",
   role: "角色",

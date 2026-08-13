@@ -22,20 +22,6 @@ export async function makeTent(): Promise<string> {
     path.join(dir, "index.md"),
     '---\ntype: index\nokf_version: "0.1"\n---\n# Index\n',
   );
-  await fs.writeFile(
-    path.join(dir, "types.json"),
-    JSON.stringify(
-      {
-        goal: { tier: "base" },
-        prompt: { tier: "base" },
-        output: { tier: "base" },
-        reference: { tier: "modifier" },
-        asset: { tier: "modifier" },
-      },
-      null,
-      2
-    ) + "\n"
-  );
   await box("goal", "id: cx-goalzone\ntype: goal");
   await box("goal/挖新alpha", "id: cx-g1\ntype: goal");
   await box(

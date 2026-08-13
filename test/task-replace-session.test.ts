@@ -33,7 +33,7 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 type TaskSnap = {
-  id?: string; state: string; sessionId?: string;
+  id?: string; state: string; executionSessionId?: string;
   workNodeIds?: string[]; contextNodeIds?: string[];
   contextCard?: {
     workNodeIds: string[];
@@ -125,20 +125,20 @@ async function mountWorkItem(svc: Svc, ws: string) {
 async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string, opts?: { connectionId?: string }) {
   const connectionId = opts?.connectionId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
-    parentActor: { kind: "user", id: "user" },
+    requester: { kind: "user", id: "user" },
     workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
   if ((d.result as { state?: string }).state === "queued") await rpc(svc, "task.claim", { workspaceId, taskPath });
   const before = await rpc(svc, "task.get", { workspaceId, taskPath });
-  const taskBefore = (before.result as { task: { sessionId?: string } }).task;
-  if (!taskBefore.sessionId) {
+  const taskBefore = (before.result as { task: { executionSessionId?: string } }).task;
+  if (!taskBefore.executionSessionId) {
     const started = await rpc(svc, "task.startSession", { workspaceId, taskPath, callerKind: "user" });
     assert.ok(!started.error, JSON.stringify(started.error));
     return { taskPath, sessionId: (started.result as { session: { sessionId: string } }).session.sessionId };
   }
-  return { taskPath, sessionId: taskBefore.sessionId! };
+  return { taskPath, sessionId: taskBefore.executionSessionId! };
 }
 
 async function getTask(svc: Svc, workspaceId: string, taskPath: string): Promise<TaskSnap> {
@@ -156,7 +156,7 @@ function assertParkedOnSession(task: TaskSnap, sessionId: string) {
   assert.equal(task.wait?.reason, "external");
   assert.equal(task.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
   assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
-  assert.equal(task.sessionId, sessionId);
+  assert.equal(task.executionSessionId, sessionId);
 }
 async function seedPending(svc: Svc, workspaceId: string, taskPath: string, sessionId: string, id: string, text: string) {
   const now = new Date().toISOString();
@@ -173,7 +173,7 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -183,7 +183,7 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    const reservedSessionId = (await getTask(svc, workspaceId, taskPath)).sessionId;
+    const reservedSessionId = (await getTask(svc, workspaceId, taskPath)).executionSessionId;
     assert.match(reservedSessionId ?? "", /^ss-/);
     const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
@@ -199,7 +199,7 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
         ...extra,
       });
       assert.equal(refused.error?.code, -32602, JSON.stringify(refused));
-      assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, reservedSessionId);
+      assert.equal((await getTask(svc, workspaceId, taskPath)).executionSessionId, reservedSessionId);
     }
 
     const started = await rpc(svc, "task.startSession", {
@@ -221,8 +221,8 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
         ...extra,
       });
       assert.equal(refused.error?.code, -32602, JSON.stringify(refused));
-      assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, sessionId);
-      assert.equal((await svc.runtime.probe(sessionId)).alive, true);
+      assert.equal((await getTask(svc, workspaceId, taskPath)).executionSessionId, sessionId);
+      assert.equal((await svc.runtime.probe(sessionId)).isAlive, true);
     }
   });
 });
@@ -232,7 +232,7 @@ test("managed start refuses a Role Task; only an exact Connection Task owns a Se
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], roleId: "rl-executor",
       prompt: "Role Task must never receive a Connection-managed Session", acceptMode: "review-required",
     });
@@ -261,7 +261,7 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
     };
 
     const dispatching = rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -291,10 +291,10 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
 
     const task = await getTask(svc, workspaceId, taskPath);
     assert.equal(task.state, "interrupted");
-    assert.equal(task.sessionId, reservedSessionId, "terminal Task keeps its exact stopped Session audit binding");
+    assert.equal(task.executionSessionId, reservedSessionId, "terminal Task keeps its exact stopped Session audit binding");
     const stoppedSessionId = (started.error?.data as { sessionId?: string }).sessionId;
     assert.equal(stoppedSessionId, reservedSessionId);
-    assert.equal((await svc.runtime.probe(stoppedSessionId!)).alive, false);
+    assert.equal((await svc.runtime.probe(stoppedSessionId!)).isAlive, false);
   }, { connections: [FAKE_KEEPALIVE] });
 });
 
@@ -331,12 +331,12 @@ test("replaceSession: terminal transition wins while replacement start is held",
 
     const task = await getTask(svc, workspaceId, taskPath);
     assert.equal(task.state, "interrupted");
-    assert.notEqual(task.sessionId, priorSessionId);
+    assert.notEqual(task.executionSessionId, priorSessionId);
     const orphanSessionId = (replaced.error?.data as { orphanSessionId?: string }).orphanSessionId;
     assert.ok(orphanSessionId);
     assert.notEqual(orphanSessionId, priorSessionId);
-    assert.equal(task.sessionId, orphanSessionId, "terminal Task keeps its exact stopped replacement binding");
-    assert.equal((await svc.runtime.probe(orphanSessionId!)).alive, false);
+    assert.equal(task.executionSessionId, orphanSessionId, "terminal Task keeps its exact stopped replacement binding");
+    assert.equal((await svc.runtime.probe(orphanSessionId!)).isAlive, false);
   }, { connections: [FAKE_KEEPALIVE] });
 });
 
@@ -373,14 +373,14 @@ test("replaceSession accepts an immediate prompt_complete progression on the pre
     }).session.sessionId;
     assert.notEqual(replacementSessionId, priorSessionId);
     const task = await getTask(svc, workspaceId, taskPath);
-    assert.equal(task.sessionId, replacementSessionId);
+    assert.equal(task.executionSessionId, replacementSessionId);
     assert.equal(task.state, "waiting");
     assert.match(task.wait?.summary ?? "", /needs a user answer/i);
-    assert.equal((await svc.runtime.probe(replacementSessionId)).alive, true);
+    assert.equal((await svc.runtime.probe(replacementSessionId)).isAlive, true);
   });
 });
 
-test("replaceSession: success preserves Task + contextRestored=false + audit", async () => {
+test("replaceSession: success preserves Task + providerContextRestored=false + audit", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();
   await withService(async (svc) => {
@@ -399,19 +399,19 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
       taskPath, callerKind: "user",
     })) as {
       task: TaskSnap;
-      session: { sessionId: string; contextRestored?: boolean; restoreReason?: string; replacedSessionId?: string };
+      session: { sessionId: string; providerContextRestored?: boolean; restoreReason?: string; replacedSessionId?: string };
       priorSessionId: string; replaced: boolean;
     };
     assert.equal(replaced.replaced, true);
     assert.equal(replaced.priorSessionId, priorSessionId);
     assert.notEqual(replaced.session.sessionId, priorSessionId);
     assert.match(replaced.session.sessionId, /^ss-/);
-    assert.equal(replaced.session.contextRestored, false);
+    assert.equal(replaced.session.providerContextRestored, false);
     assert.equal(replaced.session.restoreReason, REPLACE_SESSION_RESTORE_REASON);
     assert.equal(replaced.session.replacedSessionId, priorSessionId);
     assert.equal(replaced.task.id, before.id);
     assert.equal(replaced.task.state, "running");
-    assert.equal(replaced.task.sessionId, replaced.session.sessionId);
+    assert.equal(replaced.task.executionSessionId, replaced.session.sessionId);
     assert.deepEqual(replaced.task.workNodeIds ?? [], before.workNodeIds ?? []);
     assert.deepEqual(replaced.task.contextNodeIds ?? [], before.contextNodeIds ?? []);
     assert.deepEqual(
@@ -422,7 +422,7 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     assert.equal(replaced.task.branch, before.branch);
     assert.equal(replaced.task.acceptMode, before.acceptMode);
     const newRow = await svc.runtime.registry.read(replaced.session.sessionId);
-    assert.equal(newRow?.contextRestored, false);
+    assert.equal(newRow?.providerContextRestored, false);
     assert.equal(newRow?.restoreReason, REPLACE_SESSION_RESTORE_REASON);
     assert.equal(newRow?.replacedSessionId, priorSessionId);
     const oldRow = await svc.runtime.registry.read(priorSessionId);
@@ -430,16 +430,16 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     assert.equal(oldRow!.replacedBySessionId, replaced.session.sessionId);
     assert.equal(oldRow!.stopReason, "user");
     assert.ok(oldRow!.state === "stopped" || oldRow!.state === "failed");
-    assert.equal(oldRow!.lastTaskId, before.id);
-    assert.equal((await svc.runtime.probe(priorSessionId)).alive, false);
-    assert.equal((await svc.runtime.probe(replaced.session.sessionId)).alive, true);
+    assert.equal(oldRow!.currentTaskId, before.id);
+    assert.equal((await svc.runtime.probe(priorSessionId)).isAlive, false);
+    assert.equal((await svc.runtime.probe(replaced.session.sessionId)).isAlive, true);
     assert.equal(await fs.readFile(rolesPath, "utf8"), rolesBefore);
     assert.equal(roleEvents.length, 0);
     unsubscribe();
   });
 });
 
-test("replaceSession: eligibility - turnBusy, waitCode, force refused", async () => {
+test("replaceSession: eligibility - isTurnActive, waitCode, force refused", async () => {
   resetManagedAutoDeliverDedupForTests();
   {
     const ws = await makeWorkspace();
@@ -448,7 +448,7 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
         workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
@@ -462,9 +462,9 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
       await pollUntil(async () => {
         const probe = await rpc(svc, "session.get", { workspaceId, sessionId: priorSessionId });
         if (probe.error) return null;
-        const session = (probe.result as { session: { alive?: boolean; turnBusy?: boolean } }).session;
-        return session.alive && session.turnBusy === true ? session : null;
-      }, 8_000, "managed turnBusy before replace");
+        const session = (probe.result as { session: { isAlive?: boolean; isTurnActive?: boolean } }).session;
+        return session.isAlive && session.isTurnActive === true ? session : null;
+      }, 8_000, "managed isTurnActive before replace");
       const refused = await rpc(svc, "task.replaceSession", {
         workspaceId, taskPath, callerKind: "user",
       });
@@ -494,7 +494,7 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
       assert.equal(errCode(refused), "REPLACE_SESSION_WAIT_NOT_ELIGIBLE");
       const task = await getTask(svc, workspaceId, taskPath);
       assert.equal(task.state, "waiting");
-      assert.equal(task.sessionId, priorSessionId);
+      assert.equal(task.executionSessionId, priorSessionId);
     });
   }
 });
@@ -536,7 +536,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
           const orphan = data.orphanSessionId;
           if (orphan) {
             assert.match(orphan, /^ss-/);
-            assert.equal((await svc.runtime.probe(orphan)).alive, false);
+            assert.equal((await svc.runtime.probe(orphan)).isAlive, false);
           } else {
             assert.equal(typeof data.expected?.taskId, "string");
             assert.equal(typeof data.actual?.taskId, "string");
@@ -549,7 +549,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
               []
             );
             const retryableTask = await getTask(svc, workspaceId, taskPath);
-            assert.equal(retryableTask.sessionId, priorSessionId);
+            assert.equal(retryableTask.executionSessionId, priorSessionId);
             assert.ok(
               retryableTask.state === "running" ||
                 (retryableTask.state === "waiting" &&
@@ -564,7 +564,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
         assert.ok(!replaced.error, JSON.stringify(replaced.error));
         const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
         assert.notEqual(newSessionId, priorSessionId);
-        assert.equal((replaced.result as { session: { contextRestored?: boolean } }).session.contextRestored, false);
+        assert.equal((replaced.result as { session: { providerContextRestored?: boolean } }).session.providerContextRestored, false);
         assert.equal((replaced.result as { task: TaskSnap }).task.state, "running");
         await recoveryHold.entered;
         const input = await getInput(svc, workspaceId, taskPath, seeded.id);
@@ -589,7 +589,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
         await new Promise((r) => setTimeout(r, 120));
         const task = await getTask(svc, workspaceId, taskPath);
         assert.equal(task.state, "running");
-        assert.equal(task.sessionId, newSessionId);
+        assert.equal(task.executionSessionId, newSessionId);
       } finally {
         recoveryHold.release();
       }
@@ -614,7 +614,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
       assert.equal(input.sessionId, newSessionId);
       for (const rec of await svc.runtime.registry.list()) {
         if (rec.connectionId !== "fake-fail-launch") continue;
-        assert.equal((await svc.runtime.probe(rec.id)).alive, false);
+        assert.equal((await svc.runtime.probe(rec.id)).isAlive, false);
       }
     }, { connections: [FAKE_KEEPALIVE, FAKE_FAIL_LAUNCH] });
   }
@@ -634,7 +634,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
       const failedSessionId = (failed.error!.data as { newSessionId?: string }).newSessionId;
       assert.match(failedSessionId ?? "", /^ss-/);
       assertParkedOnSession(await getTask(svc, workspaceId, taskPath), priorSessionId);
-      assert.equal((await svc.runtime.probe(failedSessionId!)).alive, false);
+      assert.equal((await svc.runtime.probe(failedSessionId!)).isAlive, false);
       for (const inputId of ["ti-rebind-fail-a", "ti-rebind-fail-b"]) {
         const input = await getInput(svc, workspaceId, taskPath, inputId);
         assert.ok(input.status === "pending" || input.status === "failed");
@@ -689,7 +689,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
           await getTask(svc, workspaceId, taskPath),
           data.newSessionId!
         );
-        assert.equal((await svc.runtime.probe(data.newSessionId!)).alive, false);
+        assert.equal((await svc.runtime.probe(data.newSessionId!)).isAlive, false);
         const input = await getInput(svc, workspaceId, taskPath, inputId);
         assert.equal(input.sessionId, data.newSessionId);
         assert.ok(input.status === "pending" || input.status === "failed");
@@ -713,7 +713,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       });
       assert.ok(!again.error, JSON.stringify(again.error));
       assert.equal((again.result as { session: { sessionId: string } }).session.sessionId, sessionId);
-      assert.notEqual((again.result as { session: { contextRestored?: boolean } }).session.contextRestored, false);
+      assert.notEqual((again.result as { session: { providerContextRestored?: boolean } }).session.providerContextRestored, false);
     });
   }
   {
@@ -778,7 +778,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
         });
         const beforeReleaseTask = await getTask(svc, workspaceId, taskPath);
         const beforeReleaseInput = await getInput(svc, workspaceId, taskPath, inputId);
-        assert.equal(beforeReleaseTask.sessionId, priorSessionId);
+        assert.equal(beforeReleaseTask.executionSessionId, priorSessionId);
         assert.equal(beforeReleaseInput.sessionId, priorSessionId);
         assert.deepEqual(svc.runtime.getFollowUpAttemptsForTests(), []);
         hold.release();
@@ -805,8 +805,8 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
           a.sessionId === priorSessionId || a.sessionId === newSessionId
         ));
         const task = await getTask(svc, workspaceId, taskPath);
-        assert.equal(task.sessionId, newSessionId);
-        assert.equal((await svc.runtime.probe(priorSessionId)).alive, false);
+        assert.equal(task.executionSessionId, newSessionId);
+        assert.equal((await svc.runtime.probe(priorSessionId)).isAlive, false);
       } finally {
         hold.release();
       }
@@ -857,7 +857,7 @@ test("startSession rejects a changed exact Task/Session identity before flight j
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
@@ -869,7 +869,7 @@ test("startSession rejects a changed exact Task/Session identity before flight j
     const direct = dispatched.result as { taskPath: string; sessionId: string };
     const task = await getTask(svc, workspaceId, direct.taskPath);
     assert.ok(task.id);
-    await svc.runtime.registry.update(direct.sessionId, { lastTaskId: "tk-foreign1" });
+    await svc.runtime.registry.update(direct.sessionId, { currentTaskId: "tk-foreign1" });
 
     try {
       const started = await rpc(svc, "task.startSession", {
@@ -885,7 +885,7 @@ test("startSession rejects a changed exact Task/Session identity before flight j
         "invalid identity must fail before a managed provider flight is installed"
       );
     } finally {
-      await svc.runtime.registry.update(direct.sessionId, { lastTaskId: task.id });
+      await svc.runtime.registry.update(direct.sessionId, { currentTaskId: task.id });
     }
   });
 });
@@ -921,9 +921,9 @@ test("replaceSession does not join an older same-connection flight after exact r
 
     try {
       const rebound = await getTask(svc, workspaceId, taskPath);
-      assert.ok(rebound.sessionId);
-      assert.notEqual(rebound.sessionId, priorSessionId);
-      assert.equal((await svc.runtime.registry.read(rebound.sessionId!))?.connectionId, "fake-default");
+      assert.ok(rebound.executionSessionId);
+      assert.notEqual(rebound.executionSessionId, priorSessionId);
+      assert.equal((await svc.runtime.registry.read(rebound.executionSessionId!))?.connectionId, "fake-default");
 
       const staleJoin = await rpc(svc, "task.replaceSession", {
         workspaceId,
@@ -1007,7 +1007,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     assert.ok(!otherNote.error, JSON.stringify(otherNote.error));
     const otherNodeId = (otherNote.result as { nodeId: string }).nodeId;
     const otherDispatch = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [otherNodeId],
       contextNodeIds: [],
@@ -1029,19 +1029,19 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const otherPrior = (otherStarted.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    const delivered = await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
       summary: "ready for accept/replace race",
       commits: [sourceRef],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    assert.equal((delivered.result as { state: string }).state, "delivered");
-    const deliveryId = (delivered.result as { delivery: { id: string } }).delivery.id;
+    assert.equal((delivered.result as { state: string }).state, "submitted");
+    const resultId = (delivered.result as { result: { id: string } }).result.id;
 
     const acceptPromise = rpc(svc, "task.accept", {
       workspaceId,
-      deliveryId,
+      resultId,
       actor: "user",
     }).then((res) => {
       order.push("accept-done");

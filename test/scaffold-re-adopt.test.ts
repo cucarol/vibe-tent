@@ -22,16 +22,14 @@ import {
   TEMP_DIR,
   TENT_SYSTEM_DIR,
 } from "../src/core/paths.js";
-import { TYPE_REGISTRY_PATH, DEFAULT_TYPE_REGISTRY } from "../src/core/typeRegistry.js";
 import { ROLES_REGISTRY_PATH } from "../src/core/skillRoleRegistry.js";
 import { TAGS_REGISTRY_PATH, DEFAULT_TAG_REGISTRY } from "../src/core/tags.js";
 
 const ORPHAN_NODE_PATH = path.join("topic", "topic.md");
 const ORPHAN_NODE_BYTES =
   "---\nid: cx-orphan1\ntype: prompt\n---\n# Orphan topic\npreserved body bytes\n";
-const CUSTOM_TYPES_BYTES =
-  JSON.stringify({ goal: { tier: "base" }, prompt: { tier: "base" }, custom: { tier: "modifier" } }, null, 2) +
-  "\n";
+const RETIRED_TYPES_PATH = "types.json";
+const RETIRED_TYPES_BYTES = "{ retired type inventory is inert }\n";
 const CUSTOM_ROLES_BYTES =
   JSON.stringify(
     {
@@ -60,7 +58,7 @@ async function writeOrphanTentFixture(
   workspace: string,
   options: {
     withNode?: boolean;
-    withTypes?: boolean;
+    withRetiredTypes?: boolean;
     withRoles?: boolean;
     withTags?: boolean;
     withTempHistory?: boolean;
@@ -71,7 +69,7 @@ async function writeOrphanTentFixture(
 ): Promise<Record<string, string>> {
   const {
     withNode = true,
-    withTypes = true,
+    withRetiredTypes = true,
     withRoles = true,
     withTags = false,
     withTempHistory = true,
@@ -91,10 +89,10 @@ async function writeOrphanTentFixture(
     await fs.writeFile(abs, ORPHAN_NODE_BYTES, "utf8");
     snap[`.tent/${ORPHAN_NODE_PATH.replace(/\\/g, "/")}`] = ORPHAN_NODE_BYTES;
   }
-  if (withTypes) {
-    const abs = path.join(system, TYPE_REGISTRY_PATH);
-    await fs.writeFile(abs, CUSTOM_TYPES_BYTES, "utf8");
-    snap[`.tent/${TYPE_REGISTRY_PATH}`] = CUSTOM_TYPES_BYTES;
+  if (withRetiredTypes) {
+    const abs = path.join(system, RETIRED_TYPES_PATH);
+    await fs.writeFile(abs, RETIRED_TYPES_BYTES, "utf8");
+    snap[`.tent/${RETIRED_TYPES_PATH}`] = RETIRED_TYPES_BYTES;
   }
   if (withRoles) {
     const abs = path.join(system, ROLES_REGISTRY_PATH);
@@ -208,7 +206,7 @@ test("reAdoptOrphanTent: success preserves existing Node/registry/temp bytes and
   const { workspace, fsa } = await mkWorkspace();
   const before = await writeOrphanTentFixture(workspace, {
     withNode: true,
-    withTypes: true,
+    withRetiredTypes: true,
     withRoles: true,
     withTags: false,
     withTempHistory: true,
@@ -228,7 +226,7 @@ test("reAdoptOrphanTent: success preserves existing Node/registry/temp bytes and
 
   await assertBytesUnchanged(workspace, {
     [`.tent/${ORPHAN_NODE_PATH.replace(/\\/g, "/")}`]: ORPHAN_NODE_BYTES,
-    [`.tent/${TYPE_REGISTRY_PATH}`]: CUSTOM_TYPES_BYTES,
+    [`.tent/${RETIRED_TYPES_PATH}`]: RETIRED_TYPES_BYTES,
     [`.tent/${ROLES_REGISTRY_PATH}`]: CUSTOM_ROLES_BYTES,
     [`.tent/${TEMP_DIR}/history.txt`]: TEMP_HISTORY_BYTES,
   });
@@ -250,41 +248,60 @@ test("reAdoptOrphanTent: success preserves existing Node/registry/temp bytes and
   assert.ok(gitignore.startsWith("node_modules/\n"));
 });
 
-test("reAdoptOrphanTent: evidence via registry alone (no Node) still succeeds", async () => {
+test("reAdoptOrphanTent: evidence via supported registry alone (no Node) still succeeds", async () => {
   const { workspace, fsa } = await mkWorkspace();
   await writeOrphanTentFixture(workspace, {
     withNode: false,
-    withTypes: true,
-    withRoles: false,
+    withRetiredTypes: true,
+    withRoles: true,
     withTags: false,
     withTempHistory: false,
   });
 
   const beforeTypes = await fs.readFile(
-    path.join(workspace, TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH),
+    path.join(workspace, TENT_SYSTEM_DIR, RETIRED_TYPES_PATH),
     "utf8"
   );
 
   const result = await reAdoptOrphanTent(fsa);
   assert.equal(result.createdIndex, true);
-  assert.ok(result.createdRegistries.includes(ROLES_REGISTRY_PATH));
+  assert.equal(result.createdRegistries.includes(ROLES_REGISTRY_PATH), false);
   assert.ok(result.createdRegistries.includes(TAGS_REGISTRY_PATH));
   assert.ok(result.createdDirs.includes(TEMP_DIR));
   assert.ok(result.createdDirs.includes(ATTACHMENTS_DIR));
 
   const afterTypes = await fs.readFile(
-    path.join(workspace, TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH),
+    path.join(workspace, TENT_SYSTEM_DIR, RETIRED_TYPES_PATH),
     "utf8"
   );
   assert.equal(afterTypes, beforeTypes);
 
   assert.equal(
-    await fsa.readFile(`${TENT_SYSTEM_DIR}/${TYPE_REGISTRY_PATH}`),
-    CUSTOM_TYPES_BYTES
+    await fsa.readFile(`${TENT_SYSTEM_DIR}/${RETIRED_TYPES_PATH}`),
+    RETIRED_TYPES_BYTES
   );
   assert.equal(
     await fsa.readFile(`${TENT_SYSTEM_DIR}/${ROLES_REGISTRY_PATH}`),
-    JSON.stringify({ roles: [] }, null, 2) + "\n"
+    CUSTOM_ROLES_BYTES
+  );
+});
+
+test("reAdoptOrphanTent: retired types.json alone is not Tent evidence", async () => {
+  const { workspace, fsa } = await mkWorkspace();
+  await writeOrphanTentFixture(workspace, {
+    withNode: false,
+    withRetiredTypes: true,
+    withRoles: false,
+    withTags: false,
+    withTempHistory: false,
+  });
+  const probe = new WriteProbeFs(fsa);
+  probe.arm();
+  await assert.rejects(() => reAdoptOrphanTent(probe), /no recognized Tent evidence/);
+  assert.equal(probe.mutationCount, 0);
+  assert.equal(
+    await fsa.readFile(`${TENT_SYSTEM_DIR}/${RETIRED_TYPES_PATH}`),
+    RETIRED_TYPES_BYTES
   );
 });
 
@@ -292,7 +309,7 @@ test("reAdoptOrphanTent: evidence via durable cx- Node alone (no registry) still
   const { workspace, fsa } = await mkWorkspace();
   await writeOrphanTentFixture(workspace, {
     withNode: true,
-    withTypes: false,
+    withRetiredTypes: false,
     withRoles: false,
     withTags: false,
     withTempHistory: false,
@@ -307,17 +324,14 @@ test("reAdoptOrphanTent: evidence via durable cx- Node alone (no registry) still
   assert.equal(result.createdIndex, true);
   assert.deepEqual(
     result.createdRegistries.sort(),
-    [TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH].sort()
+    [ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH].sort()
   );
 
   assert.equal(
     await fs.readFile(path.join(workspace, TENT_SYSTEM_DIR, ORPHAN_NODE_PATH), "utf8"),
     beforeNode
   );
-  assert.equal(
-    await fsa.readFile(`${TENT_SYSTEM_DIR}/${TYPE_REGISTRY_PATH}`),
-    JSON.stringify(DEFAULT_TYPE_REGISTRY, null, 2) + "\n"
-  );
+  assert.equal(await fsa.exists(`${TENT_SYSTEM_DIR}/${RETIRED_TYPES_PATH}`), false);
 });
 
 test("reAdoptOrphanTent: fail-closed empty/unrecognized .tent with zero writes", async () => {
@@ -344,7 +358,7 @@ test("reAdoptOrphanTent: fail-closed empty/unrecognized .tent with zero writes",
   assert.equal(probe.mutationCount, 0, "precondition failure must not write");
 
   assert.equal(await fsa.exists(`${TENT_SYSTEM_DIR}/${INDEX_PATH}`), false);
-  assert.equal(await fsa.exists(`${TENT_SYSTEM_DIR}/${TYPE_REGISTRY_PATH}`), false);
+  assert.equal(await fsa.exists(`${TENT_SYSTEM_DIR}/${RETIRED_TYPES_PATH}`), false);
   assert.equal(await fsa.exists(".gitignore"), false);
 });
 
@@ -429,7 +443,6 @@ test("reAdoptOrphanTent: fail-closed when already a valid Tent (zero writes)", a
 
   const paths = [
     `.tent/${INDEX_PATH}`,
-    `.tent/${TYPE_REGISTRY_PATH}`,
     `.tent/${ROLES_REGISTRY_PATH}`,
     `.tent/${TAGS_REGISTRY_PATH}`,
     ".tent/root/root.md",
@@ -452,7 +465,7 @@ test("reAdoptOrphanTent: fail-closed when index.md exists but is invalid/non-ind
   const badIndex = "# User notes — not an index\nkeep me\n";
   const before = await writeOrphanTentFixture(workspace, {
     withNode: true,
-    withTypes: true,
+    withRetiredTypes: true,
     indexContent: badIndex,
   });
 
@@ -485,7 +498,7 @@ test("reAdoptOrphanTent: success is not silently re-runnable once index exists (
   const { workspace, fsa } = await mkWorkspace();
   await writeOrphanTentFixture(workspace, {
     withNode: true,
-    withTypes: true,
+    withRetiredTypes: true,
     withRoles: true,
   });
 
@@ -494,7 +507,7 @@ test("reAdoptOrphanTent: success is not silently re-runnable once index exists (
 
   const paths = [
     `.tent/${INDEX_PATH}`,
-    `.tent/${TYPE_REGISTRY_PATH}`,
+    `.tent/${RETIRED_TYPES_PATH}`,
     `.tent/${ROLES_REGISTRY_PATH}`,
     `.tent/${TAGS_REGISTRY_PATH}`,
     `.tent/${ORPHAN_NODE_PATH.replace(/\\/g, "/")}`,
@@ -516,7 +529,7 @@ test("reAdoptOrphanTent: does not invent roster or rewrite existing roles regist
   const { workspace, fsa } = await mkWorkspace();
   await writeOrphanTentFixture(workspace, {
     withNode: true,
-    withTypes: true,
+    withRetiredTypes: true,
     withRoles: true,
     withTags: true,
   });
@@ -550,7 +563,7 @@ test("isValidTentIndexMarker: accepts type index only", () => {
 test("ensureWorkspaceGitignore: re-adopt path leaves covered workspaces untouched", async () => {
   const { workspace, fsa } = await mkWorkspace();
   await fs.writeFile(path.join(workspace, ".gitignore"), ".tent/\n", "utf8");
-  await writeOrphanTentFixture(workspace, { withNode: true, withTypes: true });
+  await writeOrphanTentFixture(workspace, { withNode: true, withRetiredTypes: true });
 
   const result = await reAdoptOrphanTent(fsa);
   assert.equal(result.gitignoreUpdated, false);

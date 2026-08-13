@@ -12,8 +12,8 @@ import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { ensureRoleWorkspace, ensureTaskWorkspace } from "../src/core/workspace.js";
-import { writeTaskEnvelope, patchTaskEnvelope, loadTaskEnvelope } from "../src/core/task.js";
-import { createDelivery } from "../src/core/delivery.js";
+import { writeTaskRecord, patchTaskRecord, loadTaskRecord } from "../src/core/task.js";
+import { createTaskResult } from "../src/core/task-result.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
@@ -22,7 +22,7 @@ import {
 import {
   listTaskWorktreeReclaimPending,
 } from "../src/core/task-worktree-reclaim-queue.js";
-import type { TaskEnvelope } from "../src/core/task.js";
+import type { TaskRecord } from "../src/core/task.js";
 
 const FAKE_DEFAULT_CONNECTION_ID = "fake-default";
 const FAKE_CONNECTION = {
@@ -140,12 +140,12 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
     const nodeId = inboxBox?.id ?? "cx-inbox";
     const nodePath = inboxBox?.path ?? "inbox";
 
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      sessionId: "ss-fakedefault",
+    const taskPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "user", id: "user" },
+      executionSessionId: "ss-fakedefault",
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
-      userPrompt: "reclaim after reject",
+      prompt: "reclaim after reject",
       id: taskId,
       workspace: {
         workspace: lane.workspace,
@@ -154,19 +154,18 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
         targetBranch: lane.targetBranch,
       },
     });
-    await patchTaskEnvelope(sysFs, taskPath, {
-      state: "delivered",
+    await patchTaskRecord(sysFs, taskPath, {
+      state: "submitted",
       updatedAt: clock.now(),
     });
-    const delivery = await createDelivery(sysFs, clock, {
+    const result = await createTaskResult(sysFs, clock, {
       taskId,
-      sourceNodeId: nodeId,
-      summary: "ready for terminal reject",
+      report: "ready for terminal reject",
       status: "ready",
-      deliveriesDir: `temp/sessions/ss-fakedefault/deliveries`,
+      resultsDir: `temp/sessions/ss-fakedefault/results`,
     });
-    await patchTaskEnvelope(sysFs, taskPath, {
-      activeDeliveryId: delivery.id,
+    await patchTaskRecord(sysFs, taskPath, {
+      currentResultId: result.id,
       updatedAt: clock.now(),
     });
 
@@ -184,7 +183,7 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
 
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
-      deliveryId: delivery.id,
+      resultId: result.id,
       actor: "user",
       resume: false,
       note: "no rework",
@@ -200,7 +199,7 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
       "terminal reject must auto-reclaim clean Task worktree"
     );
     // Task envelope remains for audit.
-    const task = await loadTaskEnvelope(sysFs, taskPath);
+    const task = await loadTaskRecord(sysFs, taskPath);
     assert.equal(task.state, "rejected");
     const branchExists = await git(ws, "show-ref", "--verify", `refs/heads/${lane.branch}`)
       .then(() => true)
@@ -235,12 +234,12 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   const nodeId = inboxBox?.id ?? "cx-inbox";
   const nodePath = inboxBox?.path ?? "inbox";
 
-  const taskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    sessionId: "ss-fakedefault",
+  const taskPath = await writeTaskRecord(sysFs, clock, {
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-fakedefault",
     ...taskNodeContext(nodeId, nodePath),
     manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
-    userPrompt: "dirty then clean",
+    prompt: "dirty then clean",
     id: taskId,
     workspace: {
       workspace: lane.workspace,
@@ -249,19 +248,18 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
       targetBranch: lane.targetBranch,
     },
   });
-  await patchTaskEnvelope(sysFs, taskPath, {
-    state: "delivered",
+  await patchTaskRecord(sysFs, taskPath, {
+    state: "submitted",
     updatedAt: clock.now(),
   });
-  const delivery = await createDelivery(sysFs, clock, {
+  const result = await createTaskResult(sysFs, clock, {
     taskId,
-    sourceNodeId: nodeId,
-    summary: "terminal via interrupt path",
+    report: "terminal via interrupt path",
     status: "ready",
-    deliveriesDir: `temp/sessions/ss-fakedefault/deliveries`,
+    resultsDir: `temp/sessions/ss-fakedefault/results`,
   });
-  await patchTaskEnvelope(sysFs, taskPath, {
-    activeDeliveryId: delivery.id,
+  await patchTaskRecord(sysFs, taskPath, {
+    currentResultId: result.id,
     updatedAt: clock.now(),
   });
 
@@ -277,7 +275,7 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
     // Terminal reject enqueues pending even when dirty (fail-closed keep scene).
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
-      deliveryId: delivery.id,
+      resultId: result.id,
       actor: "user",
       resume: false,
       note: "dirty keep",
@@ -326,12 +324,12 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
   const lane = await ensureTaskWorkspace(ws, taskId);
   const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
   const inboxBox = [...tent.byId.values()][0];
-  const taskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    sessionId: "ss-fakedefault",
+  const taskPath = await writeTaskRecord(sysFs, clock, {
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-fakedefault",
     ...taskNodeContext(inboxBox?.id ?? "cx-1", inboxBox?.path ?? "inbox"),
     manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
-    userPrompt: "old terminal never observed by reclaim feature",
+    prompt: "old terminal never observed by reclaim feature",
     id: taskId,
     workspace: {
       workspace: lane.workspace,
@@ -340,7 +338,7 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
       targetBranch: lane.targetBranch,
     },
   });
-  await patchTaskEnvelope(sysFs, taskPath, {
+  await patchTaskRecord(sysFs, taskPath, {
     state: "accepted",
     updatedAt: clock.now(),
   });
@@ -369,7 +367,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     await svc.ctx.runtime.reserveSession({
       sessionId: managedSessionId,
       connectionId: FAKE_DEFAULT_CONNECTION_ID,
-      lastTaskId: taskId,
+      currentTaskId: taskId,
       workspace: workspaceId,
       workspaceLane: lane,
       runtimeWorkspace: { cwd: lane.worktree },
@@ -379,12 +377,12 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     const nodeId = inboxBox?.id ?? "cx-1";
     const nodePath = inboxBox?.path ?? "inbox";
 
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      sessionId: managedSessionId,
+    const taskPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "user", id: "user" },
+      executionSessionId: managedSessionId,
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/${managedSessionId}/manifests/${taskId}.yml`,
-      userPrompt: "session still live",
+      prompt: "session still live",
       id: taskId,
       workspace: {
         workspace: lane.workspace,
@@ -393,7 +391,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
         targetBranch: lane.targetBranch,
       },
     });
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "running",
       updatedAt: clock.now(),
     });
@@ -408,13 +406,13 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     assert.ok(liveSessionId, "need a live managed session id");
 
     // Force terminal without stopping the live session (simulates race / external leave lag).
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "failed",
       workspace: lane.workspace,
       worktree: lane.worktree,
       branch: lane.branch,
       targetBranch: lane.targetBranch,
-      sessionId: liveSessionId,
+      executionSessionId: liveSessionId,
       updatedAt: clock.now(),
     });
 
@@ -444,7 +442,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       // already stopped
     }
     // Drop session binding so registry residue cannot keep SESSION_ACTIVE after stop.
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "failed",
       workspace: lane.workspace,
       worktree: lane.worktree,
@@ -491,12 +489,12 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const targetLane = await ensureTaskWorkspace(ws, targetId);
     const otherLane = await ensureTaskWorkspace(ws, otherId);
 
-    const targetPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      sessionId: "ss-fakedefault",
+    const targetPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "user", id: "user" },
+      executionSessionId: "ss-fakedefault",
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${targetId}.yml`,
-      userPrompt: "accepted under external session",
+      prompt: "accepted under external session",
       id: targetId,
       workspace: {
         workspace: targetLane.workspace,
@@ -505,12 +503,12 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
         targetBranch: targetLane.targetBranch,
       },
     });
-    const otherPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      sessionId: "ss-fakedefault",
+    const otherPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "user", id: "user" },
+      executionSessionId: "ss-fakedefault",
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${otherId}.yml`,
-      userPrompt: "unrelated pending must stay",
+      prompt: "unrelated pending must stay",
       id: otherId,
       workspace: {
         workspace: otherLane.workspace,
@@ -526,22 +524,22 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
       roleId: "rl-executor",
       externalKey: "reclaim-ext-key",
       cwd: targetLane.worktree,
-      lastTaskId: targetId,
+      currentTaskId: targetId,
     });
     assert.ok(!entered.error, JSON.stringify(entered.error));
     const sessionId = (entered.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    await patchTaskEnvelope(sysFs, targetPath, {
+    await patchTaskRecord(sysFs, targetPath, {
       state: "accepted",
-      sessionId,
+      executionSessionId: sessionId,
       workspace: targetLane.workspace,
       worktree: targetLane.worktree,
       branch: targetLane.branch,
       targetBranch: targetLane.targetBranch,
       updatedAt: clock.now(),
     });
-    await patchTaskEnvelope(sysFs, otherPath, {
+    await patchTaskRecord(sysFs, otherPath, {
       state: "failed",
       workspace: otherLane.workspace,
       worktree: otherLane.worktree,
@@ -585,7 +583,7 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     );
     assert.equal(await pathExists(otherLane.worktree), true);
 
-    // Leave external — never deliver/accept; must retry exact lastTaskId only.
+    // Leave external — never deliver/accept; must retry exact currentTaskId only.
     const left = await rpc(svc, "session.leave", {
       workspaceId,
       sessionId,
@@ -640,12 +638,12 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const nodeId = inboxBox?.id ?? "cx-inbox";
     const nodePath = inboxBox?.path ?? "inbox";
 
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "role", id: "规划" },
-      roleId: "rl-executor",
+    const taskPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "role", id: "规划" },
+      assigneeRoleId: "rl-executor",
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: "temp/roles/rl-executor/manifests/m.yml",
-      userPrompt: "role terminal",
+      prompt: "role terminal",
       id: "tk-rolekeep",
 
       workspace: {
@@ -655,7 +653,7 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
         targetBranch: roleLane.targetBranch,
       },
     });
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "accepted",
       updatedAt: clock.now(),
     });
@@ -709,7 +707,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     await svc.ctx.runtime.reserveSession({
       sessionId: managedSessionId,
       connectionId: FAKE_DEFAULT_CONNECTION_ID,
-      lastTaskId: taskId,
+      currentTaskId: taskId,
       workspace: workspaceId,
       workspaceLane: lane,
       runtimeWorkspace: { cwd: lane.worktree },
@@ -719,12 +717,12 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     const nodeId = inboxBox?.id ?? "cx-1";
     const nodePath = inboxBox?.path ?? "inbox";
 
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      sessionId: managedSessionId,
+    const taskPath = await writeTaskRecord(sysFs, clock, {
+      requester: { kind: "user", id: "user" },
+      executionSessionId: managedSessionId,
       ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/${managedSessionId}/manifests/${taskId}.yml`,
-      userPrompt: "terminal while turn still busy + late write",
+      prompt: "terminal while turn still busy + late write",
       id: taskId,
       workspace: {
         workspace: lane.workspace,
@@ -733,7 +731,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
         targetBranch: lane.targetBranch,
       },
     });
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "running",
       updatedAt: clock.now(),
     });
@@ -749,17 +747,17 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     assert.ok(liveSessionId, "need a live managed session (busy/alive)");
 
     // Publish/force collaboration-terminal while the bound Session remains live.
-    await patchTaskEnvelope(sysFs, taskPath, {
+    await patchTaskRecord(sysFs, taskPath, {
       state: "failed",
       workspace: lane.workspace,
       worktree: lane.worktree,
       branch: lane.branch,
       targetBranch: lane.targetBranch,
-      sessionId: liveSessionId,
+      executionSessionId: liveSessionId,
       updatedAt: clock.now(),
     });
 
-    // Late write + commit after terminal publish (post-Delivery late-write race).
+    // Late write + commit after terminal publish (post-TaskResult late-write race).
     const lateFile = path.join(lane.worktree, "late-after-terminal.txt");
     await fs.writeFile(lateFile, "late write while session still busy\n");
     await git(lane.worktree, "add", "late-after-terminal.txt");
@@ -804,7 +802,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
         // already stopped
       }
       // Drop binding residue so registry cannot keep SESSION_ACTIVE after stop.
-      await patchTaskEnvelope(sysFs, taskPath, {
+      await patchTaskRecord(sysFs, taskPath, {
         state: "failed",
         workspace: lane.workspace,
         worktree: lane.worktree,

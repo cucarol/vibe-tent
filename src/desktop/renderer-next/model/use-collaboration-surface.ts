@@ -57,8 +57,8 @@ export function guardCollaborationActionsOnline(
   return {
     retry: actions.retry,
     dispatch: async () => false,
-    acceptDelivery: async () => false,
-    rejectDelivery: async () => false,
+    acceptTaskResult: async () => false,
+    rejectTaskResult: async () => false,
     respondDecision: async () => false,
   };
 }

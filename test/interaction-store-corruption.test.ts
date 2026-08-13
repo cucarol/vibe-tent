@@ -118,7 +118,7 @@ function listEvidenceBackups(entries: string[], fileName: string): string[] {
 }
 
 for (const fixture of cases) {
-  test(`${fixture.name} remains latched across restart and blocks Delivery`, async () => {
+  test(`${fixture.name} remains latched across restart and blocks TaskResult`, async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-corrupt-data-"));
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-corrupt-ws-"));
     const primary = path.join(dataDir, fixture.fileName);
@@ -153,8 +153,8 @@ for (const fixture of cases) {
           workNodeIds: [note.nodeId],
           contextNodeIds: [],
           connectionId: CONNECTION.connectionId,
-          prompt: "hold for corruption delivery gate",
-          parentActor: { kind: "user", id: "user" },
+          prompt: "hold for corruption result gate",
+          requester: { kind: "user", id: "user" },
           acceptMode: "review-required",
         })) as { taskPath: string };
         taskPath = dispatched.taskPath;
@@ -188,8 +188,8 @@ for (const fixture of cases) {
           workNodeIds: [note.nodeId],
           contextNodeIds: [],
           connectionId: CONNECTION.connectionId,
-          prompt: "hold for corruption delivery gate",
-          parentActor: { kind: "user", id: "user" },
+          prompt: "hold for corruption result gate",
+          requester: { kind: "user", id: "user" },
           acceptMode: "review-required",
         })) as { taskPath: string };
         taskPath = dispatched.taskPath;
@@ -198,23 +198,23 @@ for (const fixture of cases) {
         }).task.id;
       }
 
-      const failedDelivery = await captureError(() =>
-        client.taskDeliver(workspaceId, taskPath, {
-          summary: "MUST_NOT_DELIVER",
+      const failedTaskResult = await captureError(() =>
+        client.taskSubmit(workspaceId, taskPath, {
+          report: "MUST_NOT_DELIVER",
           commits: [],
         })
       );
-      assert.match(failedDelivery.message, new RegExp(fixture.code));
-      const repeatedDelivery = await captureError(() =>
-        client.taskDeliver(workspaceId, taskPath, {
-          summary: "MUST_NOT_DELIVER_AGAIN",
+      assert.match(failedTaskResult.message, new RegExp(fixture.code));
+      const repeatedTaskResult = await captureError(() =>
+        client.taskSubmit(workspaceId, taskPath, {
+          report: "MUST_NOT_DELIVER_AGAIN",
           commits: [],
         })
       );
-      assert.match(repeatedDelivery.message, new RegExp(fixture.code));
+      assert.match(repeatedTaskResult.message, new RegExp(fixture.code));
 
-      const deliveries = await client.deliveryList(workspaceId);
-      assert.equal(deliveries.deliveries.length, 0, "corrupt authority publishes no Delivery");
+      const results = await client.taskResultList(workspaceId);
+      assert.equal(results.results.length, 0, "corrupt authority publishes no TaskResult");
       const task = (await client.taskGet(workspaceId, taskPath)) as {
         task: { id: string; state: string; wait?: { code?: string } | null };
       };

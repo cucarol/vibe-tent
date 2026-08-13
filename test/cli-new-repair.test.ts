@@ -11,7 +11,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tentIndexMarker } from "../src/core/scaffold.js";
 import { INDEX_PATH, TENT_SYSTEM_DIR, TEMP_DIR, ATTACHMENTS_DIR } from "../src/core/paths.js";
-import { TYPE_REGISTRY_PATH } from "../src/core/typeRegistry.js";
 import { ROLES_REGISTRY_PATH } from "../src/core/skillRoleRegistry.js";
 import { TAGS_REGISTRY_PATH } from "../src/core/tags.js";
 
@@ -19,6 +18,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 const cliSource = path.join(repoRoot, "src", "cli", "tent.ts");
 const tsxImport = import.meta.resolve("tsx");
+const RETIRED_TYPE_REGISTRY_PATH = "types.json";
 
 const ORPHAN_NODE_BYTES =
   "---\nid: cx-orphan1\ntype: prompt\n---\n# Orphan topic\npreserved body bytes\n";
@@ -76,7 +76,7 @@ async function writeOrphan(
     await fs.writeFile(path.join(nodeDir, "topic.md"), ORPHAN_NODE_BYTES, "utf8");
   }
   if (withTypes) {
-    await fs.writeFile(path.join(system, TYPE_REGISTRY_PATH), CUSTOM_TYPES_BYTES, "utf8");
+    await fs.writeFile(path.join(system, RETIRED_TYPE_REGISTRY_PATH), CUSTOM_TYPES_BYTES, "utf8");
   }
   if (withTemp) {
     await fs.mkdir(path.join(system, TEMP_DIR), { recursive: true });
@@ -103,7 +103,7 @@ test("tent new --repair-existing: success preserves bytes and reports created pi
 
   const preservedRels = [
     path.join(".tent", "topic", "topic.md"),
-    path.join(".tent", TYPE_REGISTRY_PATH),
+    path.join(".tent", RETIRED_TYPE_REGISTRY_PATH),
     path.join(".tent", TEMP_DIR, "history.txt"),
     "README.md",
   ];
@@ -129,7 +129,7 @@ test("tent new --repair-existing: success preserves bytes and reports created pi
 
 test("tent new --repair-existing: flag order after target (canonical form)", async () => {
   const workspace = await mkWorkspace();
-  await writeOrphan(workspace, { withNode: false, withTypes: true, withTemp: false });
+  await writeOrphan(workspace, { withNode: true, withTypes: true, withTemp: false });
   const result = await runCli(workspace, "new", workspace, "--repair-existing");
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /Re-adopted orphan Tent/i);
@@ -157,7 +157,7 @@ test("tent new --repair-existing: fail-closed empty/unrecognized .tent (zero wri
   assert.match(result.stderr, /no recognized Tent evidence/i);
   assert.equal(await exists(path.join(system, INDEX_PATH)), false);
   assert.equal(await fs.readFile(path.join(system, "noise.txt"), "utf8"), beforeNoise);
-  assert.equal(await exists(path.join(system, TYPE_REGISTRY_PATH)), false);
+  assert.equal(await exists(path.join(system, RETIRED_TYPE_REGISTRY_PATH)), false);
 });
 
 test("tent new --repair-existing: fail-closed already valid Tent (zero writes)", async () => {
@@ -166,13 +166,12 @@ test("tent new --repair-existing: fail-closed already valid Tent (zero writes)",
   const created = await runCli(workspace, "new", ".");
   assert.equal(created.code, 0, created.stderr);
   const indexBefore = await fs.readFile(path.join(workspace, ".tent", INDEX_PATH), "utf8");
-  const typesBefore = await fs.readFile(path.join(workspace, ".tent", TYPE_REGISTRY_PATH), "utf8");
 
   const result = await runCli(workspace, "new", ".", "--repair-existing");
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /already marks a valid Tent/i);
   assert.equal(await fs.readFile(path.join(workspace, ".tent", INDEX_PATH), "utf8"), indexBefore);
-  assert.equal(await fs.readFile(path.join(workspace, ".tent", TYPE_REGISTRY_PATH), "utf8"), typesBefore);
+  assert.equal(await exists(path.join(workspace, ".tent", RETIRED_TYPE_REGISTRY_PATH)), false);
 });
 
 test("tent new --repair-existing: fail-closed invalid index (zero writes)", async () => {
@@ -206,7 +205,7 @@ test("tent new --repair-existing: fail-closed missing target/.tent", async () =>
 test("tent new --repair-existing never scaffolds a second workspace", async () => {
   const primary = await mkWorkspace("tent-cli-repair-p-");
   const other = await mkWorkspace("tent-cli-repair-o-");
-  await writeOrphan(primary, { withTypes: true, withNode: false });
+  await writeOrphan(primary, { withTypes: true, withNode: true });
   await fs.mkdir(path.join(other, "keep"), { recursive: true });
 
   const result = await runCli(primary, "new", primary, "--repair-existing");

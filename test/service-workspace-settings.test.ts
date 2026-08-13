@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadTaskRecord } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -183,7 +183,7 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
     }
     const retiredField = await rpc(svc, "workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: "review",
+      defaultTaskResultPolicy: "review",
       actor: "user",
     });
     assert.ok(retiredField.error);
@@ -215,11 +215,11 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
     const d1 = (await client.taskDispatch(workspaceId, {
       workNodeIds: [box1],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "first task uses default review",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    const t1 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
+    const t1 = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
     assert.equal(t1.acceptMode, "review-required");
 
     await client.workspaceSettingsUpdate(workspaceId, {
@@ -229,39 +229,39 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
     const d2 = (await client.taskDispatch(workspaceId, {
       workNodeIds: [box2],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "second task snapshots auto-accept",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    const t2 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
+    const t2 = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
     assert.equal(t2.acceptMode, "auto-accept");
 
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
       workNodeIds: [box3],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "third task explicit agent-decide",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "agent-decide",
     })) as { taskPath: string };
-    const t3 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
+    const t3 = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
     assert.equal(t3.acceptMode, "agent-decide");
 
     // Existing tasks never change when settings change.
     await client.workspaceSettingsUpdate(workspaceId, {
       defaultAcceptMode: "review-required",
     });
-    const t1Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
-    const t2Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
+    const t1Again = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
+    const t2Again = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
     assert.equal(t1Again.acceptMode, "review-required");
     assert.equal(t2Again.acceptMode, "auto-accept");
-    const t3Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
+    const t3Again = await loadTaskRecord(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
     assert.equal(t3Again.acceptMode, "agent-decide");
 
     for (const value of ["manual", "review", "bypass"]) {
       const rejected = await rpc(svc, "task.dispatch", {
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [await createNode(`work-item-${value}-reject`)],
         contextNodeIds: [],
@@ -273,13 +273,13 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
       assert.equal(rejected.error!.code, -32602);
     }
     const retiredField = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [await createNode("work-item-retired-field")],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "must reject retired field",
-      deliveryPolicy: "review",
+      resultPolicy: "review",
     });
     assert.ok(retiredField.error);
     assert.equal(retiredField.error!.code, -32602);
@@ -294,9 +294,9 @@ test("task envelope persists canonical acceptMode and rejects retired disk value
     const d = (await client.taskDispatch(workspaceId, {
       workNodeIds: [nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "new wire writes review",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string; task?: { acceptMode?: string } };
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const raw = await fsa.readFile(d.taskPath);
@@ -304,15 +304,15 @@ test("task envelope persists canonical acceptMode and rejects retired disk value
 
     const planted = raw.replace(/acceptMode:\s*review-required/, "acceptMode: manual");
     await fsa.writeFile(d.taskPath, planted);
-    await assert.rejects(() => loadTaskEnvelope(fsa, d.taskPath), /acceptMode must be/);
+    await assert.rejects(() => loadTaskRecord(fsa, d.taskPath), /acceptMode must be/);
     assert.equal(await fsa.readFile(d.taskPath), planted);
 
     const retiredField = raw.replace(
       /acceptMode:\s*review-required/,
-      "deliveryPolicy: review"
+      "resultPolicy: review"
     );
     await fsa.writeFile(d.taskPath, retiredField);
-    await assert.rejects(() => loadTaskEnvelope(fsa, d.taskPath), /retired deliveryPolicy/);
+    await assert.rejects(() => loadTaskRecord(fsa, d.taskPath), /retired resultPolicy/);
     assert.equal(await fsa.readFile(d.taskPath), retiredField);
   });
 });

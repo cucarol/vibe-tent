@@ -1,8 +1,8 @@
 /**
- * P0 Service E2E: ordinary executor lane history gate at public task.deliver
- * and managed auto-deliver (cx-5q6za6 / review-feedback ti-jkpe3m5mxk).
+ * P0 Service E2E: ordinary executor lane history gate at public task.submit
+ * and managed auto-submit (cx-5q6za6 / review-feedback ti-jkpe3m5mxk).
  *
- * Proves ready Delivery is blocked at lifecycle entry points — not only pure /
+ * Proves ready TaskResult is blocked at lifecycle entry points — not only pure /
  * real-git helpers in task-context-card.test.
  */
 import assert from "node:assert/strict";
@@ -107,7 +107,7 @@ async function runningTaskWithBase(
 }> {
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
-    parentActor: { kind: "user", id: "user" },
+    requester: { kind: "user", id: "user" },
     workspaceId,
     workNodeIds: [nodeId],
     contextNodeIds: [],
@@ -192,7 +192,7 @@ function assertExecutorLaneHistoryRpcError(
   return data!;
 }
 
-test("Service: exact base + linear Task commit → public task.deliver succeeds", async () => {
+test("Service: exact base + linear Task commit → public task.submit succeeds", async () => {
   const ws = await makeWorkspace("linear-ok");
   await initGitOnWorkspace(ws);
 
@@ -210,32 +210,32 @@ test("Service: exact base + linear Task commit → public task.deliver succeeds"
       .split(/\s+/);
     assert.equal(parents[1], baseCommit, "first parent of tip must be exact baseCommit");
 
-    const delivered = await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "linear history ok",
+      report: "linear history ok",
       commits: [tip],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     const result = delivered.result as {
       task: { state: string; workspaceLane?: { baseCommit?: string } };
-      delivery: { status: string; summary: string; commits?: string[] };
+      result: { status: string; report: string; commits?: string[] };
     };
-    assert.equal(result.task.state, "delivered");
-    assert.equal(result.delivery.status, "ready");
-    assert.equal(result.delivery.summary, "linear history ok");
+    assert.equal(result.task.state, "submitted");
+    assert.equal(result.result.status, "ready");
+    assert.equal(result.result.report, "linear history ok");
     assert.equal(result.task.workspaceLane?.baseCommit, baseCommit);
 
-    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const list = await rpc(svc, "taskResult.list", { workspaceId });
     const deliveries = (
-      list.result as { deliveries: Array<{ status: string; summary: string }> }
-    ).deliveries;
+      list.result as { results: Array<{ status: string; report: string }> }
+    ).results;
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0]!.status, "ready");
   });
 });
 
-test("Service: executor merge commit → task.deliver EXECUTOR_LANE_HISTORY/MERGE_COMMIT; no ready Delivery", async () => {
+test("Service: executor merge commit → task.submit EXECUTOR_LANE_HISTORY/MERGE_COMMIT; no ready TaskResult", async () => {
   const ws = await makeWorkspace("merge-refuse");
   await initGitOnWorkspace(ws);
 
@@ -246,13 +246,13 @@ test("Service: executor merge commit → task.deliver EXECUTOR_LANE_HISTORY/MERG
     const tip = await createExecutorMergeCommitAtBase(worktree);
     assert.notEqual(tip, baseCommit);
 
-    const delivered = await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "must refuse merge tip",
+      report: "must refuse merge tip",
       commits: [tip],
     });
-    assert.ok(delivered.error, "merge tip must refuse public task.deliver");
+    assert.ok(delivered.error, "merge tip must refuse public task.submit");
     assertExecutorLaneHistoryRpcError(delivered.error, "MERGE_COMMIT");
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -261,16 +261,16 @@ test("Service: executor merge commit → task.deliver EXECUTOR_LANE_HISTORY/MERG
       "running",
       "Task must remain running after history gate refuse"
     );
-    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const list = await rpc(svc, "taskResult.list", { workspaceId });
     assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
+      (list.result as { results: unknown[] }).results.length,
       0,
-      "must not publish ready Delivery"
+      "must not publish ready TaskResult"
     );
   });
 });
 
-test("Service: managed auto-deliver second gate refuses merge; preserves Task + report draft", async () => {
+test("Service: managed auto-submit second gate refuses merge; preserves Task + report draft", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("managed-merge");
   await initGitOnWorkspace(ws);
@@ -285,7 +285,7 @@ test("Service: managed auto-deliver second gate refuses merge; preserves Task + 
     const reportText = `outcome: delivered\n\n${reportBody}`;
 
     // Production auto-collects lane tip; omit explicit commits so the second gate
-    // sees real rev-list parents under managed auto-deliver (same as public path).
+    // sees real rev-list parents under managed auto-submit (same as public path).
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath,
@@ -297,16 +297,16 @@ test("Service: managed auto-deliver second gate refuses merge; preserves Task + 
     assert.equal(
       (got.result as { task: { state: string } }).task.state,
       "running",
-      "managed auto-deliver must keep Task running on merge refuse"
+      "managed auto-submit must keep Task running on merge refuse"
     );
-    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const list = await rpc(svc, "taskResult.list", { workspaceId });
     assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
+      (list.result as { results: unknown[] }).results.length,
       0,
-      "managed path must not publish ready Delivery on merge"
+      "managed path must not publish ready TaskResult on merge"
     );
 
-    const draft = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+    const draft = await svc.ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath);
     assert.ok(draft, "report draft must be preserved before second-gate refuse");
     assert.equal(draft!.assistantText, reportText);
     assert.equal(draft!.sessionId, sessionId);

@@ -11,7 +11,7 @@ export type FocusDocumentSnapshot = {
   nodeId: string;
   path: string;
   name: string;
-  type: string;
+  type?: string;
   body: string;
   raw: string;
   frontmatter: Record<string, unknown>;
@@ -79,7 +79,7 @@ export function normalizeFocusDocumentSnapshot(
   if (
     typeof raw.path !== "string" ||
     typeof raw.name !== "string" ||
-    typeof raw.type !== "string" ||
+    !(raw.type === undefined || typeof raw.type === "string") ||
     typeof raw.body !== "string" ||
     typeof raw.raw !== "string" ||
     typeof raw.etag !== "string" ||
@@ -93,7 +93,7 @@ export function normalizeFocusDocumentSnapshot(
     nodeId,
     path: raw.path,
     name: raw.name,
-    type: raw.type,
+    ...(typeof raw.type === "string" ? { type: raw.type } : {}),
     body: raw.body,
     raw: raw.raw,
     etag: raw.etag,

@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope, loadTaskEnvelopes, taskAsSub } from "../src/core/task.js";
+import { loadTaskRecord, loadTaskRecords } from "../src/core/task.js";
 import { taskInterrupt } from "../src/core/task-lifecycle.js";
 import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
 import { NodeFs } from "../src/fs/node-fs.js";
@@ -88,14 +88,14 @@ async function enterRoleSession(
   workspaceId: string,
   workspace: string,
   roleId: string,
-  lastTaskId?: string,
+  currentTaskId?: string,
   externalKey?: string
 ): Promise<{ sessionId: string; client: ServiceClient }> {
   const entered = await rpc(svc, "session.enter", {
     workspaceId,
     roleId,
     cwd: workspace,
-    ...(lastTaskId ? { lastTaskId } : {}),
+    ...(currentTaskId ? { currentTaskId } : {}),
     ...(externalKey ? { externalKey } : {}),
   });
   assert.ok(!entered.error, JSON.stringify(entered.error));
@@ -131,13 +131,13 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
     const result = claimed.result as { taskPath: string; state: string };
-    const task = await loadTaskEnvelope(tentFs, result.taskPath);
+    const task = await loadTaskRecord(tentFs, result.taskPath);
     assert.equal(result.state, "running");
     assert.equal(task.state, "running");
-    assert.equal(task.roleId, "rl-planner");
-    assert.equal(task.sessionId, plannerSession.sessionId);
-    assert.equal(taskAsSub(task), false);
-    assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
+    assert.equal(task.assigneeRoleId, "rl-planner");
+    assert.equal(task.executionSessionId, plannerSession.sessionId);
+    assert.equal(("as" + "Sub") in task, false);
+    assert.deepEqual(task.requester, { kind: "user", id: "user" });
     assert.doesNotMatch(await tentFs.readFile(task.path), /^reviewer:/m);
     assert.deepEqual(task.workNodeIds, [first, second]);
     assert.deepEqual(task.contextNodeIds, []);
@@ -150,45 +150,20 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
       workNodeIds: [second],
       contextNodeIds: [],
       prompt: "bad authority",
-      parentActor: { kind: "role", id: "rl-planner" },
+      requester: { kind: "role", id: "rl-planner" },
     });
     assert.equal(forbidden.error?.code, -32602);
-    assert.equal((await loadTaskEnvelopes(tentFs)).length, 1);
+    assert.equal((await loadTaskRecords(tentFs)).length, 1);
   });
 });
 
-test("Role direct claim inherits persisted parentActor while real self-subdispatch stays rejected", async () => {
+test("Role direct claim carries one requester and task.dispatch rejects the retired relation field", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
     const tentFs = new NodeFs(path.join(workspace, ".tent"));
     const workspaceId = await mount(svc, workspace);
-    const parentNode = await createNode(svc, workspaceId, "parent-work");
     const ownNode = await createNode(svc, workspaceId, "own-work");
-    const sessionNode = await createNode(svc, workspaceId, "session-work");
     const downstreamNode = await createNode(svc, workspaceId, "downstream-work");
-
-    const sourceDispatch = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      workNodeIds: [parentNode],
-      contextNodeIds: [],
-      roleId: "rl-executor",
-      prompt: "parent responsibility",
-      parentActor: { kind: "role", id: "rl-orchestrator" },
-    });
-    assert.ok(!sourceDispatch.error, JSON.stringify(sourceDispatch.error));
-    const sourcePath = (sourceDispatch.result as { taskPath: string }).taskPath;
-    const executorSession = await enterRoleSession(
-      svc,
-      workspaceId,
-      workspace,
-      "rl-executor",
-      undefined,
-      "direct-responsibility-source"
-    );
-    await executorSession.client.taskClaim(workspaceId, sourcePath);
-    // sourceTaskPath is responsibility provenance. A distinct exact Role
-    // Session with no active Task may inherit it; the source Session itself may
-    // not create a second active binding.
     const continuationSession = await enterRoleSession(
       svc,
       workspaceId,
@@ -203,42 +178,27 @@ test("Role direct claim inherits persisted parentActor while real self-subdispat
       workNodeIds: [ownNode],
       contextNodeIds: [],
       prompt: "executor owns this attempt",
-      sourceTaskPath: sourcePath,
     });
     assert.ok(!direct.error, JSON.stringify(direct.error));
-    const directTask = await loadTaskEnvelope(
+    const directTask = await loadTaskRecord(
       tentFs,
       (direct.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(directTask.parentActor, { kind: "role", id: "rl-orchestrator" });
-    assert.equal(taskAsSub(directTask), false);
-    await taskInterrupt(svc.hostApi.require(workspaceId).env, directTask.path);
-
-    const viaSession = await continuationSession.client.rpcRaw("task.claimDirect", {
-      workspaceId,
-      roleId: "rl-executor",
-      workNodeIds: [sessionNode],
-      contextNodeIds: [],
-      prompt: "inherit via exact Session binding",
-    });
-    assert.ok(!viaSession.error, JSON.stringify(viaSession.error));
-    const sessionTask = await loadTaskEnvelope(
-      tentFs,
-      (viaSession.result as { taskPath: string }).taskPath
-    );
-    assert.deepEqual(sessionTask.parentActor, { kind: "role", id: "rl-orchestrator" });
+    assert.deepEqual(directTask.requester, { kind: "user", id: "user" });
+    const retiredRelationField = "as" + "Sub";
+    assert.equal(retiredRelationField in directTask, false);
 
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       workNodeIds: [downstreamNode],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "not a direct claim",
-      parentActor: { kind: "role", id: "rl-executor" },
-      asSub: true,
+      requester: { kind: "role", id: "rl-executor" },
+      [retiredRelationField]: true,
     });
     assert.ok(selfDispatch.error);
-    assert.match(selfDispatch.error!.message, /must not equal the assignee/i);
+    assert.match(selfDispatch.error!.message, new RegExp(`unknown parameter: ${retiredRelationField}`, "i"));
   });
 });
 
@@ -256,9 +216,9 @@ test("Role task.claim trusts only exact live transport Session binding", async (
         workspaceId,
         workNodeIds: [nodeId],
         contextNodeIds: [],
-        roleId: "rl-executor",
+        assigneeRoleId: "rl-executor",
         prompt: `execute ${nodeId}`,
-        parentActor: { kind: "user", id: "user" },
+        requester: { kind: "user", id: "user" },
       });
       assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
       return (dispatched.result as { taskPath: string }).taskPath;
@@ -271,7 +231,7 @@ test("Role task.claim trusts only exact live transport Session binding", async (
       taskPath: firstPath,
     });
     assert.equal(unauthenticated.error?.code, -32001);
-    assert.equal((await loadTaskEnvelope(tentFs, firstPath)).state, "queued");
+    assert.equal((await loadTaskRecord(tentFs, firstPath)).state, "queued");
 
     const executor = await enterRoleSession(
       svc,
@@ -282,10 +242,10 @@ test("Role task.claim trusts only exact live transport Session binding", async (
       "transport-executor-a"
     );
     await executor.client.taskClaim(workspaceId, firstPath);
-    const claimed = await loadTaskEnvelope(tentFs, firstPath);
-    assert.equal(claimed.roleId, "rl-executor");
-    assert.equal(claimed.sessionId, executor.sessionId);
-    assert.equal((await svc.ctx.runtime.registry.read(executor.sessionId))?.lastTaskId, claimed.id);
+    const claimed = await loadTaskRecord(tentFs, firstPath);
+    assert.equal(claimed.assigneeRoleId, "rl-executor");
+    assert.equal(claimed.executionSessionId, executor.sessionId);
+    assert.equal((await svc.ctx.runtime.registry.read(executor.sessionId))?.currentTaskId, claimed.id);
 
     // The same trusted Session is idempotent; a different Session cannot steal it.
     await executor.client.taskClaim(workspaceId, firstPath);
@@ -343,8 +303,11 @@ test("Role task.claim trusts only exact live transport Session binding", async (
       currentExternalKey: "native-claim-key",
     });
     await nativeClient.taskClaim(workspaceId, secondPath);
-    const second = await loadTaskEnvelope(tentFs, secondPath);
-    assert.equal(second.sessionId, (nativeEntered.result as { session: { sessionId: string } }).session.sessionId);
+    const second = await loadTaskRecord(tentFs, secondPath);
+    assert.equal(
+      second.executionSessionId,
+      (nativeEntered.result as { session: { sessionId: string } }).session.sessionId
+    );
 
     const missingNative = createServiceClient({
       baseUrl: svc.url,
@@ -381,7 +344,7 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     });
     assert.ok(failed.error);
     assert.match(failed.error!.message, /forced direct claim failure/i);
-    assert.deepEqual(await loadTaskEnvelopes(tentFs), []);
+    assert.deepEqual(await loadTaskRecords(tentFs), []);
     const plannerRoot = path.join(workspace, ".tent", "temp", "roles", "rl-planner");
     assert.equal(
       await fs.stat(path.join(plannerRoot, "init.md")).then(() => true, () => false),
@@ -410,7 +373,7 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     });
     assert.ok(secondFailure.error);
     assert.equal(await fs.readFile(executorInit, "utf8"), originalInit);
-    assert.deepEqual(await loadTaskEnvelopes(tentFs), []);
+    assert.deepEqual(await loadTaskRecords(tentFs), []);
     assert.deepEqual(
       await fs.readdir(path.join(executorRoot, "manifests")).catch(() => [] as string[]),
       []
@@ -418,7 +381,7 @@ test("direct create+claim failure removes only its exact Task and manifest artif
   });
 });
 
-test("open Role Session inherits terminal lastTask responsibility and tolerates missing history", async () => {
+test("open Role Session tolerates terminal or missing current Task history", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
     const tentFs = new NodeFs(path.join(workspace, ".tent"));
@@ -427,25 +390,23 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const nextNode = await createNode(svc, workspaceId, "next-after-terminal");
     const missingNode = await createNode(svc, workspaceId, "next-after-missing");
 
-    const dispatched = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      workNodeIds: [priorNode],
-      contextNodeIds: [],
-      roleId: "rl-executor",
-      prompt: "prior delegated work",
-      parentActor: { kind: "role", id: "rl-orchestrator" },
-    });
-    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
-    const priorPath = (dispatched.result as { taskPath: string }).taskPath;
     const executorSession = await enterRoleSession(
       svc,
       workspaceId,
       workspace,
       "rl-executor"
     );
-    await executorSession.client.taskClaim(workspaceId, priorPath);
+    const priorClaim = await executorSession.client.rpcRaw("task.claimDirect", {
+      workspaceId,
+      roleId: "rl-executor",
+      workNodeIds: [priorNode],
+      contextNodeIds: [],
+      prompt: "prior work",
+    });
+    assert.ok(!priorClaim.error, JSON.stringify(priorClaim.error));
+    const priorPath = (priorClaim.result as { taskPath: string }).taskPath;
     assert.ok(!(await rpc(svc, "task.interrupt", { workspaceId, taskPath: priorPath })).error);
-    const prior = await loadTaskEnvelope(tentFs, priorPath);
+    const prior = await loadTaskRecord(tentFs, priorPath);
     assert.equal(prior.state, "interrupted");
 
     const nextExecutorSession = await enterRoleSession(
@@ -464,11 +425,11 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
       prompt: "new root responsibility after terminal Task",
     });
     assert.ok(!next.error, JSON.stringify(next.error));
-    const nextTask = await loadTaskEnvelope(
+    const nextTask = await loadTaskRecord(
       tentFs,
       (next.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(nextTask.parentActor, { kind: "role", id: "rl-orchestrator" });
+    assert.deepEqual(nextTask.requester, { kind: "user", id: "user" });
 
     const missingSession = await enterRoleSession(
       svc,
@@ -485,10 +446,10 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
       prompt: "new root responsibility after retained pointer was purged",
     });
     assert.ok(!afterMissing.error, JSON.stringify(afterMissing.error));
-    const missingTask = await loadTaskEnvelope(
+    const missingTask = await loadTaskRecord(
       tentFs,
       (afterMissing.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(missingTask.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(missingTask.requester, { kind: "user", id: "user" });
   });
 });

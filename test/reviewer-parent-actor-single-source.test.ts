@@ -10,7 +10,7 @@ async function source(relativePath: string): Promise<string> {
   return fs.readFile(path.join(repoRoot, relativePath), "utf8");
 }
 
-test("parentActor is the sole persisted and public Task review-authority field", async () => {
+test("requester is the sole persisted and public Task review-authority field", async () => {
   const [task, model, handlers, serviceTypes, client, cli, desktopMain, desktopUi] =
     await Promise.all([
       source("src/core/task.ts"),
@@ -30,9 +30,9 @@ test("parentActor is the sole persisted and public Task review-authority field",
   assert.doesNotMatch(model, /resolveParentReviewerPair|assertParentReviewerEqual/);
   assert.doesNotMatch(model, /reviewer\?:\s*TaskActorRef/);
   assert.doesNotMatch(serviceTypes, /^\s*reviewer\?:\s*TaskActorRefWire/m);
-  assert.match(serviceTypes, /^\s*parentActor:\s*TaskActorRefWire;/m);
+  assert.match(serviceTypes, /^\s*requester:\s*TaskActorRefWire;/m);
   assert.doesNotMatch(client, /^\s*reviewer\?:\s*\{\s*kind:/m);
-  assert.doesNotMatch(cli, /reviewer:\s*parentActor/);
+  assert.doesNotMatch(cli, /reviewer:\s*requester/);
   assert.doesNotMatch(desktopMain, /reviewer:\s*\{\s*kind:\s*"user"/);
   assert.doesNotMatch(desktopUi, /^\s*reviewer:\s*\{\s*kind:/m);
 
@@ -58,7 +58,7 @@ test("parentActor is the sole persisted and public Task review-authority field",
   assert.match(handlers, /TASK_PARENT_ACTOR_MISSING/);
 });
 
-test("canonical docs and Skills describe parentActor as the sole reviewer authority", async () => {
+test("canonical docs and Skills describe requester as the sole reviewer authority", async () => {
   const surfaces = await Promise.all(
     [
       "docs/SPEC.md",
@@ -70,7 +70,7 @@ test("canonical docs and Skills describe parentActor as the sole reviewer author
     ].map(source)
   );
   for (const text of surfaces) {
-    assert.doesNotMatch(text, /persists? exact `parentActor` and `reviewer`/i);
+    assert.doesNotMatch(text, /persists? exact `requester` and `reviewer`/i);
     assert.doesNotMatch(text, /persisted parent\/reviewer/i);
     assert.doesNotMatch(text, /exact persisted reviewer/i);
   }

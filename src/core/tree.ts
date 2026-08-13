@@ -1,4 +1,4 @@
-// 加载帐 → Node 树 → 解析 mode / type validity。
+// 加载帐 → Node 树 → 解析 mode / identity validity。
 // V0.2: no domain R/W axes, no coordination capability, no read-only mode.
 // operational pipeline（temp/ 等）永不进入 Node 索引。
 
@@ -11,11 +11,7 @@ import {
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
-import {
-  loadTypeRegistry,
-  TypeRegistry,
-  typeExists,
-} from "./typeRegistry.js";
+import { normalizeOptionalNodeType } from "./node-type.js";
 import {
   isOperationalPath,
   isSystemNoteName,
@@ -39,21 +35,18 @@ export interface LoadedTent {
   /** path → Node 索引。 */
   byPath: Map<string, Node>;
   duplicateIds: Set<string>;
-  typeRegistry: TypeRegistry;
 }
 
 export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   const byId = new Map<string, Node>();
   const byPath = new Map<string, Node>();
   const roots: Node[] = [];
-  const typeRegistry = await loadTypeRegistry(fs);
-
   const top = await fs.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadNodeInto(fs, entry.name, null, typeRegistry, roots);
+    await loadNodeInto(fs, entry.name, null, roots);
   }
 
   // 排序:隐藏 order 表优先;缺省时根与子框均按稳定名称排序
@@ -62,12 +55,12 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   for (const root of sortedRoots) sortChildren(root, order);
 
   // 解析隔离状态 + 建索引
-  for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
+  for (const root of sortedRoots) resolveSubtree(root);
   const duplicateIds = findDuplicateIds(sortedRoots);
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
 
-  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
+  return { roots: sortedRoots, byId, byPath, duplicateIds };
 }
 
 function findDuplicateIds(roots: Node[]): Set<string> {
@@ -113,7 +106,7 @@ export async function reloadLoadedNode(fs: FsAdapter, tent: LoadedTent, path: st
   node.fm = identity.fm;
   node.etag = contentEtag(raw);
   node.body = body;
-  for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
+  for (const root of tent.roots) resolveSubtree(root);
   return node;
 }
 
@@ -122,7 +115,7 @@ function sortChildren(node: Node, order: OrderMap): void {
   for (const c of node.children) sortChildren(c, order);
 }
 
-async function loadNode(fs: FsAdapter, path: string, parent: Node | null, registry: TypeRegistry): Promise<Node | null> {
+async function loadNode(fs: FsAdapter, path: string, parent: Node | null): Promise<Node | null> {
   if (isOperationalPath(path)) return null;
   const boxFile = nodeNotePath(path);
   if (!(await fs.exists(boxFile))) {
@@ -168,7 +161,7 @@ async function loadNode(fs: FsAdapter, path: string, parent: Node | null, regist
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadNodeInto(fs, join(path, entry.name), node, registry, node.children);
+    await loadNodeInto(fs, join(path, entry.name), node, node.children);
   }
   return node;
 }
@@ -180,6 +173,11 @@ function canonicalIdentityError(data: Record<string, unknown>): string | undefin
   if (data.mode !== undefined && parseNodeMode(data.mode) === undefined) {
     return `Invalid Node mode: ${String(data.mode)}.`;
   }
+  try {
+    normalizeOptionalNodeType(data.type);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
   return undefined;
 }
 
@@ -188,12 +186,20 @@ function normalizeIdentity(data: Record<string, unknown>): {
   tags: string[];
   relations: RelationRecord[];
 } {
-  const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
+  let type: string | undefined;
+  try {
+    type = normalizeOptionalNodeType(data.type);
+  } catch {
+    // canonicalIdentityError marks this Node invalid. Keep it discoverable by
+    // path for repair without projecting a malformed typed value.
+    type = undefined;
+  }
   const fm: NodeFrontmatter = {
     ...data,
     id: typeof data.id === "string" ? data.id : "",
-    type: rawType,
+    ...(type ? { type } : {}),
   } as NodeFrontmatter;
+  if (!type) delete fm.type;
   // Unknown frontmatter remains opaque user metadata. Runtime never translates
   // retired collaboration keys into canonical Node or Task state.
   const tags = normalizeTags(data.tags);
@@ -240,11 +246,10 @@ async function loadNodeInto(
   fs: FsAdapter,
   path: string,
   parent: Node | null,
-  registry: TypeRegistry,
   target: Node[]
 ): Promise<void> {
   if (isOperationalPath(path)) return;
-  const node = await loadNode(fs, path, parent, registry);
+  const node = await loadNode(fs, path, parent);
   if (node) {
     target.push(node);
     return;
@@ -253,19 +258,18 @@ async function loadNodeInto(
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadNodeInto(fs, join(path, entry.name), parent, registry, target);
+    await loadNodeInto(fs, join(path, entry.name), parent, target);
   }
 }
 
 function resolveSubtree(
   node: Node,
-  registry: TypeRegistry,
   inheritedInvalid?: { rootId: string; reason: string },
   inheritedArchived = false
 ): void {
   const directInvalid = node.invalid
     ? { rootId: node.invalidRootId || node.path, reason: node.invalidReason || "Invalid frontmatter." }
-    : invalidTypeReference(node, registry);
+    : invalidIdentityReference(node);
   const invalid = inheritedInvalid || directInvalid;
   node.invalid = !!invalid;
   node.invalidRootId = invalid?.rootId;
@@ -278,12 +282,11 @@ function resolveSubtree(
   if (localMode === "archived" && !inheritedArchived) node.fm.mode = "archived";
   else delete node.fm.mode;
 
-  for (const c of node.children) resolveSubtree(c, registry, invalid, node.archived);
+  for (const c of node.children) resolveSubtree(c, invalid, node.archived);
 }
 
-function invalidTypeReference(
-  node: Node,
-  registry: TypeRegistry
+function invalidIdentityReference(
+  node: Node
 ): { rootId: string; reason: string } | undefined {
   if (!isNodeId(node.id)) {
     return {
@@ -293,9 +296,6 @@ function invalidTypeReference(
   }
   if (node.fm.mode !== undefined && parseNodeMode(node.fm.mode) === undefined) {
     return { rootId: node.id, reason: `Invalid Node mode: ${String(node.fm.mode)}.` };
-  }
-  if (!typeExists(node.type, registry)) {
-    return { rootId: node.id, reason: `Unknown type: ${node.type}.` };
   }
   return undefined;
 }

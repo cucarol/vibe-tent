@@ -9,7 +9,7 @@ import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Node, NodeType, NodeMode } from "./types.js";
 import {
   canClaim,
-  envelopeIsActiveOccupation,
+  taskIsActiveOccupation,
   structuralClaimGate,
 } from "./claim.js";
 import { taskDirectlyReferencesNode } from "./task-node-refs.js";
@@ -22,18 +22,18 @@ import {
   normalizeTagName,
   syncTagRegistryAfterNodeTagsChangeUnlocked,
 } from "./tags.js";
-import { assertValidNodeType } from "./typeRegistry.js";
+import { normalizeOptionalNodeType } from "./node-type.js";
 import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
 import {
-  cancelTaskEnvelope,
+  cancelTaskRecord,
   ensureRoleInit,
-  loadTaskEnvelope,
-  loadTaskEnvelopes,
-  patchTaskEnvelope,
+  loadTaskRecord,
+  loadTaskRecords,
+  patchTaskRecord,
   relayPromptForTask,
   RoleWorkspaceContract,
-  TaskEnvelope,
-  writeTaskEnvelope,
+  TaskRecord,
+  writeTaskRecord,
 } from "./task.js";
 import { isTaskId, makeTaskId } from "./task-model.js";
 import type { AcceptMode } from "./task-model.js";
@@ -52,7 +52,6 @@ import {
   sessionTempRoot,
   taskManifestPath,
 } from "./paths.js";
-import { removeNonAcceptedDeliveriesForNode } from "./delivery.js";
 import { validateNodeName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
 import { taskClaim, taskFail, taskInterrupt } from "./task-lifecycle.js";
@@ -76,29 +75,24 @@ export interface DispatchResult {
   initPath?: string;
   taskPath: string;
   relayPrompt: string;
-  roleId?: string;
-  sessionId?: string;
+  assigneeRoleId?: string;
+  executionSessionId?: string;
 }
 
 export interface DispatchOptions {
-  userPrompt?: string;
+  prompt?: string;
   workspace?: RoleWorkspaceContract;
   /**
    * Explicit parent actor (V0.2). Required on new dispatch.
    * Role-dispatched Task Agent → parent Role; user-direct → user.
    */
-  parentActor: import("./task-model.js").TaskActorRef;
-  /**
-   * Sub-dispatch Git lane flag. Missing/false = peer. When true, requires real
-   * Git lane and a durable parent Role (validated by service/CLI). asSub is lane-only.
-   */
-  asSub?: boolean;
+  requester: import("./task-model.js").TaskActorRef;
   /** Frozen acceptance mode for this Task (default review-required). */
   acceptMode?: AcceptMode;
   /** Durable Role responsibility/handoff. */
-  roleId?: string;
+  assigneeRoleId?: string;
   /** Exact executing Session; required for Session-only ACP work. */
-  sessionId?: string;
+  executionSessionId?: string;
   /**
    * Optional preallocated task id (tk-…). Used by Session dispatch so the
    * tent-task/<taskId> lane can be created before the envelope is written.
@@ -142,8 +136,8 @@ export async function dispatch(
   primaryNodeId: string,
   options: DispatchOptions
 ): Promise<DispatchResult> {
-  if ("deliveryPolicy" in options) {
-    throw new Error("task.dispatch contains retired deliveryPolicy; use acceptMode.");
+  if ("resultPolicy" in options) {
+    throw new Error("task.dispatch contains retired resultPolicy; use acceptMode.");
   }
   return withMutation(env.fs, async () =>
     dispatchUnlocked(env, primaryNodeId, options)
@@ -156,11 +150,11 @@ async function dispatchUnlocked(
   options: DispatchOptions
 ): Promise<DispatchResult> {
   const tent = await loadTent(env.fs);
-  const userPrompt = options.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const roleId = options.roleId?.trim() || "";
-  const sessionId = options.sessionId?.trim() || "";
-  if (!roleId && !sessionId) throw new Error("Dispatch requires roleId or sessionId.");
+  const prompt = options.prompt?.trim() || "";
+  if (!prompt) throw new Error("Dispatch requires a user prompt.");
+  const roleId = options.assigneeRoleId?.trim() || "";
+  const sessionId = options.executionSessionId?.trim() || "";
+  if (!roleId && !sessionId) throw new Error("Dispatch requires assigneeRoleId or executionSessionId.");
   if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Role id: ${roleId}.`);
   if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}.`);
 
@@ -176,7 +170,7 @@ async function dispatchUnlocked(
     );
   }
   const nodeIds = orderedTaskNodeIds(selection);
-  const tasks = await loadTaskEnvelopes(env.fs);
+  const tasks = await loadTaskRecords(env.fs);
   // Cleanup only removes the exact Role/Session operational root created here.
   const createdRoot = roleId ? roleTempRoot(roleId) : sessionTempRoot(sessionId);
   const createdRootExisted = await env.fs.exists(createdRoot);
@@ -199,13 +193,12 @@ async function dispatchUnlocked(
   let allocatedTaskPath: string | undefined;
 
   // Exact Nodes are exclusive across active Tasks. Ancestors, descendants, siblings,
-  // and workspace context remain independent. asSub is a Git-lane flag only.
-  if (!options.parentActor) {
+  // and workspace context remain independent.
+  if (!options.requester) {
     throw new Error(
-      "Dispatch requires explicit parentActor."
+      "Dispatch requires explicit requester."
     );
   }
-  void options.asSub;
 
   // Resolve every requested Node under this mutation; fail loud before any write.
   // Exact ordered refs only — no silent ancestry/descendant expansion into Context Card
@@ -258,17 +251,16 @@ async function dispatchUnlocked(
       const raw = await env.fs.readFile(nodeNotePath(node.path));
       nodeSnapshots.push(captureTaskNodeSnapshot(node, contentEtag(raw)));
     }
-    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      ...(roleId ? { roleId } : {}),
-      ...(sessionId ? { sessionId } : {}),
+    const taskPath = await writeTaskRecord(env.fs, env.clock, {
+      ...(roleId ? { assigneeRoleId: roleId } : {}),
+      ...(sessionId ? { executionSessionId: sessionId } : {}),
       workNodeIds: selection.workNodeIds,
       contextNodeIds: selection.contextNodeIds,
       nodeSnapshots,
       manifestPath,
-      userPrompt,
+      prompt,
       workspace: options.workspace,
-      parentActor: options.parentActor,
-      asSub: options.asSub === true,
+      requester: options.requester,
       acceptMode: options.acceptMode,
       id: taskId,
       onPathAllocated: (path) => {
@@ -277,7 +269,7 @@ async function dispatchUnlocked(
     });
 
     // Load the just-written envelope for an honest responsibility projection.
-    const written = await loadTaskEnvelope(env.fs, taskPath);
+    const written = await loadTaskRecord(env.fs, taskPath);
     const relayPrompt = relayPromptForTask(written, env.tentRoot || env.tentName);
     return {
       manifestPath,
@@ -285,8 +277,8 @@ async function dispatchUnlocked(
       initPath,
       taskPath,
       relayPrompt,
-      ...(roleId ? { roleId } : {}),
-      ...(sessionId ? { sessionId } : {}),
+      ...(roleId ? { assigneeRoleId: roleId } : {}),
+      ...(sessionId ? { executionSessionId: sessionId } : {}),
     };
   } catch (error) {
     if (allocatedTaskPath && (await env.fs.exists(allocatedTaskPath))) {
@@ -320,7 +312,7 @@ export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
 }
 
 export async function cancelPendingTask(env: OpsEnv, taskPath: string): Promise<void> {
-  await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
+  await withMutation(env.fs, () => cancelTaskRecord(env.fs, taskPath));
 }
 
 // ---- clean-temp ----
@@ -340,7 +332,7 @@ export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {
 
 /**
  * Release occupation for a node by terminating active tasks that claim it
- * (interrupt running/waiting/delivered; remove queued). Clears non-accepted deliveries.
+ * (interrupt running/waiting/submitted; remove queued). Results are immutable history.
  * Does not read or write Node frontmatter owner/status.
  */
 export async function forceRelease(env: OpsEnv, nodeId: string): Promise<void> {
@@ -350,18 +342,14 @@ export async function forceRelease(env: OpsEnv, nodeId: string): Promise<void> {
     requireNodeById(tent, nodeId);
   });
 
-  const tasks = await loadTaskEnvelopes(env.fs);
+  const tasks = await loadTaskRecords(env.fs);
   const active = tasks.filter(
     (t) =>
-      envelopeIsActiveOccupation(t) &&
+      taskIsActiveOccupation(t) &&
       t.contextCard != null &&
       taskDirectlyReferencesNode(t, nodeId)
   );
   if (active.length === 0) {
-    // Still clean stray non-accepted deliveries for the node.
-    await withMutation(env.fs, async () => {
-      await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
-    });
     return;
   }
 
@@ -370,7 +358,7 @@ export async function forceRelease(env: OpsEnv, nodeId: string): Promise<void> {
       await cancelPendingTask(env, task.path);
       continue;
     }
-    // Interrupt ends occupation via task state; also clears non-accepted deliveries.
+    // Interrupt ends occupation via task state.
     try {
       await taskInterrupt(env, task.path);
     } catch {
@@ -378,28 +366,22 @@ export async function forceRelease(env: OpsEnv, nodeId: string): Promise<void> {
       try {
         await taskFail(env, task.path, { summary: "force-release" });
       } catch {
-        // Last resort: patch to interrupted + cleanup deliveries under lock.
+      // Last resort: patch to interrupted under the exact task lock.
         await withMutation(env.fs, async () => {
-          const current = await loadTaskEnvelope(env.fs, task.path).catch(() => null);
+          const current = await loadTaskRecord(env.fs, task.path).catch(() => null);
           if (!current) return;
-          if (envelopeIsActiveOccupation(current)) {
-            await patchTaskEnvelope(env.fs, task.path, {
+          if (taskIsActiveOccupation(current)) {
+            await patchTaskRecord(env.fs, task.path, {
               state: "interrupted",
               wait: null,
               updatedAt: env.clock.now(),
             });
           }
-          await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
         });
       }
     }
   }
 
-  // force-release is the explicit Node-wide cleanup operation. Ordinary
-  // task.fail/task.interrupt cleanup is deliberately exact-Task only.
-  await withMutation(env.fs, async () => {
-    await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
-  });
 }
 
 // ---- tags ----
@@ -426,7 +408,7 @@ export async function deleteTag(env: OpsEnv, name: string): Promise<void> {
 export interface NewNodeInput {
   parentPath: string; // "" = 顶层
   name: string;
-  type: NodeType;
+  type?: NodeType;
 }
 
 export async function createNode(env: OpsEnv, input: NewNodeInput): Promise<string> {
@@ -437,7 +419,7 @@ async function createNodeUnlocked(env: OpsEnv, input: NewNodeInput): Promise<str
   assertNotTempPath(input.parentPath);
   const name = validateNodeName(input.name);
   const tent = await loadTent(env.fs);
-  assertValidNodeType(input.type, tent.typeRegistry);
+  const type = normalizeOptionalNodeType(input.type);
   if (input.parentPath) {
     const parent = tent.byPath.get(input.parentPath);
     if (!parent || !isUsableNode(parent)) throw new Error("Target parent node is invalid or archived.");
@@ -448,8 +430,8 @@ async function createNodeUnlocked(env: OpsEnv, input: NewNodeInput): Promise<str
   const path = join(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir(env.fs, path);
-  // V0.2: new Nodes write only id + type (no owner/status/R/W/mode).
-  const fm = { id, type: input.type };
+  // V0.2: new Nodes write only id plus an optional direct type marker.
+  const fm = { id, ...(type ? { type } : {}) };
   const content = serializeFrontmatter(fm, `\n# ${name}\n`, NODE_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(nodeNotePath(path), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : undefined;
@@ -578,12 +560,12 @@ async function patchNodeUnlocked(
     "writable",
     "status",
     "relations",
-    // Output provenance: only formal task.accept bind path may write deliveryId.
-    "deliveryId",
+    // Output provenance is not a generic Node-editable field.
+    "resultId",
   ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output resultId is a separate Node-authority provenance concern.`
     );
   }
   if (node.archived || node.mode === "archived") {
@@ -595,10 +577,7 @@ async function patchNodeUnlocked(
       throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
     }
   }
-  if ("type" in patch) {
-    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
-    assertValidNodeType(patch.type, tent.typeRegistry);
-  }
+  if ("type" in patch) patch = { ...patch, type: normalizeOptionalNodeType(patch.type) };
   const tagsTouched = "tags" in patch;
   const previousTags = node.tags.slice();
   if (tagsTouched) {
@@ -689,7 +668,7 @@ async function setNodeModeUnlocked(env: OpsEnv, nodeId: string, mode: NodeMode |
   // Archive freezes the entire subtree, so any active Task inside that subtree
   // blocks the structural mutation. Tasks on ancestors or unrelated branches do not.
   if (next === "archived") {
-    const tasks = await loadTaskEnvelopes(env.fs);
+    const tasks = await loadTaskRecords(env.fs);
     if (hasActiveTaskInSubtree(tent, node, tasks)) {
       throw new Error(
         "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
@@ -725,7 +704,7 @@ export async function deleteArchivedNode(env: OpsEnv, nodeId: string): Promise<v
     const tent = await loadTent(env.fs);
     const node = requireNodeById(tent, nodeId);
     if (!isExplicitArchiveRoot(node)) throw new Error("Node must be archived before permanent deletion.");
-    const tasks = await loadTaskEnvelopes(env.fs);
+    const tasks = await loadTaskRecords(env.fs);
     if (hasActiveTaskInSubtree(tent, node, tasks)) {
       throw new Error(
         "Archived subtree still has an active task and cannot be deleted; cancel or fail the task first."
@@ -792,11 +771,11 @@ function assertNotTempPath(path: string): void {
 function hasActiveTaskInSubtree(
   tent: LoadedTent,
   node: Node,
-  tasks: TaskEnvelope[]
+  tasks: TaskRecord[]
 ): boolean {
   const ids = collectSubtreeIds(node);
   for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
+    if (!taskIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
     for (const nodeId of task.workNodeIds) {
       if (ids.has(nodeId)) return true;

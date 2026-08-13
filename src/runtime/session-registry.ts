@@ -171,11 +171,11 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "workspaceLane",
     "createdAt",
     "updatedAt",
-    "lastTaskId",
+    "currentTaskId",
     "exitCode",
     "lastError",
     "stopReason",
-    "contextRestored",
+    "providerContextRestored",
     "restoreReason",
     "replacedSessionId",
     "replacedBySessionId",
@@ -222,7 +222,7 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "roleId",
     "resumeToken",
     "workspace",
-    "lastTaskId",
+    "currentTaskId",
     "lastError",
     "externalKey",
     "contextGeneration",
@@ -242,8 +242,8 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
       return null;
     }
   }
-  if ("contextRestored" in data && data.contextRestored !== undefined) {
-    if (typeof data.contextRestored !== "boolean") return null;
+  if ("providerContextRestored" in data && data.providerContextRestored !== undefined) {
+    if (typeof data.providerContextRestored !== "boolean") return null;
   }
   for (const key of [
     "restoreReason",

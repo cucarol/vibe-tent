@@ -5,9 +5,8 @@ import type {
 import type { ArtifactKind, ArtifactRef } from "../../../core/artifact.js";
 
 const INCOMPLETE_REASONS = new Set<OutputProvenanceIncompleteReason>([
-  "delivery_missing",
+  "result_missing",
   "task_missing",
-  "source_missing",
   "mismatch",
 ]);
 
@@ -103,10 +102,9 @@ export function normalizeOutputProvenance(
     raw.outputId !== expectedOutputId ||
     typeof raw.path !== "string" ||
     typeof raw.bound !== "boolean" ||
-    !(raw.deliveryId === null || (typeof raw.deliveryId === "string" && raw.deliveryId)) ||
-    !isNullableRecord(raw.delivery) ||
+    !(raw.resultId === null || (typeof raw.resultId === "string" && raw.resultId)) ||
+    !isNullableRecord(raw.result) ||
     !isNullableRecord(raw.task) ||
-    !isNullableRecord(raw.sourceNode) ||
     !Array.isArray(raw.incomplete) ||
     raw.incomplete.some(
       (reason) =>
@@ -116,26 +114,24 @@ export function normalizeOutputProvenance(
   ) {
     return { state: "error", message: "output.provenance identity or payload is corrupt" };
   }
-  if ((raw.bound && !raw.deliveryId) || (!raw.bound && raw.deliveryId !== null)) {
+  if ((raw.bound && !raw.resultId) || (!raw.bound && raw.resultId !== null)) {
     return { state: "error", message: "output.provenance binding pointer is corrupt" };
   }
 
-  const delivery = raw.delivery;
-  const artifactRefs = isRecord(delivery) ? canonicalArtifactRefs(delivery.artifactRefs) : null;
+  const result = raw.result;
+  const artifactRefs = isRecord(result) ? canonicalArtifactRefs(result.artifactRefs) : null;
   if (
-    isRecord(delivery) &&
-    (typeof delivery.id !== "string" ||
-      !delivery.id ||
-      delivery.id !== raw.deliveryId ||
-      typeof delivery.status !== "string" ||
-      !delivery.status ||
-      typeof delivery.taskId !== "string" ||
-      !delivery.taskId ||
-      typeof delivery.sourceNodeId !== "string" ||
-      !delivery.sourceNodeId ||
+    isRecord(result) &&
+    (typeof result.id !== "string" ||
+      !result.id ||
+      result.id !== raw.resultId ||
+      typeof result.status !== "string" ||
+      !result.status ||
+      typeof result.taskId !== "string" ||
+      !result.taskId ||
       artifactRefs === null)
   ) {
-    return { state: "error", message: "output.provenance delivery join is corrupt" };
+    return { state: "error", message: "output.provenance result join is corrupt" };
   }
 
   const task = raw.task;
@@ -146,29 +142,16 @@ export function normalizeOutputProvenance(
       typeof task.state !== "string" ||
       !task.state ||
       !(task.path === undefined || typeof task.path === "string") ||
-      (isRecord(delivery) && task.id !== delivery.taskId))
+      (isRecord(result) && task.id !== result.taskId))
   ) {
     return { state: "error", message: "output.provenance task join is corrupt" };
-  }
-
-  const sourceNode = raw.sourceNode;
-  if (
-    isRecord(sourceNode) &&
-    (typeof sourceNode.nodeId !== "string" ||
-      !sourceNode.nodeId ||
-      !(sourceNode.path === undefined || typeof sourceNode.path === "string") ||
-      !(sourceNode.type === undefined || typeof sourceNode.type === "string") ||
-      !(sourceNode.archived === undefined || typeof sourceNode.archived === "boolean") ||
-      (isRecord(delivery) && sourceNode.nodeId !== delivery.sourceNodeId))
-  ) {
-    return { state: "error", message: "output.provenance source Node join is corrupt" };
   }
 
   const value = raw as unknown as OutputProvenance;
   return {
     state: "ready",
-    value: isRecord(delivery)
-      ? { ...value, delivery: { ...value.delivery!, artifactRefs: artifactRefs! } }
+    value: isRecord(result)
+      ? { ...value, result: { ...value.result!, artifactRefs: artifactRefs! } }
       : value,
   };
 }

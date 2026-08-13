@@ -138,7 +138,7 @@ export function registerDesktopIpc(ctx: IpcContext): void {
           kind: payload.kind as
             | "node"
             | "task"
-            | "delivery"
+            | "result"
             | "handoff"
             | "selection"
             | "role",

@@ -31,7 +31,7 @@ import {
  *
  * Restart: persisted `processing` rows are reloaded as `uncertain`. The process may
  * have died after the provider accepted the prompt but before the delivered mark, so
- * reopening them as retryable would violate at-most-once delivery. `failed` /
+ * reopening them as retryable would violate at-most-once result. `failed` /
  * `uncertain` survive restart as-is.
  */
 export type TaskInputStatus =
@@ -47,7 +47,7 @@ export type TaskInputStatus =
  * user-input      — task.sendInput one-shot append (## User Input)
  * review-feedback — lifecycle-generated task.reject --resume note (## Review Feedback)
  *
- * Both reuse the same persistence, delivery, state, and external poll/ack path.
+ * Both reuse the same persistence, result, state, and external poll/ack path.
  * Not chat; not a second prompt channel.
  */
 export type TaskInputKind = "user-input" | "review-feedback" | "decision-response";
@@ -78,7 +78,7 @@ export interface TaskInputRecord {
   lastError?: string;
   failedAt?: string;
   /**
-   * When status=uncertain: wall time of the at-most-once / unconfirmed delivery mark.
+   * When status=uncertain: wall time of the at-most-once / unconfirmed result mark.
    * Distinct from failedAt so diagnostics do not conflate true inject failure with
    * "sent but confirmation disk write failed".
    */
@@ -120,13 +120,13 @@ export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
 }
 
 /**
- * Delivery-blocking rows for a task: must be consumed (managed inject/ack or
- * legitimate terminal) before a ready Delivery may publish.
+ * TaskResult-blocking rows for a task: must be consumed (managed inject/ack or
+ * legitimate terminal) before a ready TaskResult may publish.
  * - pending / processing / failed (retryable) → block
  * - uncertain → blocks until explicit ack (at-most-once; never re-inject)
  * - delivered / consumed / cancelled → do not block
  */
-export function isTaskInputDeliveryBlockingStatus(
+export function isTaskInputTaskResultBlockingStatus(
   status: TaskInputStatus
 ): boolean {
   return isTaskInputOpenStatus(status) || status === "uncertain";
@@ -433,7 +433,7 @@ export class TaskInputStore {
 
   /**
    * All TaskInput rows for one (workspaceId, taskPath), any status.
-   * Used by Delivery gate authority (not a global inbox).
+   * Used by TaskResult gate authority (not a global inbox).
    */
   async listForTask(
     workspaceId: string,
@@ -454,7 +454,7 @@ export class TaskInputStore {
   }
 
   /**
-   * Rows that must block a ready Delivery for this task
+   * Rows that must block a ready TaskResult for this task
    * (pending/processing/failed/uncertain).
    */
   async listBlockingForDeliver(
@@ -462,7 +462,7 @@ export class TaskInputStore {
     taskPath: string
   ): Promise<TaskInputRecord[]> {
     const all = await this.listForTask(workspaceId, taskPath);
-    return all.filter((i) => isTaskInputDeliveryBlockingStatus(i.status));
+    return all.filter((i) => isTaskInputTaskResultBlockingStatus(i.status));
   }
 
   /**
@@ -712,7 +712,7 @@ export class TaskInputStore {
   }
 
   /**
-   * At-most-once uncertain delivery: provider inject already succeeded, but durable
+   * At-most-once uncertain result: provider inject already succeeded, but durable
    * markDelivered failed. Terminal for re-inject — not listRetryableForTask,
    * not cancel-eligible,
    * not markPendingForRetry. Survives restart as uncertain (never reloads as pending).
@@ -736,8 +736,8 @@ export class TaskInputStore {
       }
       const now = new Date().toISOString();
       const message =
-        (error || "managed inject ok but delivery confirmation failed")
-          .trim() || "managed inject ok but delivery confirmation failed";
+        (error || "managed inject ok but result confirmation failed")
+          .trim() || "managed inject ok but result confirmation failed";
       const injectSession = opts?.sessionId?.trim();
       const resolved: TaskInputRecord = {
         ...item,
@@ -1058,7 +1058,7 @@ export function formatTaskInputPrompt(input: TaskInputRecord): string {
     if (input.createdAt) lines.push(`createdAt: ${input.createdAt}`);
     lines.push(
       "",
-      "Lifecycle-generated review feedback for the same task after reject-resume. Not chat history. Do not invent prior messages. Final report still goes through Delivery only."
+      "Lifecycle-generated review feedback for the same task after reject-resume. Not chat history. Do not invent prior messages. Final report still goes through TaskResult only."
     );
     return lines.join("\n");
   }
@@ -1083,7 +1083,7 @@ export function formatTaskInputPrompt(input: TaskInputRecord): string {
   if (input.createdAt) lines.push(`createdAt: ${input.createdAt}`);
   lines.push(
     "",
-    "One-shot user append to the running task. Not chat history. Do not invent prior messages. Final report still goes through Delivery only."
+    "One-shot user append to the running task. Not chat history. Do not invent prior messages. Final report still goes through TaskResult only."
   );
   return lines.join("\n");
 }

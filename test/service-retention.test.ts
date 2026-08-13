@@ -8,8 +8,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { createDelivery } from "../src/core/delivery.js";
-import { writeTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { createTaskResult } from "../src/core/task-result.js";
+import { writeTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -64,20 +64,20 @@ function rpc(
 
 async function seedOldTerminal(
   systemRoot: string,
-  opts: { taskId: string; withDelivery?: boolean; state?: "accepted" | "failed" }
+  opts: { taskId: string; withTaskResult?: boolean; state?: "accepted" | "failed" }
 ) {
   const fsa = new NodeFs(systemRoot);
   const clock = { now: () => OLD };
-  const taskPath = await writeTaskEnvelope(fsa, clock, {
+  const taskPath = await writeTaskRecord(fsa, clock, {
 
-    parentActor: { kind: "user", id: "user" },
-    sessionId: "ss-executor",
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
     ...taskNodeContext("cx-seed", "inbox"),
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
-    userPrompt: "old terminal work",
+    prompt: "old terminal work",
     id: opts.taskId,
   });
-  await patchTaskEnvelope(fsa, taskPath, {
+  await patchTaskRecord(fsa, taskPath, {
     state: opts.state ?? "accepted",
     updatedAt: OLD,
   });
@@ -88,13 +88,12 @@ async function seedOldTerminal(
     .replace(/updatedAt: .*/, `updatedAt: ${OLD}`);
   await fsa.writeFile(taskPath, raw);
 
-  let deliveryPath: string | undefined;
-  if (opts.withDelivery) {
-    const d = await createDelivery(fsa, clock, {
+  let resultPath: string | undefined;
+  if (opts.withTaskResult) {
+    const d = await createTaskResult(fsa, clock, {
       taskId: opts.taskId,
-      sourceNodeId: "cx-seed",
-      deliveriesDir: "temp/sessions/ss-executor/deliveries",
-      summary: "old delivery body",
+      resultsDir: "temp/sessions/ss-executor/results",
+      report: "old result body",
       status: "accepted",
     });
     let dRaw = await fsa.readFile(d.path);
@@ -102,9 +101,9 @@ async function seedOldTerminal(
       .replace(/createdAt: .*/, `createdAt: ${OLD}`)
       .replace(/updatedAt: .*/, `updatedAt: ${OLD}`);
     await fsa.writeFile(d.path, dRaw);
-    deliveryPath = d.path;
+    resultPath = d.path;
   }
-  return { taskPath, deliveryPath };
+  return { taskPath, resultPath };
 }
 
 test("CLIENT_METHODS includes operationalRetention.preview/purge", () => {
@@ -123,7 +122,7 @@ test("operationalRetention.preview is user-only and read-only", async () => {
     const systemRoot = path.join(ws, ".tent");
     const { taskPath } = await seedOldTerminal(systemRoot, {
       taskId: "tk-prevu01",
-      withDelivery: true,
+      withTaskResult: true,
     });
 
     const denied = await rpc(svc, "operationalRetention.preview", {
@@ -139,7 +138,7 @@ test("operationalRetention.preview is user-only and read-only", async () => {
     const preview = (await client.operationalRetentionPreview(workspaceId, {
       keepTerminalTasksDays: 0,
     })) as {
-      candidates: { taskPath?: string; deliveryPaths: string[] }[];
+      candidates: { taskPath?: string; resultPaths: string[] }[];
       candidateTaskCount: number;
     };
     assert.ok(preview.candidates.some((c) => c.taskPath === taskPath));
@@ -158,9 +157,9 @@ test("operationalRetention.purge: user-only, deletes group, one retention.purged
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
     const systemRoot = path.join(ws, ".tent");
-    const { taskPath, deliveryPath } = await seedOldTerminal(systemRoot, {
+    const { taskPath, resultPath } = await seedOldTerminal(systemRoot, {
       taskId: "tk-purge01",
-      withDelivery: true,
+      withTaskResult: true,
     });
 
     const events: Array<Record<string, unknown>> = [];
@@ -194,11 +193,11 @@ test("operationalRetention.purge: user-only, deletes group, one retention.purged
       keepTerminalTasksDays: 0,
     })) as {
       deletedCount: number;
-      purged: { taskPaths: string[]; deliveryPaths: string[] };
+      purged: { taskPaths: string[]; resultPaths: string[] };
     };
     assert.ok(result.deletedCount >= 2);
     assert.ok(result.purged.taskPaths.includes(taskPath));
-    assert.ok(deliveryPath && result.purged.deliveryPaths.includes(deliveryPath));
+    assert.ok(resultPath && result.purged.resultPaths.includes(resultPath));
 
     assert.equal(events.length, 1, "exactly one retention.purged when files deleted");
     assert.equal(events[0]!.deletedCount, result.deletedCount);
@@ -206,7 +205,7 @@ test("operationalRetention.purge: user-only, deletes group, one retention.purged
 
     const fsa = new NodeFs(systemRoot);
     assert.equal(await fsa.exists(taskPath), false);
-    if (deliveryPath) assert.equal(await fsa.exists(deliveryPath), false);
+    if (resultPath) assert.equal(await fsa.exists(resultPath), false);
 
     // Second purge: no more candidates → no event
     const empty = (await client.operationalRetentionPurge(workspaceId, {
@@ -219,7 +218,7 @@ test("operationalRetention.purge: user-only, deletes group, one retention.purged
   });
 });
 
-test("operationalRetention.purge never deletes active task or ready delivery", async () => {
+test("operationalRetention.purge never deletes active task or ready result", async () => {
   const ws = await makeWorkspace("retention-active");
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -229,27 +228,26 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const fsa = new NodeFs(systemRoot);
     const clock = { now: () => OLD };
 
-    const activePath = await writeTaskEnvelope(fsa, clock, {
+    const activePath = await writeTaskRecord(fsa, clock, {
 
-      parentActor: { kind: "user", id: "user" },
-      sessionId: "ss-executor",
+      requester: { kind: "user", id: "user" },
+      executionSessionId: "ss-executor",
       ...taskNodeContext("cx-live", "inbox"),
       manifestPath: "temp/sessions/ss-executor/manifests/m.md",
-      userPrompt: "active",
+      prompt: "active",
       id: "tk-actlive",
     });
-    await patchTaskEnvelope(fsa, activePath, { state: "running", updatedAt: OLD });
+    await patchTaskRecord(fsa, activePath, { state: "running", updatedAt: OLD });
     let raw = await fsa.readFile(activePath);
     raw = raw
       .replace(/createdAt: .*/, `createdAt: ${OLD}`)
       .replace(/updatedAt: .*/, `updatedAt: ${OLD}`);
     await fsa.writeFile(activePath, raw);
 
-    const ready = await createDelivery(fsa, clock, {
+    const ready = await createTaskResult(fsa, clock, {
       taskId: "tk-orphanready",
-      sourceNodeId: "cx-live",
-      deliveriesDir: "temp/sessions/ss-executor/deliveries",
-      summary: "ready review",
+      resultsDir: "temp/sessions/ss-executor/results",
+      report: "ready review",
       status: "ready",
     });
     let dRaw = await fsa.readFile(ready.path);
@@ -268,11 +266,11 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
       keepTerminalTasksDays: 0,
     })) as {
       deletedCount: number;
-      purged: { taskPaths: string[]; deliveryPaths: string[] };
+      purged: { taskPaths: string[]; resultPaths: string[] };
     };
 
     assert.ok(!result.purged.taskPaths.includes(activePath));
-    assert.ok(!result.purged.deliveryPaths.includes(ready.path));
+    assert.ok(!result.purged.resultPaths.includes(ready.path));
     assert.equal(await fsa.exists(activePath), true);
     assert.equal(await fsa.exists(ready.path), true);
 

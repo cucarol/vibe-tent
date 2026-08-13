@@ -20,6 +20,6 @@ export async function refreshDesktopShellForEvent(
     return true;
   }
   // Renderer projection events are forwarded separately. Never rehydrate the
-  // retired Task/Session/Delivery shell snapshot in the background.
+  // retired Task/Session/TaskResult shell snapshot in the background.
   return false;
 }

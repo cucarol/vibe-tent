@@ -44,7 +44,8 @@ export interface RelationRecord {
 /** Node identity-file frontmatter. `type` is required and `id` is a cx- handle. */
 export interface NodeFrontmatter {
   id: string;
-  type: NodeType;
+  /** Optional direct semantic marker; no registry or tier semantics. */
+  type?: NodeType;
   tags?: string[];
   /** Explicit mode only; omit for editable default. Only "archived" is persisted. */
   mode?: NodeMode;
@@ -62,7 +63,8 @@ export interface NodeFrontmatter {
  */
 export interface Node {
   id: string;
-  type: NodeType;
+  /** Optional direct semantic marker; never a lifecycle-validity gate. */
+  type?: NodeType;
   tags: string[];
   /**
    * Outgoing semantic relations owned by this Node (normalized).

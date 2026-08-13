@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { createNode, moveNode, placeNode, renameNode } from "../src/core/ops.js";
-import { patchTaskEnvelope, writeTaskEnvelope } from "../src/core/task.js";
+import { patchTaskRecord, writeTaskRecord } from "../src/core/task.js";
 import { scaffoldTent } from "../src/core/scaffold.js";
 import { loadTent } from "../src/core/tree.js";
 import { captureTaskNodeSnapshot } from "../src/core/task-node-snapshot.js";
@@ -39,19 +39,19 @@ async function writeTask(
     if (!node) throw new Error(`missing fixture Node ${nodeId}`);
     return captureTaskNodeSnapshot(node, contentEtag(node.body));
   });
-  const taskPath = await writeTaskEnvelope(fsAdapter, {
+  const taskPath = await writeTaskRecord(fsAdapter, {
     now: () => "2026-08-01T00:00:00.000Z",
   }, {
-    sessionId: `ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
+    executionSessionId: `ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
     workNodeIds: nodeIds,
     contextNodeIds: [],
     nodeSnapshots,
     manifestPath: `temp/sessions/ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}/manifest.yml`,
-    userPrompt: "hold this Node",
+    prompt: "hold this Node",
     id,
-    parentActor: { kind: "user", id: "user" },
+    requester: { kind: "user", id: "user" },
   });
-  if (state === "accepted") await patchTaskEnvelope(fsAdapter, taskPath, { state });
+  if (state === "accepted") await patchTaskRecord(fsAdapter, taskPath, { state });
   return taskPath;
 }
 
@@ -154,7 +154,7 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
       "type: task",
       "id: tk-stnocard",
       "sessionId: ss-executor",
-      "parentActor: { kind: user, id: user }",
+      "requester: { kind: user, id: user }",
       "state: running",
       "manifest: temp/sessions/ss-executor/manifest.yml",
       "---",

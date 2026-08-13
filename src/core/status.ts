@@ -2,10 +2,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { FsAdapter } from "./adapter.js";
 import { loadProposals } from "./proposal.js";
-import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
+import { loadTaskRecords, taskExecutionLabel } from "./task.js";
 import { loadRolesRegistry, resolveRole } from "./skillRoleRegistry.js";
 import { loadTent, type LoadedTent } from "./tree.js";
-import { envelopeIsActiveOccupation } from "./claim.js";
+import { taskIsActiveOccupation } from "./claim.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { resolveTentWorkspace } from "./workspace.js";
 import { INDEX_PATH } from "./paths.js";
@@ -49,13 +49,13 @@ export async function renderTentStatus(
     }
   }
 
-  const allTasks = await loadTaskEnvelopes(fsAdapter);
+  const allTasks = await loadTaskRecords(fsAdapter);
   const roleId = role
     ? resolveRole((await loadRolesRegistry(fsAdapter)).roles, role)?.id
     : undefined;
   const pendingTasks = allTasks
     .filter((task) => task.state === "queued")
-    .filter((task) => !role || task.roleId === roleId);
+    .filter((task) => !role || task.assigneeRoleId === roleId);
   lines.push("");
   if (pendingTasks.length === 0) {
     lines.push("Pending tasks: none");
@@ -69,11 +69,11 @@ export async function renderTentStatus(
     }
   }
 
-  // Claimed occupation only (running/waiting/delivered). Queued stays under Pending tasks.
+  // Claimed occupation only (running/waiting/submitted). Queued stays under Pending tasks.
   const activeTasks = allTasks
-    .filter((task) => envelopeIsActiveOccupation(task))
+    .filter((task) => taskIsActiveOccupation(task))
     .filter((task) => task.state !== "queued")
-    .filter((task) => !role || task.roleId === roleId);
+    .filter((task) => !role || task.assigneeRoleId === roleId);
   lines.push("");
   if (activeTasks.length === 0) {
     lines.push("Active tasks: none");

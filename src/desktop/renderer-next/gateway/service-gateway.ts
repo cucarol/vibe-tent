@@ -4,7 +4,7 @@
  * Frozen rules:
  * - Service is the only fact and mutation authority.
  * - Events only invalidate projections; they are never a second truth source.
- * - UI never re-implements claim / delivery / lifecycle state machines.
+ * - UI never re-implements claim / result / lifecycle state machines.
  */
 
 import type { EventEnvelope } from "../../../service/types.js";
@@ -33,10 +33,10 @@ import {
   type FocusDocumentWrite,
 } from "./document-protocol.js";
 import {
-  acceptDelivery,
+  acceptTaskResult,
   dispatchTask,
   readDispatchTargets,
-  rejectDelivery,
+  rejectTaskResult,
   respondDecision,
   type CollaborationMutation,
   type CollaborationRead,
@@ -64,7 +64,7 @@ export type ServiceGatewayHandlers = {
   /** Structured document transport preserves JSON-RPC code/data across Electron. */
   documentTransport?: DocumentTransport;
   documentTimeoutMs?: number;
-  /** Typed user-facing Task/Delivery/Decision boundary. */
+  /** Typed user-facing Task/TaskResult/Decision boundary. */
   collaborationTransport?: CollaborationTransport;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
@@ -95,7 +95,7 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
       reason: type,
     };
   }
-  if (type.startsWith("task.") || type.startsWith("delivery.")) {
+  if (type.startsWith("task.") || type.startsWith("result.")) {
     return {
       keys: [
         "task.list",
@@ -281,34 +281,32 @@ export class ServiceGateway {
     return readDispatchTargets(this.handlers.collaborationTransport, workspaceId);
   }
 
-  acceptDelivery(
+  acceptTaskResult(
     workspaceId: string,
-    deliveryId: string,
-    outputNodeIds: readonly string[] = []
+    resultId: string
   ): Promise<CollaborationRead<CollaborationMutation>> {
     if (!this.handlers.collaborationTransport) {
       return Promise.resolve(this.missingCollaborationTransport(workspaceId));
     }
-    return acceptDelivery(
+    return acceptTaskResult(
       this.handlers.collaborationTransport,
       workspaceId,
-      deliveryId,
-      [...outputNodeIds]
+      resultId
     );
   }
 
-  rejectDelivery(
+  rejectTaskResult(
     workspaceId: string,
-    deliveryId: string,
+    resultId: string,
     note: string
   ): Promise<CollaborationRead<CollaborationMutation>> {
     if (!this.handlers.collaborationTransport) {
       return Promise.resolve(this.missingCollaborationTransport(workspaceId));
     }
-    return rejectDelivery(
+    return rejectTaskResult(
       this.handlers.collaborationTransport,
       workspaceId,
-      deliveryId,
+      resultId,
       note
     );
   }

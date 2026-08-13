@@ -116,7 +116,7 @@ test("moveNode: reparent keeps cx-, moves subtree, rewrites path links", async (
 });
 
 test("moveNode: depth-changing reparent restyles ./ and ../ inside moved subtree", async () => {
-  // Reviewer probe (dl-f9qmacqr): parent/child → dest/nest/child must not corrupt relatives.
+  // Reviewer probe: parent/child → dest/nest/child must not corrupt relatives.
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-depth-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
@@ -297,7 +297,7 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
       "type: task",
       "id: tk-busy-mv",
       "role: executor",
-      "parentActor: { kind: user, id: user }",
+      "requester: { kind: user, id: user }",
       "status: taken",
       "state: running",
       "manifest: temp/executor/manifests/x.yml",
@@ -313,7 +313,7 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
       "    tasks: []",
       "    deliveries: []",
       "    git: []",
-      "  parentActor: { kind: user, id: user }",
+      "  requester: { kind: user, id: user }",
       "  assignee: { kind: role, id: executor }",
       "  contextGeneration: cg-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "---",

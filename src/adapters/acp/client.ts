@@ -326,7 +326,7 @@ export class AcpClient {
   /**
    * Sealed assistant message segments for the in-flight session/prompt.
    * Contiguous agent_message_chunk text forms one segment; tool/status/thought
-   * (and any other non-message update) seals the open segment. Delivery summary
+   * (and any other non-message update) seals the open segment. TaskResult summary
    * is the last non-empty segment (see selectFinalAssistantReport).
    */
   private assistantMessageSegments: string[] = [];
@@ -355,7 +355,7 @@ export class AcpClient {
   private readonly label: string;
   /**
    * Only chunks received while our own session/prompt request is pending belong
-   * to the next delivery. Load replay (including notifications arriving after
+   * to the next result. Load replay (including notifications arriving after
    * the load response) and unsolicited provider updates stay diagnostic-only.
    */
   private collectingPromptResponse = false;
@@ -559,7 +559,7 @@ export class AcpClient {
   }
 
   /**
-   * Seal any open segment and return the managed delivery report for this turn:
+   * Seal any open segment and return the managed result report for this turn:
    * last non-empty assistant message segment (not intermediate narrations).
    */
   private finalizeAssistantReport(): string {
@@ -637,7 +637,7 @@ export class AcpClient {
    * block on prompt.
    *
    * - Load mode requires agentCapabilities.loadSession === true. History
-   *   notifications are quarantined and never enter assistantText / delivery.
+   *   notifications are quarantined and never enter assistantText / result.
    * - Resume mode requires agentCapabilities.sessionCapabilities.resume (object,
    *   including `{}`). Does not replay history (Tent is not a transcript UI).
    * Both load and resume fail loud and never fall back to session/new.
@@ -825,7 +825,7 @@ export class AcpClient {
    * Send session/prompt with managed bootstrap (Context Card + user prompt).
    * Optional image refs are projected only when live initialize advertised
    * promptCapabilities.image === true; otherwise Markdown pointers + a short note.
-   * Collects agent_message_chunk segments; delivery report is the last non-empty
+   * Collects agent_message_chunk segments; result report is the last non-empty
    * segment after tool/status/thought separators (shared assistant-report contract).
    * Safe to call after connect(); failures throw (caller emits session.failed).
    */
@@ -1333,11 +1333,11 @@ export class AcpClient {
       return;
     }
     // Tent is not a transcript router. Updates outside a prompt initiated by
-    // this client are neither delivery text nor user-facing diagnostics.
+    // this client are neither result text nor user-facing diagnostics.
     if (!this.collectingPromptResponse) return;
     if (isAssistantMessageChunkKind(kind) && update.content?.text) {
       // Contiguous message chunks form one segment; other updates seal it.
-      // Delivery summary uses only the last non-empty segment at prompt end.
+      // TaskResult summary uses only the last non-empty segment at prompt end.
       const chunkBytes = utf8Bytes(update.content.text);
       if (
         chunkBytes >

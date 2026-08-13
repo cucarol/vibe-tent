@@ -13,9 +13,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadDeliveries } from "../src/core/delivery.js";
+import { loadTaskResults } from "../src/core/task-result.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { taskClaim, taskReject, taskWait } from "../src/core/task-lifecycle.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -143,8 +143,8 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
 
     const probe = await runtime.probe(sessionId);
     assert.equal(probe.state, "external");
-    assert.equal(probe.alive, true);
-    assert.equal(probe.resumeCapable, false);
+    assert.equal(probe.isAlive, true);
+    assert.equal(probe.canResume, false);
 
     // Idempotent re-enter with same id
     const h2 = await runtime.enterExternalSession({
@@ -166,7 +166,7 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
     await runtime.stopSession(sessionId, "user");
     const after = await runtime.probe(sessionId);
     assert.equal(after.state, "stopped");
-    assert.equal(after.alive, false);
+    assert.equal(after.isAlive, false);
   } finally {
     await runtime.shutdown();
   }
@@ -185,13 +185,13 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       externalKey: "rpc-key-a",
       cwd: ws,
     })) as {
-      session: { sessionId: string; state: string; adapterId: string; alive: boolean };
+      session: { sessionId: string; state: string; adapterId: string; isAlive: boolean };
       sessionToken: string;
       reused: boolean;
     };
     assert.equal(entered.session.state, "external");
     assert.equal(entered.session.adapterId, EXTERNAL_ADAPTER_ID);
-    assert.equal(entered.session.alive, true);
+    assert.equal(entered.session.isAlive, true);
     assert.equal(entered.reused, false);
     const sessionId = entered.session.sessionId;
     assert.ok(sessionId.startsWith("ss-"));
@@ -222,9 +222,9 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "do the thing",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
 
@@ -244,32 +244,26 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       sessionId: string;
       state: string;
       left: boolean;
-      delivered: boolean;
-      accepted: boolean;
       incompleteTasks: Array<{ path: string; state: string }>;
     };
     assert.equal(left.left, true);
     assert.equal(left.state, "stopped");
-    assert.equal(left.delivered, false);
-    assert.equal(left.accepted, false);
     assert.deepEqual(left.incompleteTasks.map((task) => task.path), [dispatched.taskPath]);
     // Leave never completes the Task; it preserves occupation in an honest,
     // recoverable wait because the exact external Session is no longer open.
     const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
-      task: { state: string; sessionId?: string };
+      task: { state: string; executionSessionId?: string };
     };
     assert.equal(task.task.state, "waiting");
-    assert.equal(task.task.sessionId, sessionId);
+    assert.equal(task.task.executionSessionId, sessionId);
 
     // Idempotent leave
     const left2 = (await client.sessionLeave(sessionId, workspaceId)) as {
       left: boolean;
       alreadyLeft: boolean;
-      delivered: boolean;
     };
     assert.equal(left2.left, false);
     assert.equal(left2.alreadyLeft, true);
-    assert.equal(left2.delivered, false);
 
     // dataDir used so service endpoint exists under test isolation
     assert.ok(dataDir);
@@ -303,38 +297,38 @@ test("external Role reject-resume keeps the exact live Session and Task running"
     const dispatched = (await root.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "external reject resume",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
-    const delivered = (await roleClient.taskDeliver(workspaceId, dispatched.taskPath, {
-      summary: "external work ready",
-    })) as { delivery: { id: string } };
+    const delivered = (await roleClient.taskSubmit(workspaceId, dispatched.taskPath, {
+      report: "external work ready",
+    })) as { result: { id: string } };
 
     const rejected = (await root.taskReject(
       workspaceId,
-      delivered.delivery.id,
+      delivered.result.id,
       "user",
       { note: "revise externally", resume: true }
     )) as {
-      task: { state: string; sessionId?: string };
-      delivery: { status: string };
+      task: { state: string; executionSessionId?: string };
+      result: { status: string };
       accepted: boolean;
       enqueued: boolean;
     };
-    assert.equal(rejected.delivery.status, "rejected");
+    assert.equal(rejected.result.status, "rejected");
     assert.equal(rejected.task.state, "running");
-    assert.equal(rejected.task.sessionId, entered.session.sessionId);
+    assert.equal(rejected.task.executionSessionId, entered.session.sessionId);
     assert.equal(rejected.accepted, true);
     assert.equal(rejected.enqueued, false);
     const exactSession = await svc.runtime.registry.read(entered.session.sessionId);
-    const exactTask = await loadTaskEnvelope(
+    const exactTask = await loadTaskRecord(
       svc.hostApi.require(workspaceId).env.fs,
       dispatched.taskPath
     );
-    assert.equal(exactSession?.lastTaskId, exactTask.id);
+    assert.equal(exactSession?.currentTaskId, exactTask.id);
     assert.equal((await svc.runtime.probe(entered.session.sessionId)).state, "external");
   });
 });
@@ -376,18 +370,18 @@ test("external session.leave defensively parks every exact active Task and new c
     const first = (await root.taskDispatch(workspaceId, {
       workNodeIds: [firstNode.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "first exact external Task",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, first.taskPath);
-    const firstDelivery = (await roleClient.taskDeliver(workspaceId, first.taskPath, {
-      summary: "first Task ready for review",
-    })) as { delivery: { id: string } };
+    const firstTaskResult = (await roleClient.taskSubmit(workspaceId, first.taskPath, {
+      report: "first Task ready for review",
+    })) as { result: { id: string } };
     const rejected = (await root.taskReject(
       workspaceId,
-      firstDelivery.delivery.id,
+      firstTaskResult.result.id,
       "user",
       { note: "preserve this exact review feedback", resume: true }
     )) as {
@@ -427,9 +421,9 @@ test("external session.leave defensively parks every exact active Task and new c
     const second = (await root.taskDispatch(workspaceId, {
       workNodeIds: [secondNode.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "second exact external Task",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const secondBefore = await mount.env.fs.readFile(second.taskPath);
     const sessionBefore = await svc.runtime.registry.read(sessionId);
@@ -449,48 +443,48 @@ test("external session.leave defensively parks every exact active Task and new c
 
     // Recreate an already-persisted pre-hard-cut/racing multi-binding directly
     // through Core. session.leave must defensively enumerate every exact active
-    // binding rather than trusting only Session.lastTaskId.
+    // binding rather than trusting only Session.currentTaskId.
     const secondBound = await taskClaim(mount.env, second.taskPath, {
-      claimWrite: { sessionId },
+      claimWrite: { executionSessionId: sessionId },
     });
     await svc.runtime.registry.update(sessionId, {
-      lastTaskId: secondBound.id || secondBound.path,
+      currentTaskId: secondBound.id || secondBound.path,
     });
-    const firstTaskBeforeLeave = await loadTaskEnvelope(mount.env.fs, first.taskPath);
-    const delivery = (await loadDeliveries(mount.env.fs, {
+    const firstTaskBeforeLeave = await loadTaskRecord(mount.env.fs, first.taskPath);
+    const result = (await loadTaskResults(mount.env.fs, {
       taskId: firstTaskBeforeLeave.id,
-    })).find((row) => row.id === firstDelivery.delivery.id);
-    assert.ok(delivery);
+    })).find((row) => row.id === firstTaskResult.result.id);
+    assert.ok(result);
     const preserved = {
-      delivery: await mount.env.fs.readFile(delivery!.path),
+      result: await mount.env.fs.readFile(result!.path),
       inputs: await fs.readFile(path.join(dataDir, "task-inputs.json"), "utf8"),
     };
 
     await root.sessionLeave(sessionId, workspaceId);
 
     for (const taskPath of [first.taskPath, second.taskPath]) {
-      const persisted = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const persisted = await loadTaskRecord(mount.env.fs, taskPath);
       const projected = (await root.taskGet(workspaceId, taskPath)) as {
-        task: { state: string; wait?: { code?: string }; sessionId?: string };
+        task: { state: string; wait?: { code?: string }; executionSessionId?: string };
       };
       assert.equal(persisted.state, "waiting");
       assert.equal(persisted.wait?.code, "session_unavailable");
-      assert.equal(persisted.sessionId, sessionId);
+      assert.equal(persisted.executionSessionId, sessionId);
       assert.equal(projected.task.state, "waiting");
       assert.equal(projected.task.wait?.code, "session_unavailable");
-      assert.equal(projected.task.sessionId, sessionId);
+      assert.equal(projected.task.executionSessionId, sessionId);
     }
-    const firstAfterLeave = await loadTaskEnvelope(mount.env.fs, first.taskPath);
-    assert.equal(firstAfterLeave.activeDeliveryId, firstDelivery.delivery.id);
+    const firstAfterLeave = await loadTaskRecord(mount.env.fs, first.taskPath);
+    assert.equal(firstAfterLeave.currentResultId, firstTaskResult.result.id);
     assert.deepEqual(
       {
-        delivery: await mount.env.fs.readFile(delivery!.path),
+        result: await mount.env.fs.readFile(result!.path),
         inputs: await fs.readFile(path.join(dataDir, "task-inputs.json"), "utf8"),
       },
       preserved
     );
     const stopped = await svc.runtime.probe(sessionId);
-    assert.equal(stopped.alive, false);
+    assert.equal(stopped.isAlive, false);
     assert.equal(stopped.state, "stopped");
   });
 });
@@ -521,40 +515,40 @@ test("task.claim recovers only the exact rejected external Role Task from its pa
     const dispatched = (await root.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "recover exact external Task",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
-    const delivered = (await roleClient.taskDeliver(workspaceId, dispatched.taskPath, {
-      summary: "ready before partial reject",
-    })) as { delivery: { id: string } };
+    const delivered = (await roleClient.taskSubmit(workspaceId, dispatched.taskPath, {
+      report: "ready before partial reject",
+    })) as { result: { id: string } };
     const mount = svc.hostApi.require(workspaceId);
     const coreRejected = await taskReject(mount.env, dispatched.taskPath, {
       actor: "user",
-      deliveryId: delivered.delivery.id,
+      resultId: delivered.result.id,
       note: "partial external restore",
       resume: true,
     });
-    assert.equal(coreRejected.delivery.status, "rejected");
+    assert.equal(coreRejected.result.status, "rejected");
     await taskWait(mount.env, dispatched.taskPath, {
       reason: "external",
       summary: `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (legacy managed restore misclassification)`,
     });
 
     const recovered = (await roleClient.taskClaim(workspaceId, dispatched.taskPath)) as {
-      task: { state: string; sessionId?: string };
+      task: { state: string; executionSessionId?: string };
     };
     assert.equal(recovered.task.state, "running");
-    assert.equal(recovered.task.sessionId, entered.session.sessionId);
-    const exact = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
+    assert.equal(recovered.task.executionSessionId, entered.session.sessionId);
+    const exact = await loadTaskRecord(mount.env.fs, dispatched.taskPath);
     assert.equal(exact.state, "running");
     assert.equal(exact.wait, undefined);
-    // Recovery preserves the immutable rejected Delivery reference; it only
+    // Recovery preserves the immutable rejected TaskResult reference; it only
     // clears the recoverable wait and restores execution on the exact Session.
-    assert.equal(exact.activeDeliveryId, delivered.delivery.id);
-    assert.equal(exact.sessionId, entered.session.sessionId);
+    assert.equal(exact.currentResultId, delivered.result.id);
+    assert.equal(exact.executionSessionId, entered.session.sessionId);
     assert.equal((await svc.runtime.probe(entered.session.sessionId)).state, "external");
 
     // An arbitrary user/tool/external wait is not a recovery authority. The
@@ -605,9 +599,9 @@ test("external Role claim racing exact session.leave converges to a recoverable 
     const dispatched = (await root.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "race exact external recovery with leave",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
     await roleClient.taskWait(
@@ -623,7 +617,7 @@ test("external Role claim racing exact session.leave converges to a recoverable 
     svc.runtime.stopSession = async (...args: Parameters<typeof originalStopSession>) => {
       await originalStopSession(...args);
       if (args[0] !== entered.session.sessionId) return;
-      const persisted = await loadTaskEnvelope(
+      const persisted = await loadTaskRecord(
         svc.hostApi.require(workspaceId).env.fs,
         dispatched.taskPath
       );
@@ -662,15 +656,15 @@ test("external Role claim racing exact session.leave converges to a recoverable 
       releaseProbe();
     }
 
-    const finalTask = await loadTaskEnvelope(
+    const finalTask = await loadTaskRecord(
       svc.hostApi.require(workspaceId).env.fs,
       dispatched.taskPath
     );
     assert.equal(finalTask.state, "waiting");
     assert.equal(finalTask.wait?.code, "session_unavailable");
-    assert.equal(finalTask.sessionId, entered.session.sessionId);
+    assert.equal(finalTask.executionSessionId, entered.session.sessionId);
     const finalProbe = await originalProbe(entered.session.sessionId);
-    assert.equal(finalProbe.alive, false);
+    assert.equal(finalProbe.isAlive, false);
     assert.equal(finalProbe.state, "stopped");
     assert.deepEqual(closedSnapshots, [{ persisted: "waiting", projected: "waiting" }]);
   });
@@ -702,15 +696,15 @@ test("external Role reject-resume racing session.leave never projects closed Ses
     const dispatched = (await root.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "race reject resume with exact external leave",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
-    const delivered = (await roleClient.taskDeliver(workspaceId, dispatched.taskPath, {
-      summary: "ready before reject leave race",
-    })) as { delivery: { id: string } };
+    const delivered = (await roleClient.taskSubmit(workspaceId, dispatched.taskPath, {
+      report: "ready before reject leave race",
+    })) as { result: { id: string } };
 
     const originalProbe = svc.runtime.probe.bind(svc.runtime);
     const originalStopSession = svc.runtime.stopSession.bind(svc.runtime);
@@ -736,7 +730,7 @@ test("external Role reject-resume racing session.leave never projects closed Ses
     svc.runtime.stopSession = async (...args: Parameters<typeof originalStopSession>) => {
       await originalStopSession(...args);
       if (args[0] !== entered.session.sessionId) return;
-      const persisted = await loadTaskEnvelope(
+      const persisted = await loadTaskRecord(
         svc.hostApi.require(workspaceId).env.fs,
         dispatched.taskPath
       );
@@ -748,14 +742,14 @@ test("external Role reject-resume racing session.leave never projects closed Ses
 
     const exactReviewText = "preserve exact external review feedback";
     let rejected!: {
-      task: { state: string; sessionId?: string };
-      delivery: { status: string };
+      task: { state: string; executionSessionId?: string };
+      result: { status: string };
       input: { id: string; text?: string; status: string };
     };
     try {
       const rejectPromise = root.taskReject(
         workspaceId,
-        delivered.delivery.id,
+        delivered.result.id,
         "user",
         { note: exactReviewText, resume: true }
       ) as Promise<typeof rejected>;
@@ -769,17 +763,17 @@ test("external Role reject-resume racing session.leave never projects closed Ses
       releaseProbe();
     }
 
-    assert.equal(rejected.delivery.status, "rejected");
-    assert.equal(rejected.task.sessionId, entered.session.sessionId);
+    assert.equal(rejected.result.status, "rejected");
+    assert.equal(rejected.task.executionSessionId, entered.session.sessionId);
     assert.equal(rejected.input.text, exactReviewText);
     assert.equal(rejected.input.status, "pending");
     assert.deepEqual(closedSnapshots, [{ persisted: "waiting", projected: "waiting" }]);
 
     const mount = svc.hostApi.require(workspaceId);
-    let finalTask = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
+    let finalTask = await loadTaskRecord(mount.env.fs, dispatched.taskPath);
     assert.equal(finalTask.state, "waiting");
     assert.equal(finalTask.wait?.code, "session_unavailable");
-    assert.equal(finalTask.activeDeliveryId, delivered.delivery.id);
+    assert.equal(finalTask.currentResultId, delivered.result.id);
     const storedInput = await svc.ctx.taskInputs.get(
       rejected.input.id,
       workspaceId,
@@ -788,21 +782,21 @@ test("external Role reject-resume racing session.leave never projects closed Ses
     assert.equal(storedInput?.text, exactReviewText);
     assert.equal(storedInput?.status, "pending");
 
-    const delivery = (await loadDeliveries(mount.env.fs, { taskId: finalTask.id })).find(
-      (row) => row.id === delivered.delivery.id
+    const result = (await loadTaskResults(mount.env.fs, { taskId: finalTask.id })).find(
+      (row) => row.id === delivered.result.id
     );
-    assert.equal(delivery?.status, "rejected");
-    assert.ok(delivery);
+    assert.equal(result?.status, "rejected");
+    assert.ok(result);
 
     // Closed Session plus an unrelated wait remains entirely immutable across
-    // Task, rejected Delivery and durable review-feedback TaskInput.
-    finalTask = await patchTaskEnvelope(mount.env.fs, dispatched.taskPath, {
+    // Task, rejected TaskResult and durable review-feedback TaskInput.
+    finalTask = await patchTaskRecord(mount.env.fs, dispatched.taskPath, {
       wait: { reason: "external", summary: "Unrelated operator hold" },
       updatedAt: mount.env.clock.now(),
     });
     const before = {
       task: await mount.env.fs.readFile(dispatched.taskPath),
-      delivery: await mount.env.fs.readFile(delivery!.path),
+      result: await mount.env.fs.readFile(result!.path),
       inputs: await fs.readFile(path.join(dataDir, "task-inputs.json"), "utf8"),
     };
     const claim = await roleClient.tryCall("task.claim", {
@@ -813,12 +807,12 @@ test("external Role reject-resume racing session.leave never projects closed Ses
     assert.deepEqual(
       {
         task: await mount.env.fs.readFile(dispatched.taskPath),
-        delivery: await mount.env.fs.readFile(delivery!.path),
+        result: await mount.env.fs.readFile(result!.path),
         inputs: await fs.readFile(path.join(dataDir, "task-inputs.json"), "utf8"),
       },
       before
     );
-    assert.equal(finalTask.sessionId, entered.session.sessionId);
+    assert.equal(finalTask.executionSessionId, entered.session.sessionId);
   });
 });
 
@@ -848,20 +842,20 @@ test("external Role reject-resume failure is parked without managed-Session diag
     const dispatched = (await root.taskDispatch(workspaceId, {
       workNodeIds: [note.nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "external failure wording",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, dispatched.taskPath);
-    const delivered = (await roleClient.taskDeliver(workspaceId, dispatched.taskPath, {
-      summary: "ready before external host leaves",
-    })) as { delivery: { id: string } };
+    const delivered = (await roleClient.taskSubmit(workspaceId, dispatched.taskPath, {
+      report: "ready before external host leaves",
+    })) as { result: { id: string } };
     await root.sessionLeave(entered.session.sessionId, workspaceId);
 
     const rejected = await root.tryCall("task.reject", {
       workspaceId,
-      deliveryId: delivered.delivery.id,
+      resultId: delivered.result.id,
       actor: "user",
       note: "resume after external host left",
       resume: true,
@@ -871,14 +865,14 @@ test("external Role reject-resume failure is parked without managed-Session diag
       assert.doesNotMatch(rejected.error.message, /managed session/i);
       assert.match(rejected.error.message, /external Role Session/i);
     }
-    const parked = await loadTaskEnvelope(
+    const parked = await loadTaskRecord(
       svc.hostApi.require(workspaceId).env.fs,
       dispatched.taskPath
     );
     assert.equal(parked.state, "waiting");
     assert.doesNotMatch(parked.wait?.summary ?? "", /managed session/i);
     assert.match(parked.wait?.summary ?? "", /External Role Session/i);
-    assert.equal(parked.activeDeliveryId, delivered.delivery.id);
+    assert.equal(parked.currentResultId, delivered.result.id);
   });
 });
 
@@ -931,13 +925,9 @@ test("CLI session enter/status/leave via service", async () => {
     assert.equal(leave.exitCode, 0, leave.stderr);
     const leaveBody = JSON.parse(leave.stdout) as {
       left: boolean;
-      delivered: boolean;
-      accepted: boolean;
       state: string;
     };
     assert.equal(leaveBody.left, true);
-    assert.equal(leaveBody.delivered, false);
-    assert.equal(leaveBody.accepted, false);
     assert.equal(leaveBody.state, "stopped");
   });
 });
@@ -983,12 +973,8 @@ test("hook session-end outside Tent: silent exit 0", async () => {
   assert.equal(result.exitCode, 0, result.stderr);
   const body = JSON.parse(result.stdout) as {
     skipped: boolean;
-    delivered: boolean;
-    accepted: boolean;
   };
   assert.equal(body.skipped, true);
-  assert.equal(body.delivered, false);
-  assert.equal(body.accepted, false);
 });
 
 test("buildHookExternalKey: host+nativeSessionId or host+workspace fallback", () => {
@@ -1079,13 +1065,9 @@ test("service status/leave resolve by externalKey without sessionId", async () =
     })) as {
       sessionId: string;
       left: boolean;
-      delivered: boolean;
-      accepted: boolean;
     };
     assert.equal(left.sessionId, sessionId);
     assert.equal(left.left, true);
-    assert.equal(left.delivered, false);
-    assert.equal(left.accepted, false);
 
     const left2 = (await client.sessionLeave({
       externalKey: "lookup-key-1",
@@ -1185,14 +1167,10 @@ test("hook session-start → status → session-end closed loop via --host + std
     const endBody = JSON.parse(end.stdout) as {
       sessionId: string;
       left: boolean;
-      delivered: boolean;
-      accepted: boolean;
       state: string;
     };
     assert.equal(endBody.sessionId, sessionId);
     assert.equal(endBody.left, true);
-    assert.equal(endBody.delivered, false);
-    assert.equal(endBody.accepted, false);
     assert.equal(endBody.state, "stopped");
   });
 });

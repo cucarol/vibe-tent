@@ -9,14 +9,14 @@ import { guardCollaborationViewIdentity } from "../src/desktop/renderer-next/mod
 
 const ok = <T>(workspaceId: string, value: T) => ({ ok: true as const, workspaceId, value, fetchedAt: "now" });
 const command = (workspaceId: string) => ok(workspaceId, { workspaceId });
-const snapshot = (nodeId: string | null): WorkspaceCollaborationView => ({ workspaceId: "ws-a", selectedNode: nodeId ? { nodeId, activeTask: null, lastReturn: null } : null, inbox: { items: [{ kind: "delivery", deliveryId: "dl-a", sourceNodeId: "cx-a", summary: "完成", createdAt: "now" }], counts: { delivery: 1, decision: 0, total: 1 } } });
+const snapshot = (nodeId: string | null): WorkspaceCollaborationView => ({ workspaceId: "ws-a", selectedNode: nodeId ? { nodeId, activeTask: null, statusDetail: null } : null, inbox: { items: [{ kind: "result", resultId: "rs-a", summary: "完成", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } } });
 function gateway(overrides: Partial<CollaborationSurfaceGateway> = {}): CollaborationSurfaceGateway {
   return {
     workspaceCollaboration: async (workspaceId, nodeId) => ok(workspaceId, snapshot(nodeId)),
     dispatchTargets: async (workspaceId) => ok(workspaceId, { workspaceId, targets: [{ kind: "role", id: "rl-ui", label: "界面" }] }),
     dispatchTask: async (input) => command(input.workspaceId),
-    acceptDelivery: async (workspaceId) => command(workspaceId),
-    rejectDelivery: async (workspaceId) => command(workspaceId),
+    acceptTaskResult: async (workspaceId) => command(workspaceId),
+    rejectTaskResult: async (workspaceId) => command(workspaceId),
     respondDecision: async (workspaceId) => command(workspaceId),
     ...overrides,
   };
@@ -70,20 +70,20 @@ test("disconnect retains Inbox/selected content stale and disables commands", as
   const controller = new CollaborationSurfaceController(gateway()); controller.select("ws-a", "cx-a"); await controller.reload();
   controller.setOnline(false);
   assert.equal(controller.getView().status, "stale"); assert.equal(controller.getView().snapshot?.inbox.counts.total, 1); assert.equal(controller.getView().canMutate, false);
-  assert.equal(await controller.actions().acceptDelivery("dl-a"), false);
+  assert.equal(await controller.actions().acceptTaskResult("rs-a"), false);
 });
 
-test("commands use exact Delivery/Decision identities and reread", async () => {
+test("commands use exact TaskResult/Decision identities and reread", async () => {
   const calls: unknown[] = []; let reads = 0;
   const controller = new CollaborationSurfaceController(gateway({
     workspaceCollaboration: async (workspaceId, nodeId) => { reads += 1; return ok(workspaceId, snapshot(nodeId)); },
-    acceptDelivery: async (workspaceId, deliveryId) => { calls.push(["accept", workspaceId, deliveryId]); return command(workspaceId); },
+    acceptTaskResult: async (workspaceId, resultId) => { calls.push(["accept", workspaceId, resultId]); return command(workspaceId); },
     respondDecision: async (workspaceId, requestId, response) => { calls.push(["decision", workspaceId, requestId, response]); return command(workspaceId); },
   }));
   controller.select("ws-a", "cx-a"); await controller.reload();
-  assert.equal(await controller.actions().acceptDelivery("dl-a"), true);
+  assert.equal(await controller.actions().acceptTaskResult("rs-a"), true);
   assert.equal(await controller.actions().respondDecision("dr-a", { kind: "deny" }), true);
-  assert.deepEqual(calls, [["accept", "ws-a", "dl-a"], ["decision", "ws-a", "dr-a", { kind: "deny" }]]);
+  assert.deepEqual(calls, [["accept", "ws-a", "rs-a"], ["decision", "ws-a", "dr-a", { kind: "deny" }]]);
   assert.ok(reads >= 3);
 });
 
@@ -96,7 +96,7 @@ test("identity guard represents null selection as workspace loading/error, not i
 test("identity guard keeps same-workspace Inbox but never the prior selected Task", () => {
   const prior: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: { state: "running", responsibility: { kind: "user" }, execution: null, readyDelivery: null, pendingDecision: null }, lastReturn: null },
+    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }, statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: prior, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const guarded = guardCollaborationViewIdentity(view, { workspaceId: "ws-a", nodeId: "cx-b", online: true });
@@ -109,7 +109,7 @@ test("identity guard keeps same-workspace Inbox but never the prior selected Tas
 test("same-workspace retained Inbox does not render a surrogate selected-Node workflow", () => {
   const prior: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: { state: "running", responsibility: { kind: "user" }, execution: null, readyDelivery: null, pendingDecision: null }, lastReturn: null },
+    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }, statusDetail: null },
   };
   const guarded = guardCollaborationViewIdentity(
     { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: prior, targets: [], targetsReady: true, busyKey: null, canMutate: true },
@@ -120,7 +120,7 @@ test("same-workspace retained Inbox does not render a surrogate selected-Node wo
     node,
     allNodes: [node],
     view: guarded,
-    actions: { retry: async () => {}, dispatch: async () => false, acceptDelivery: async () => false, rejectDelivery: async () => false, respondDecision: async () => false },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
   assert.match(html, /协作内容正在刷新/);
   assert.doesNotMatch(html, /开始委托|委托进展|工作正在推进/);
@@ -131,19 +131,20 @@ test("Role-responsible return stays readable without exposing user review mutati
   const roleSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
     selectedNode: { nodeId: "cx-a", activeTask: {
-      state: "delivered",
+      taskId: "tk-role",
+      state: "submitted",
       responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
       execution: { kind: "role", roleId: "rl-worker", label: "执行" },
-      readyDelivery: { deliveryId: "dl-role", summary: "已完成方案", createdAt: "now" },
+      readyResult: { resultId: "rs-role", summary: "已完成方案", createdAt: "now" },
       pendingDecision: null,
-    }, lastReturn: null },
+    }, statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: roleSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
     allNodes: [node],
     view,
-    actions: { retry: async () => {}, dispatch: async () => false, acceptDelivery: async () => false, rejectDelivery: async () => false, respondDecision: async () => false },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
   assert.match(html, /已完成方案/);
   assert.match(html, /等待规划接纳|等待负责角色/);
@@ -155,19 +156,20 @@ test("selected pending Decision remains actionable because workspace projection 
   const decisionSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
     selectedNode: { nodeId: "cx-a", activeTask: {
+      taskId: "tk-waiting",
       state: "waiting",
       responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
       execution: { kind: "role", roleId: "rl-worker", label: "执行" },
-      readyDelivery: null,
+      readyResult: null,
       pendingDecision: { requestId: "dr-user", question: "是否继续？", options: [{ id: "yes", label: "继续" }] },
-    }, lastReturn: null },
+    }, statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: decisionSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
     allNodes: [node],
     view,
-    actions: { retry: async () => {}, dispatch: async () => false, acceptDelivery: async () => false, rejectDelivery: async () => false, respondDecision: async () => false },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
   assert.match(html, /是否继续？/);
   assert.match(html, /提交回复|拒绝此次请求/);

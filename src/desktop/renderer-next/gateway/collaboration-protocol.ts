@@ -193,28 +193,27 @@ export function dispatchTask(
   });
 }
 
-export function acceptDelivery(
+export function acceptTaskResult(
   transport: CollaborationTransport | undefined,
   workspaceId: string,
-  deliveryId: string,
-  outputNodeIds: string[] = []
+  resultId: string
 ): Promise<CollaborationRead<CollaborationMutation>> {
   return request({
     transport,
-    request: { operation: "acceptDelivery", workspaceId, deliveryId, outputNodeIds },
+    request: { operation: "acceptTaskResult", workspaceId, resultId },
     normalize: (raw) => normalizeMutation(raw, workspaceId),
   });
 }
 
-export function rejectDelivery(
+export function rejectTaskResult(
   transport: CollaborationTransport | undefined,
   workspaceId: string,
-  deliveryId: string,
+  resultId: string,
   note: string
 ): Promise<CollaborationRead<CollaborationMutation>> {
   return request({
     transport,
-    request: { operation: "rejectDelivery", workspaceId, deliveryId, note, resume: true },
+    request: { operation: "rejectTaskResult", workspaceId, resultId, note, resume: true },
     normalize: (raw) => normalizeMutation(raw, workspaceId),
   });
 }

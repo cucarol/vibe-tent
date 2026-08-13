@@ -15,20 +15,17 @@ export interface AgentConnectionConfig {
   /** Registered local adapter which launches this Connection. */
   adapterId: string;
   displayName?: string;
-  /** Non-secret executable command for custom/generic local Connections. */
+  /** Exact non-secret launch command for this Connection. */
   command?: string;
-  /** Non-secret argv for custom/generic local Connections. */
+  /** Complete non-secret argv for this Connection. */
   args?: string[];
-  executable?: string;
   model?: string;
   /** Process env key name only; the value is never persisted. */
   envKey?: string;
   /** LaunchSecretStore id only; resolve it for each start/resume. */
   launchSecretRef?: string;
-  /** Process env key name only; its resolved endpoint affects continuity digest. */
-  baseUrlEnvKey?: string;
   /** Non-secret endpoint configured directly in Settings. */
-  baseUrl?: string;
+  endpoint?: string;
   /** ACP tool-permission policy; unrelated to role-to-role authority. */
   permissionPolicy?: AcpPermissionPolicy;
   promptTimeoutMs?: number;
@@ -60,11 +57,9 @@ export interface AgentConnectionSnapshot {
   model?: string;
   command?: string;
   args?: string[];
-  executable?: string;
   envKey?: string;
   launchSecretRef?: string;
-  baseUrlEnvKey?: string;
-  baseUrl?: string;
+  endpoint?: string;
   permissionPolicy?: AcpPermissionPolicy;
   promptTimeoutMs?: number;
   permissionTimeoutMs?: number;
@@ -79,7 +74,7 @@ export interface AgentConnectionSnapshot {
 export function cloneAgentConnection(connection: AgentConnectionConfig): AgentConnectionConfig {
   return {
     ...connection,
-    args: connection.args?.length ? [...connection.args] : undefined,
+    args: connection.args ? [...connection.args] : undefined,
     skills: connection.skills?.length ? cloneSkillRefs(connection.skills) : undefined,
     mcpServers: connection.mcpServers?.length ? cloneMcpServers(connection.mcpServers) : undefined,
     fake: connection.fake ? { ...connection.fake } : undefined,
@@ -105,9 +100,9 @@ export function calculateAgentConnectionLaunchDigest(
   const canonical = cloneAgentConnection(connection);
   const input = {
     connectionId: canonical.connectionId, provider: canonical.provider, adapterId: canonical.adapterId,
-    command: canonical.command, args: canonical.args, executable: canonical.executable, model: canonical.model,
+    command: canonical.command, args: canonical.args, model: canonical.model,
     envKey: canonical.envKey, launchSecretRef: canonical.launchSecretRef,
-    baseUrlEnvKey: canonical.baseUrlEnvKey, baseUrl: canonical.baseUrl,
+    endpoint: canonical.endpoint,
     effectiveEndpointDigest, permissionPolicy: canonical.permissionPolicy,
     promptTimeoutMs: canonical.promptTimeoutMs,
     permissionTimeoutMs: canonical.permissionTimeoutMs,
@@ -126,12 +121,10 @@ export function createAgentConnectionSnapshot(
     adapterId: connection.adapterId,
     ...(connection.model ? { model: connection.model } : {}),
     ...(connection.command ? { command: connection.command } : {}),
-    ...(connection.args?.length ? { args: [...connection.args] } : {}),
-    ...(connection.executable ? { executable: connection.executable } : {}),
+    ...(connection.args ? { args: [...connection.args] } : {}),
     ...(connection.envKey ? { envKey: connection.envKey } : {}),
     ...(connection.launchSecretRef ? { launchSecretRef: connection.launchSecretRef } : {}),
-    ...(connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {}),
-    ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+    ...(connection.endpoint ? { endpoint: connection.endpoint } : {}),
     ...(connection.permissionPolicy ? { permissionPolicy: connection.permissionPolicy } : {}),
     ...(connection.promptTimeoutMs !== undefined ? { promptTimeoutMs: connection.promptTimeoutMs } : {}),
     ...(connection.permissionTimeoutMs !== undefined
@@ -154,11 +147,9 @@ export function connectionConfigFromSnapshot(snapshot: AgentConnectionSnapshot):
     ...(snapshot.model ? { model: snapshot.model } : {}),
     ...(snapshot.command ? { command: snapshot.command } : {}),
     ...(snapshot.args ? { args: [...snapshot.args] } : {}),
-    ...(snapshot.executable ? { executable: snapshot.executable } : {}),
     ...(snapshot.envKey ? { envKey: snapshot.envKey } : {}),
     ...(snapshot.launchSecretRef ? { launchSecretRef: snapshot.launchSecretRef } : {}),
-    ...(snapshot.baseUrlEnvKey ? { baseUrlEnvKey: snapshot.baseUrlEnvKey } : {}),
-    ...(snapshot.baseUrl ? { baseUrl: snapshot.baseUrl } : {}),
+    ...(snapshot.endpoint ? { endpoint: snapshot.endpoint } : {}),
     ...(snapshot.permissionPolicy ? { permissionPolicy: snapshot.permissionPolicy } : {}),
     ...(snapshot.promptTimeoutMs !== undefined
       ? { promptTimeoutMs: snapshot.promptTimeoutMs }
@@ -173,8 +164,8 @@ export function connectionConfigFromSnapshot(snapshot: AgentConnectionSnapshot):
 }
 
 const SNAPSHOT_KEYS = new Set([
-  "connectionId", "provider", "adapterId", "model", "command", "args", "executable",
-  "envKey", "launchSecretRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy",
+  "connectionId", "provider", "adapterId", "model", "command", "args",
+  "envKey", "launchSecretRef", "endpoint", "permissionPolicy",
   "promptTimeoutMs", "permissionTimeoutMs", "skills", "mcpServers", "fake",
   "effectiveEndpointDigest", "launchDigest",
 ]);
@@ -264,14 +255,14 @@ export function parseAgentConnectionSnapshot(value: unknown): AgentConnectionSna
   if (!isConnectionId(value.connectionId)) return null;
   if (typeof value.provider !== "string" || !value.provider) return null;
   if (typeof value.adapterId !== "string" || !value.adapterId) return null;
-  for (const key of ["model", "command", "executable"] as const) {
+  for (const key of ["model", "command"] as const) {
     if (!optionalString(value[key])) return null;
   }
   if (value.args !== undefined &&
       (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string"))) {
     return null;
   }
-  for (const key of ["envKey", "baseUrlEnvKey"] as const) {
+  for (const key of ["envKey"] as const) {
     if (value[key] !== undefined &&
         (typeof value[key] !== "string" || !ENV_KEY_RE.test(value[key]))) return null;
   }
@@ -279,7 +270,7 @@ export function parseAgentConnectionSnapshot(value: unknown): AgentConnectionSna
       (typeof value.launchSecretRef !== "string" || !LAUNCH_SECRET_REF_RE.test(value.launchSecretRef))) {
     return null;
   }
-  if (!safeBaseUrl(value.baseUrl)) return null;
+  if (!safeBaseUrl(value.endpoint)) return null;
   if (value.permissionPolicy !== undefined &&
       value.permissionPolicy !== "allow" && value.permissionPolicy !== "ask" &&
       value.permissionPolicy !== "deny") return null;

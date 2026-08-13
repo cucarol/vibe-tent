@@ -1,5 +1,5 @@
 /**
- * Managed auto-delivery must fail closed unless runtime death and idle state
+ * Managed auto-result must fail closed unless runtime death and idle state
  * are positively observed. Deterministic fake adapter only.
  */
 import assert from "node:assert/strict";
@@ -25,7 +25,7 @@ const CONNECTION: AgentConnectionConfig = {
   fake: { waitForSignal: true, sleepMs: 60_000 },
 };
 
-test("managed auto-delivery refuses when stop and both seal probes fail", async () => {
+test("managed auto-result refuses when stop and both seal probes fail", async () => {
   resetManagedAutoDeliverDedupForTests();
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-seal-closed-ws-"));
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-seal-closed-data-"));
@@ -51,13 +51,13 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
       contextNodeIds: [],
       connectionId: CONNECTION.connectionId,
       prompt: "hold managed session open",
-      parentActor: { kind: "user", id: "user" },
+      requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; sessionId: string };
 
     const originalProbe = svc.runtime.probe.bind(svc.runtime);
     const originalStop = svc.runtime.stopSession.bind(svc.runtime);
-    assert.equal((await originalProbe(dispatched.sessionId)).alive, true);
+    assert.equal((await originalProbe(dispatched.sessionId)).isAlive, true);
 
     let probeCalls = 0;
     let stopCalls = 0;
@@ -95,7 +95,7 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
     assert.equal(probeCalls, 2, "seal must make both bounded observations");
     assert.equal(stopCalls, 1, "seal must attempt the exact owned stop once");
     assert.equal(
-      (await originalProbe(dispatched.sessionId)).alive,
+      (await originalProbe(dispatched.sessionId)).isAlive,
       true,
       "failed stop leaves the fake child live for the fail-closed assertion"
     );
@@ -104,10 +104,10 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
       task: { state: string };
     };
     assert.equal(task.task.state, "running");
-    const deliveries = (await client.deliveryList(mounted.workspaceId)) as {
-      deliveries: unknown[];
+    const results = (await client.taskResultList(mounted.workspaceId)) as {
+      results: unknown[];
     };
-    assert.equal(deliveries.deliveries.length, 0, "no ready Delivery without a proven seal");
+    assert.equal(results.results.length, 0, "no ready TaskResult without a proven seal");
 
     const sealFailure = diagnostics.find(
       (event) => event.runtimeEvent === "session.seal_before_deliver.failed"
@@ -119,7 +119,7 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
     const promptFailure = diagnostics.find(
       (event) => event.runtimeEvent === "session.prompt_complete.failed"
     );
-    assert.ok(promptFailure, "managed auto-delivery failure remains observable");
+    assert.ok(promptFailure, "managed auto-result failure remains observable");
     assert.match(String(promptFailure.error), /could not be sealed/);
     const registryRow = await svc.runtime.registry.read(dispatched.sessionId);
     assert.match(

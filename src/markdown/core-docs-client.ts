@@ -4,7 +4,7 @@ import type { OpsEnv } from "../core/ops-context.js";
 import { createNode, forkNode } from "../core/ops.js";
 import { parseFrontmatter, serializeFrontmatter, NODE_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, nodeNotePath, type LoadedTent } from "../core/tree.js";
-import { loadTaskEnvelopes } from "../core/task.js";
+import { loadTaskRecords } from "../core/task.js";
 import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
 import type { Node } from "../core/types.js";
 import { withTentMutation } from "../core/adapter.js";
@@ -139,9 +139,6 @@ export class CoreDocsClient implements DocsClient {
         }
       }
 
-      if (!nextParsed.data.type || String(nextParsed.data.type).trim() === "") {
-        return { ok: false, code: "invalid", message: "type must be non-empty." };
-      }
       if (!nextParsed.data.id) {
         nextParsed.data.id = node.id;
         nextRaw = serializeFrontmatter(
@@ -157,12 +154,10 @@ export class CoreDocsClient implements DocsClient {
   }
 
   async createNote(input: CreateNoteInput): Promise<{ nodeId: string; path: string }> {
-    // V0.2 default primary is prompt (no permanent note alias).
-    const type = input.type?.trim() || "prompt";
     const nodeId = await createNode(this.env, {
       parentPath: input.parentPath?.replace(/\\/g, "/") ?? "",
       name: input.name,
-      type,
+      ...(input.type?.trim() ? { type: input.type.trim() } : {}),
     });
     if (input.body !== undefined) {
       const snap = await this.readForEdit(nodeId);
@@ -302,7 +297,7 @@ function resolveNodeId(tent: LoadedTent, nodeId: string): Node | undefined {
 async function hasActiveTask(env: OpsEnv, tent: LoadedTent, node: Node): Promise<boolean> {
   // Direct active Node ref only (cx-tsw53f); ancestor/descendant/workspace do not freeze writes.
   void tent;
-  const tasks = await loadTaskEnvelopes(env.fs);
+  const tasks = await loadTaskRecords(env.fs);
   return listDirectActiveTasksForNode(node.id, tasks).length > 0;
 }
 

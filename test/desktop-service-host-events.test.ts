@@ -22,7 +22,7 @@ test("desktop host forwards workspace and projection invalidations only", () => 
     "service.health",
     "node.changed",
     "task.state",
-    "delivery.updated",
+    "taskResult.updated",
     "decisionRequest.pending",
     "decisionRequest.resolved",
     "registry.roles.updated",
@@ -132,7 +132,7 @@ test("same-URL Service replacement discards the stale token and coalesces recove
     url: "http://127.0.0.1:4510",
     async health() {
       // Open health already sees Service B and therefore cannot prove token A.
-      return { status: "ok", ...endpointB, protocolVersion: 8, workspaceCount: 0 };
+      return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
     },
     async call() {
       oldAuthenticatedCalls += 1;
@@ -150,11 +150,11 @@ test("same-URL Service replacement discards the stale token and coalesces recove
     token: endpointB.token,
     url: "http://127.0.0.1:4510",
     async health() {
-      return { status: "ok", ...endpointB, protocolVersion: 8, workspaceCount: 0 };
+      return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
     },
     async call(method: string) {
       if (method === "service.health") {
-        return { status: "ok", ...endpointB, protocolVersion: 8, workspaceCount: 0 };
+        return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
       }
       if (method === "workspace.list") {
         return {
@@ -326,7 +326,7 @@ test("renderer invalidations never trigger retired shell collaboration reads", a
     refreshHealth: async () => { calls.push("health"); return { status: "ok" }; },
     refreshWorkspaces: async () => { calls.push("workspaces"); },
   };
-  for (const type of ["node.changed", "task.state", "delivery.updated", "decisionRequest.pending", "session.state", "connection.changed"]) {
+  for (const type of ["node.changed", "task.state", "taskResult.updated", "decisionRequest.pending", "session.state", "connection.changed"]) {
     assert.equal(await refreshDesktopShellForEvent(model, type), false, type);
   }
   assert.deepEqual(calls, []);

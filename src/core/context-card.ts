@@ -4,14 +4,14 @@
 export type ContextRefKind =
   | "node"
   | "task"
-  | "delivery"
+  | "result"
   | "handoff"
   | "selection"
   | "role";
 
 export type ContextRef = {
   kind: ContextRefKind;
-  /** Stable handle: cx- / tk- / dl- / role name / path fragment for selection. */
+  /** Stable handle: cx- / tk- / rs- / role name / path fragment for selection. */
   id: string;
   /** Optional human path or relative locator (does not replace id). */
   path?: string;
@@ -53,7 +53,7 @@ export const CONTEXT_CARD_TEMPLATE_VERSION = "v1" as const;
 
 /**
  * Build a context card from a ref. Payload is pointer + fixed read instruction only.
- * Existing handoff / delivery / task entities are pointed at, never re-copied.
+ * Existing handoff / result / task entities are pointed at, never re-copied.
  */
 export function buildContextCard(
   ref: ContextRef,
@@ -144,11 +144,11 @@ export function taskContextCard(
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
 }
 
-export function deliveryContextCard(
-  deliveryId: string,
+export function resultContextCard(
+  resultId: string,
   opts?: ContextCardPathHints & { path?: string }
 ): ContextCard {
-  return buildContextCard({ kind: "delivery", id: deliveryId, path: opts?.path }, opts);
+  return buildContextCard({ kind: "result", id: resultId, path: opts?.path }, opts);
 }
 
 /** Serialize for HTML5 text/plain drag (and optional click-to-copy) as plain text. */
@@ -183,7 +183,7 @@ export function parseContextCardText(text: string): ContextRef | null {
 const CONTEXT_REF_KINDS = new Set<string>([
   "node",
   "task",
-  "delivery",
+  "result",
   "handoff",
   "selection",
   "role",

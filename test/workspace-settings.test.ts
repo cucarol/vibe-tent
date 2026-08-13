@@ -69,7 +69,7 @@ test("normalizeWorkspaceSettings: omitted mode defaults; invalid/retired values 
     );
   }
   assert.throws(
-    () => normalizeWorkspaceSettings({ defaultDeliveryPolicy: "review" }),
+    () => normalizeWorkspaceSettings({ defaultTaskResultPolicy: "review" }),
     (err: unknown) =>
       err instanceof WorkspaceSettingsError && err.code === "INVALID_ACCEPT_MODE"
   );
@@ -111,7 +111,7 @@ test("loadWorkspaceSettings: retired on-disk acceptance fields fail loud without
     { defaultAcceptMode: "manual" },
     { defaultAcceptMode: "review" },
     { defaultAcceptMode: "bypass" },
-    { defaultDeliveryPolicy: "review" },
+    { defaultTaskResultPolicy: "review" },
   ]) {
     const serialized = JSON.stringify(raw, null, 2) + "\n";
     await fsa.writeFile(WORKSPACE_SETTINGS_PATH, serialized);

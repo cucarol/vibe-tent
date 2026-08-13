@@ -271,7 +271,7 @@ export function normalizeGraphProjection(
         !item.etag ||
         typeof item.path !== "string" ||
         typeof item.name !== "string" ||
-        typeof item.type !== "string" ||
+        !(item.type === undefined || typeof item.type === "string") ||
         !Array.isArray(item.tags) ||
         item.tags.some((tag) => typeof tag !== "string") ||
         !isNodeMode(item.mode) ||
@@ -288,7 +288,7 @@ export function normalizeGraphProjection(
         etag: item.etag,
         path: item.path,
         name: item.name,
-        type: item.type,
+        ...(typeof item.type === "string" ? { type: item.type } : {}),
         tags: [...item.tags] as string[],
         mode: item.mode,
         archived: item.archived,
