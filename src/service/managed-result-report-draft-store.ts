@@ -12,14 +12,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
-  backupCorruptMachineFile,
   isNotFoundError,
-  warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
 
 export interface ManagedTaskResultReportDraft {
-  id: string;
   workspaceId: string;
   taskPath: string;
   taskId?: string;
@@ -30,8 +27,6 @@ export interface ManagedTaskResultReportDraft {
   updatedAt: string;
   /** Last publish attempt diagnostic; never a terminal task failure. */
   lastError?: string;
-  /** How many publish attempts have been recorded for this draft. */
-  attemptCount: number;
 }
 
 export type ManagedTaskResultReportDraftStoreOptions = {
@@ -63,10 +58,21 @@ function draftKey(workspaceId: string, taskPath: string): string {
 }
 
 /** Parse untrusted machine state before any clone/projection touches it. */
-function parseDraft(value: unknown): ManagedTaskResultReportDraft | null {
-  if (!isRecord(value)) return null;
+function parseDraft(value: unknown): ManagedTaskResultReportDraft {
+  if (!isRecord(value)) throw invalidDraftState();
+  const keys = Object.keys(value);
+  const allowed = new Set([
+    "workspaceId",
+    "taskPath",
+    "taskId",
+    "sessionId",
+    "assistantText",
+    "createdAt",
+    "updatedAt",
+    "lastError",
+  ]);
+  if (keys.some((key) => !allowed.has(key))) throw invalidDraftState();
   const {
-    id,
     workspaceId,
     taskPath,
     taskId,
@@ -75,10 +81,8 @@ function parseDraft(value: unknown): ManagedTaskResultReportDraft | null {
     createdAt,
     updatedAt,
     lastError,
-    attemptCount,
   } = value;
   if (
-    !isRequiredString(id) ||
     !isRequiredString(workspaceId) ||
     !isRequiredString(taskPath) ||
     !isRequiredString(sessionId) ||
@@ -90,40 +94,26 @@ function parseDraft(value: unknown): ManagedTaskResultReportDraft | null {
     !isOptionalString(taskId) ||
     !isOptionalString(lastError)
   ) {
-    return null;
+    throw invalidDraftState();
   }
   const text = assistantText.trim();
-  if (!text) return null;
-  let attempts = 0;
-  if (attemptCount !== undefined) {
-    if (typeof attemptCount !== "number" || !Number.isFinite(attemptCount) || attemptCount < 0) {
-      return null;
-    }
-    attempts = Math.floor(attemptCount);
-  }
+  if (!text) throw invalidDraftState();
   return {
-    id,
-    workspaceId,
-    taskPath,
+    workspaceId: workspaceId.trim(),
+    taskPath: taskPath.trim(),
     ...(taskId !== undefined && taskId.trim() ? { taskId: taskId.trim() } : {}),
-    sessionId,
+    sessionId: sessionId.trim(),
     assistantText: text,
     createdAt,
     updatedAt,
     ...(typeof lastError === "string" && lastError.trim()
       ? { lastError: lastError.trim() }
       : {}),
-    attemptCount: attempts,
   };
 }
 
-export function makeManagedTaskResultReportDraftId(
-  rand: () => number = Math.random
-): string {
-  const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
-  let s = "mrd-";
-  for (let i = 0; i < 10; i++) s += alphabet[Math.floor(rand() * alphabet.length)];
-  return s;
+function invalidDraftState(): Error {
+  return new Error("Managed TaskResult report draft state is malformed");
 }
 
 /**
@@ -169,30 +159,24 @@ export class ManagedTaskResultReportDraftStore {
         try {
           parsed = JSON.parse(raw);
         } catch {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          throw invalidDraftState();
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+          throw invalidDraftState();
+        }
+        if (Object.keys(parsed as Record<string, unknown>).some((key) => key !== "items")) {
+          throw invalidDraftState();
         }
         const items = (parsed as { items?: unknown }).items;
-        if (items !== undefined && !Array.isArray(items)) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
+        if (!Array.isArray(items)) {
+          throw invalidDraftState();
         }
         const loaded = new Map<string, ManagedTaskResultReportDraft>();
-        for (const item of items ?? []) {
+        for (const item of items) {
           const restored = parseDraft(item);
-          if (!restored) {
-            await this.quarantineCorrupt();
-            this.loaded = true;
-            return;
-          }
-          loaded.set(draftKey(restored.workspaceId, restored.taskPath), restored);
+          const key = draftKey(restored.workspaceId, restored.taskPath);
+          if (loaded.has(key)) throw invalidDraftState();
+          loaded.set(key, restored);
         }
         this.items = loaded;
         this.loaded = true;
@@ -235,8 +219,8 @@ export class ManagedTaskResultReportDraftStore {
 
   /**
    * Preserve / refresh the final report before publish.
-   * Idempotent for the same task: replaces assistantText, bumps attemptCount,
-   * keeps createdAt on first write.
+   * Idempotent for the same task: replaces assistantText/Session, clears the
+   * prior diagnostic, and keeps createdAt on first write.
    */
   async preserve(input: {
     workspaceId: string;
@@ -268,11 +252,9 @@ export class ManagedTaskResultReportDraftStore {
             sessionId,
             assistantText,
             updatedAt: now,
-            attemptCount: existing.attemptCount + 1,
             ...(taskId ? { taskId } : existing.taskId ? { taskId: existing.taskId } : {}),
           }
         : {
-            id: makeManagedTaskResultReportDraftId(),
             workspaceId,
             taskPath,
             ...(taskId ? { taskId } : {}),
@@ -280,7 +262,6 @@ export class ManagedTaskResultReportDraftStore {
             assistantText,
             createdAt: now,
             updatedAt: now,
-            attemptCount: 1,
           };
       // Fresh preserve clears prior lastError; markFailed re-annotates on failure.
       delete nextRow.lastError;
@@ -358,12 +339,6 @@ export class ManagedTaskResultReportDraftStore {
     this.closed = true;
     this.shutdownPromise = this.ensureLoaded().then(() => undefined);
     return this.shutdownPromise;
-  }
-
-  private async quarantineCorrupt(): Promise<void> {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
-    this.items.clear();
   }
 
   private async persistSnapshot(

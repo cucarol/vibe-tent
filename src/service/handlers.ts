@@ -4848,20 +4848,15 @@ async function deliverManagedTaskInput(
           },
           "service"
         );
-        // prompt_complete is projected asynchronously. It may already have
-        // preserved a report draft and failed its pre-seal gate while this row
-        // was still processing. Retry from that durable draft after the input
-        // is terminal; never prompt the provider a second time.
-        try {
-          await requestManagedAutoDeliverRetryFromDraft(ctx, {
+        // The durable TaskInput terminal fact and event release this FIFO. Draft
+        // retry is tracked independently and never prompts the provider again.
+        trackManagedTaskInputBackground(
+          requestManagedAutoDeliverRetryFromDraft(ctx, {
             workspaceId: forInject.workspaceId,
             taskPath: forInject.taskPath,
             sessionId,
-          });
-        } catch {
-          // TaskInput result is already authoritative. Auto-result keeps
-          // its own durable draft + diagnostics and remains independently retryable.
-        }
+          })
+        );
       } catch (err) {
         // Provider already accepted the inject — never markFailed (that would
         // re-open the retry source and risk a second inject).
@@ -6043,10 +6038,6 @@ async function taskRejectRpc(
       { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
     );
   }
-
-  // Prior managed result marks executionSessionId+taskPath submitted; clear dedup so a
-  // successful rework prompt_complete can deliver again.
-  clearManagedAutoDeliverDedup(boundSessionId, taskPath);
 
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
@@ -7384,7 +7375,6 @@ async function executeTaskReplaceSession(
     } catch (err) {
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
     }
-    clearManagedAutoDeliverDedup(priorSessionId, taskPath);
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
       let current = await reconcileServiceTaskLifecycleSerialized(ctx, workspaceId, taskPath);
@@ -7620,7 +7610,6 @@ async function executeTaskReplaceSession(
     } catch {
       /* ignore */
     }
-    clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
 
     const nodeContextJson = JSON.stringify({
       workNodeIds: bound.workNodeIds,
@@ -10638,18 +10627,10 @@ function emitRetentionPurged(
 // ---- runtime event bridge (called from service bootstrap) ----
 
 /**
- * Dedup keys for managed auto-result: one successful prompt_complete per
- * executionSessionId+taskPath must not create two Results (reconnect / double emit).
- * Authority remains task lifecycle (ready result / non-running state also blocks).
+ * One owner Promise per exact managed Session+Task publication attempt. Durable
+ * Task/Result authority decides whether a later call still has work to do.
  */
-const managedAutoDeliverInFlight = new Set<string>();
-const managedAutoDeliverDone = new Set<string>();
-/**
- * A TaskInput may settle while prompt_complete auto-result is still in flight.
- * Remember one durable-draft retry so the pre-seal TaskInput gate cannot swallow
- * an otherwise completed managed turn.
- */
-const managedAutoDeliverRetryRequested = new Set<string>();
+const managedAutoDeliverFlights = new Map<string, Promise<void>>();
 
 /**
  * Session ids currently inside reject-resume native resumeSession.
@@ -10777,29 +10758,34 @@ function managedDeliverKey(sessionId: string, taskPath: string): string {
 
 /**
  * Retry a preserved managed report after its blocking TaskInput is durable.
- * If prompt_complete is still projecting, its finally block drains exactly one
- * retry after releasing the in-flight key. No timers or provider re-prompting.
+ * A concurrent publication is awaited, then the durable draft is re-read once.
+ * No timers, recursive owner retry, or provider re-prompting.
  */
 async function requestManagedAutoDeliverRetryFromDraft(
   ctx: HandlerContext,
   input: { workspaceId: string; taskPath: string; sessionId: string }
 ): Promise<void> {
-  const draft = await ctx.managedTaskResultReportDrafts.get(
-    input.workspaceId,
-    input.taskPath
-  );
+  const key = managedDeliverKey(input.sessionId, input.taskPath);
+  const active = managedAutoDeliverFlights.get(key);
+  if (active) await active;
+  let draft = await ctx.managedTaskResultReportDrafts.get(input.workspaceId, input.taskPath);
   if (!draft) return;
-  const priorOutcome = parseTaskOutcomeReport(draft.assistantText);
+  if (draft.sessionId !== input.sessionId) return;
+  let priorOutcome = parseTaskOutcomeReport(draft.assistantText);
   if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
     // Control reports are durable evidence for the parked turn, not deferred
     // TaskResult candidates. Only a real later provider report may supersede one.
     return;
   }
-  const key = managedDeliverKey(input.sessionId, input.taskPath);
-  if (managedAutoDeliverDone.has(key)) return;
-  if (managedAutoDeliverInFlight.has(key)) {
-    managedAutoDeliverRetryRequested.add(key);
-    return;
+  const raced = managedAutoDeliverFlights.get(key);
+  if (raced) {
+    await raced;
+    draft = await ctx.managedTaskResultReportDrafts.get(input.workspaceId, input.taskPath);
+    if (!draft || draft.sessionId !== input.sessionId) return;
+    priorOutcome = parseTaskOutcomeReport(draft.assistantText);
+    if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
+      return;
+    }
   }
   await tryManagedAutoDeliver(ctx, {
     ...input,
@@ -10813,10 +10799,10 @@ function isManagedAutoDeliverSealing(
   taskPath: string,
   taskId?: string
 ): boolean {
-  if (managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskPath))) {
+  if (managedAutoDeliverFlights.has(managedDeliverKey(sessionId, taskPath))) {
     return true;
   }
-  if (taskId && managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskId))) {
+  if (taskId && managedAutoDeliverFlights.has(managedDeliverKey(sessionId, taskId))) {
     return true;
   }
   return false;
@@ -11390,10 +11376,37 @@ async function tryManagedAutoDeliver(
     commits?: string[];
   }
 ): Promise<void> {
+  const key = managedDeliverKey(input.sessionId.trim(), input.taskPath);
+  const existing = managedAutoDeliverFlights.get(key);
+  if (existing) {
+    await existing;
+    return;
+  }
+  let owner!: Promise<void>;
+  owner = tryManagedAutoDeliverOwner(ctx, input).finally(() => {
+    if (managedAutoDeliverFlights.get(key) === owner) {
+      managedAutoDeliverFlights.delete(key);
+    }
+  });
+  managedAutoDeliverFlights.set(key, owner);
+  await owner;
+}
+
+async function tryManagedAutoDeliverOwner(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId: string;
+    assistantText: string;
+    commits?: string[];
+  }
+): Promise<void> {
   // Prefer explicit assistantText; empty callers may recover a durable draft
   // (service restart / idempotent retry without re-prompting the Agent).
   let rawReport = input.assistantText.trim();
   let sessionId = input.sessionId.trim();
+  let draftLookupError: unknown;
   if (!rawReport) {
     try {
       const draft = await ctx.managedTaskResultReportDrafts.get(
@@ -11406,11 +11419,11 @@ async function tryManagedAutoDeliver(
           sessionId = draft.sessionId;
         }
       }
-    } catch {
-      // Draft lookup failure must not invent a result.
+    } catch (err) {
+      draftLookupError = err;
     }
   }
-  if (!rawReport || !sessionId) {
+  if ((!rawReport || !sessionId) && !draftLookupError) {
     // Adapter should have failed already; do not invent a result.
     return;
   }
@@ -11423,14 +11436,9 @@ async function tryManagedAutoDeliver(
   // re-parses control reports without relying on the truncated wait summary.
   const draftText = rawReport;
 
-  const key = managedDeliverKey(sessionId, input.taskPath);
-  if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
-    return;
-  }
-  managedAutoDeliverInFlight.add(key);
-
   let draftPreserved = false;
   try {
+    if (draftLookupError) throw draftLookupError;
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
 
@@ -11503,6 +11511,7 @@ async function tryManagedAutoDeliver(
 
     // One exact-Task flight owns WAL recovery, seal, Git and finalization.
     let published = false;
+    let recoveredPublication = false;
     await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
       type Phase =
         | { kind: "skip" }
@@ -11523,37 +11532,13 @@ async function tryManagedAutoDeliver(
           report,
         })
       );
-      const current = recovered?.task ?? await loadTaskRecord(mount.env.fs, input.taskPath);
-      if (current.executionSessionId !== sessionId) return;
-      if (!recovered && current.state !== "running") return;
-
-      if (!recovered) {
-        // Outside the mutation bus: capture-once baseline for legacy Git-lane
-        // tasks missing roleBranchBase. Nested mutations.run would deadlock.
-        if (input.commits === undefined) {
-          await ensureTaskWorkspaceLane(ctx, input.workspaceId, current);
-        }
-        // Refuse before stopping the managed Session. A committed TaskResult has
-        // already passed this gate in its original attempt.
-        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, current);
-      }
-
-      // A committed candidate was originally published only after a successful
-      // seal; re-proving the seal here also prevents stale drafts from clearing
-      // while the same managed process remains mutable.
-      const sealed = await sealManagedSessionBeforeTaskResult(ctx, {
-        workspaceId: input.workspaceId,
-        sessionId,
-        taskPath: input.taskPath,
-      });
-      if (!sealed) {
-        throw new Error(
-          "managed session could not be sealed before auto-deliver (process still mutable)"
-        );
-      }
-
       let phase: Phase;
       if (recovered) {
+        if (recovered.task.executionSessionId !== sessionId) return;
+        recoveredPublication = true;
+        // The candidate can only exist after the original publication attempt
+        // proved the seal. Recovery converges that immutable WAL fact without
+        // touching provider, TaskInput, or mutable Git discovery again.
         if (recovered.prepared.kind === "done") {
           phase = { kind: "done", result: recovered.prepared.result };
         } else {
@@ -11568,6 +11553,28 @@ async function tryManagedAutoDeliver(
           };
         }
       } else {
+        const current = await loadTaskRecord(mount.env.fs, input.taskPath);
+        if (current.executionSessionId !== sessionId || current.state !== "running") return;
+        // Outside the mutation bus: capture-once baseline for legacy Git-lane
+        // tasks missing roleBranchBase. Nested mutations.run would deadlock.
+        if (input.commits === undefined) {
+          await ensureTaskWorkspaceLane(ctx, input.workspaceId, current);
+        }
+        // Refuse before stopping the managed Session. A committed TaskResult has
+        // already passed this gate in its original attempt.
+        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, current);
+
+        const sealed = await sealManagedSessionBeforeTaskResult(ctx, {
+          workspaceId: input.workspaceId,
+          sessionId,
+          taskPath: input.taskPath,
+        });
+        if (!sealed) {
+          throw new Error(
+            "managed session could not be sealed before auto-deliver (process still mutable)"
+          );
+        }
+
         phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
         const task = await loadTaskRecord(mount.env.fs, input.taskPath);
 
@@ -11665,7 +11672,6 @@ async function tryManagedAutoDeliver(
         });
       }
 
-      managedAutoDeliverDone.add(key);
       published = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
@@ -11691,7 +11697,7 @@ async function tryManagedAutoDeliver(
       }
     }
 
-    if (published) {
+    if (published && !recoveredPublication) {
       // Idempotent safety after durable publish only: seal already stopped;
       // re-run cleanup if a race left the process alive. A stale/no-op completion
       // must never cancel open TaskInputs under the current Task binding.
@@ -11774,8 +11780,8 @@ async function tryManagedAutoDeliver(
         task.state === "waiting" ||
         task.state === "submitted"
       ) {
-        // Clear in-flight so a later prompt_complete / retry can attempt again.
-        // Do not add to managedAutoDeliverDone — failure is not success.
+        // The owner Promise releases in finally, so a later explicit retry can
+        // re-read this durable draft. Failure never creates a success cache.
         try {
           await ctx.runtime.registry.update(sessionId, {
             lastError: `managed auto-submit failed: ${message}`,
@@ -11803,19 +11809,6 @@ async function tryManagedAutoDeliver(
     } catch {
       // ignore nested mapping failures
     }
-  } finally {
-    managedAutoDeliverInFlight.delete(key);
-    const retryRequested = managedAutoDeliverRetryRequested.delete(key);
-    if (retryRequested && !managedAutoDeliverDone.has(key)) {
-      // Drain only after the first attempt releases its key. Awaiting keeps the
-      // retry within Service lifecycle accounting without recursive overlap.
-      await tryManagedAutoDeliver(ctx, {
-        workspaceId: input.workspaceId,
-        taskPath: input.taskPath,
-        sessionId,
-        assistantText: "",
-      });
-    }
   }
 }
 
@@ -11836,8 +11829,6 @@ async function handleManagedNonDeliveredOutcome(
   const mount = ctx.host.get(input.workspaceId);
   if (!mount) return;
   const sessionId = input.sessionId.trim();
-  const key = managedDeliverKey(sessionId, input.taskPath);
-  // Do not mark done — a later turn may still deliver.
   try {
     const task = await loadTaskRecord(mount.env.fs, input.taskPath).catch(() => null);
     if (!task) return;
@@ -11943,9 +11934,6 @@ async function handleManagedNonDeliveredOutcome(
         err instanceof Error ? err.message : String(err)
       }`
     );
-  } finally {
-    // Allow a later successful submitted turn for the same Session and Task.
-    managedAutoDeliverInFlight.delete(key);
   }
 }
 
@@ -12287,11 +12275,9 @@ export function setBeforeTaskBackfillWorkspaceLaneBaseForTests(
   beforeTaskBackfillWorkspaceLaneBaseForTests = fn;
 }
 
-/** Test helper: clear in-process managed deliver dedup (does not touch disk). */
+/** Test helper: clear in-process managed result flights (does not touch disk). */
 export function resetManagedAutoDeliverDedupForTests(): void {
-  managedAutoDeliverInFlight.clear();
-  managedAutoDeliverDone.clear();
-  managedAutoDeliverRetryRequested.clear();
+  managedAutoDeliverFlights.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
   afterTaskRejectContinuationPersistForTests = null;
@@ -12317,14 +12303,6 @@ export async function invokeDeliverManagedTaskInputForTests(
   item: TaskInputRecord
 ): Promise<ManagedTaskInputTaskResult> {
   return deliverManagedTaskInput(ctx, item);
-}
-
-/** Drop managed auto-deliver success/in-flight markers for one session+task pair. */
-function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void {
-  const key = managedDeliverKey(sessionId, taskPath);
-  managedAutoDeliverDone.delete(key);
-  managedAutoDeliverInFlight.delete(key);
-  managedAutoDeliverRetryRequested.delete(key);
 }
 
 /**
@@ -12488,8 +12466,6 @@ async function restoreManagedSessionAfterRejectResume(
     if (!handle.connectionId || !handle.adapterId) {
       throw new Error(`Native resume returned an unbound managed Session: ${priorSessionId}`);
     }
-    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-
     const bound = await ctx.mutations.run(input.workspaceId, async () => {
       ctx.host.markSelfWrite(input.workspaceId);
       const next = await patchTaskRecord(mount.env.fs, input.taskPath, {

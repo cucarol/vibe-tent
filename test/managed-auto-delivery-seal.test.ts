@@ -53,21 +53,26 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       prompt: "hold managed session open",
       requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
-    })) as { taskPath: string; sessionId: string };
+    })) as { taskPath: string };
+    const started = (await client.taskStartSession(mounted.workspaceId, {
+      taskPath: dispatched.taskPath,
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    const sessionId = started.session.sessionId;
 
     const originalProbe = svc.runtime.probe.bind(svc.runtime);
     const originalStop = svc.runtime.stopSession.bind(svc.runtime);
-    assert.equal((await originalProbe(dispatched.sessionId)).isAlive, true);
+    assert.equal((await originalProbe(sessionId)).isAlive, true);
 
     let probeCalls = 0;
     let stopCalls = 0;
     svc.runtime.probe = async (sessionId: string) => {
-      if (sessionId !== dispatched.sessionId) return originalProbe(sessionId);
+      if (sessionId !== started.session.sessionId) return originalProbe(sessionId);
       probeCalls += 1;
       throw new Error(`intentional seal probe failure ${probeCalls}`);
     };
     svc.runtime.stopSession = async (sessionId: string, reason = "user") => {
-      if (sessionId !== dispatched.sessionId) return originalStop(sessionId, reason);
+      if (sessionId !== started.session.sessionId) return originalStop(sessionId, reason);
       stopCalls += 1;
       throw new Error("intentional managed stop failure");
     };
@@ -82,7 +87,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       await invokeManagedAutoDeliverForTests(svc.ctx, {
         workspaceId: mounted.workspaceId,
         taskPath: dispatched.taskPath,
-        sessionId: dispatched.sessionId,
+        sessionId,
         assistantText: "outcome: delivered\n\nMUST_NOT_PUBLISH",
         commits: [],
       });
@@ -95,7 +100,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
     assert.equal(probeCalls, 2, "seal must make both bounded observations");
     assert.equal(stopCalls, 1, "seal must attempt the exact owned stop once");
     assert.equal(
-      (await originalProbe(dispatched.sessionId)).isAlive,
+      (await originalProbe(sessionId)).isAlive,
       true,
       "failed stop leaves the fake child live for the fail-closed assertion"
     );
@@ -121,10 +126,10 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
     );
     assert.ok(promptFailure, "managed auto-result failure remains observable");
     assert.match(String(promptFailure.error), /could not be sealed/);
-    const registryRow = await svc.runtime.registry.read(dispatched.sessionId);
+    const registryRow = await svc.runtime.registry.read(sessionId);
     assert.match(
       registryRow?.lastError ?? "",
-      /managed auto-deliver failed: managed session could not be sealed/
+      /managed auto-submit failed: managed session could not be sealed/
     );
 
     const health = await client.call<{ status: string; protocolVersion: number }>(
@@ -132,7 +137,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       {}
     );
     assert.equal(health.status, "ok");
-    assert.equal(health.protocolVersion, 8);
+    assert.equal(health.protocolVersion, 9);
   } finally {
     await svc.stop();
     await fs.rm(workspace, { recursive: true, force: true });

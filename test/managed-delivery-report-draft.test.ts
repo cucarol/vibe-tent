@@ -23,7 +23,6 @@ import {
 } from "../src/service/handlers.js";
 import {
   ManagedTaskResultReportDraftStore,
-  makeManagedTaskResultReportDraftId,
 } from "../src/service/managed-result-report-draft-store.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
@@ -110,6 +109,20 @@ function rpc(
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
+async function pollUntil<T>(
+  fn: () => Promise<T | null>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await fn();
+    if (value !== null) return value;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 async function mountWorkItem(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string
@@ -177,24 +190,22 @@ test("ManagedTaskResultReportDraftStore: preserve / get / markFailed / clear / r
     assistantText: "  FINAL_REPORT_BODY  ",
   });
   assert.equal(first.assistantText, "FINAL_REPORT_BODY");
-  assert.equal(first.attemptCount, 1);
   assert.equal(first.lastError, undefined);
-  assert.ok(first.id.startsWith("mrd-"));
+  assert.ok(first.createdAt);
+  assert.ok(first.updatedAt);
 
   const got = await store.get("ws-1", "temp/executor/tasks/task-a.md");
   assert.ok(got);
   assert.equal(got!.assistantText, "FINAL_REPORT_BODY");
   assert.equal(got!.sessionId, "ss-1");
 
-  // Idempotent re-preserve for same task bumps attempt, keeps body.
+  // Same exact Task is one slot: overwrite Session/body and clear diagnostics.
   const second = await store.preserve({
     workspaceId: "ws-1",
     taskPath: "temp/executor/tasks/task-a.md",
     sessionId: "ss-1",
     assistantText: "FINAL_REPORT_BODY",
   });
-  assert.equal(second.id, first.id);
-  assert.equal(second.attemptCount, 2);
   assert.equal(second.createdAt, first.createdAt);
 
   const failed = await store.markFailed(
@@ -213,7 +224,11 @@ test("ManagedTaskResultReportDraftStore: preserve / get / markFailed / clear / r
   assert.ok(afterRestart);
   assert.equal(afterRestart!.assistantText, "FINAL_REPORT_BODY");
   assert.match(afterRestart!.lastError!, /WORKTREE_DIRTY/);
-  assert.equal(afterRestart!.attemptCount, 2);
+  const persisted = JSON.parse(await fs.readFile(reloaded.filePath, "utf8")) as {
+    items: Array<Record<string, unknown>>;
+  };
+  assert.equal("id" in persisted.items[0]!, false);
+  assert.equal("attemptCount" in persisted.items[0]!, false);
 
   const cleared = await reloaded.clear("ws-1", "temp/executor/tasks/task-a.md");
   assert.equal(cleared, true);
@@ -228,7 +243,7 @@ test("ManagedTaskResultReportDraftStore: preserve / get / markFailed / clear / r
   assert.equal(raw.items.length, 0);
 });
 
-test("ManagedTaskResultReportDraftStore: empty assistantText refused; id helper", async () => {
+test("ManagedTaskResultReportDraftStore: empty assistantText refused", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-empty-"));
   const store = new ManagedTaskResultReportDraftStore(dataDir);
   await assert.rejects(
@@ -241,7 +256,174 @@ test("ManagedTaskResultReportDraftStore: empty assistantText refused; id helper"
       }),
     /non-empty assistantText/
   );
-  assert.match(makeManagedTaskResultReportDraftId(() => 0), /^mrd-/);
+});
+
+test("ManagedTaskResultReportDraftStore: malformed state fails loud without mutation or backup", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-corrupt-"));
+  const file = path.join(dataDir, "managed-result-report-drafts.json");
+  for (const raw of [
+    "{not-json\n",
+    JSON.stringify({ items: [{ workspaceId: "ws", taskPath: "task", id: "retired" }] }),
+  ]) {
+    await fs.writeFile(file, raw, "utf8");
+    const before = await fs.readFile(file);
+    const store = new ManagedTaskResultReportDraftStore(dataDir);
+    await assert.rejects(() => store.ensureLoaded(), /draft state is malformed/i);
+    assert.deepEqual(await fs.readFile(file), before);
+    assert.deepEqual(await fs.readdir(dataDir), ["managed-result-report-drafts.json"]);
+  }
+});
+
+test("same-key concurrent completions share one flight and late retry creates no second Result", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-single-flight");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const store = svc.ctx.managedTaskResultReportDrafts;
+    const originalPreserve = store.preserve.bind(store);
+    let entered!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let preserveCalls = 0;
+    store.preserve = async (...args) => {
+      preserveCalls += 1;
+      const row = await originalPreserve(...args);
+      entered();
+      await held;
+      return row;
+    };
+    const input = {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "SINGLE_FLIGHT_REPORT",
+      commits: [] as string[],
+    };
+    try {
+      const first = invokeManagedAutoDeliverForTests(svc.ctx, input);
+      await reached;
+      const duplicate = invokeManagedAutoDeliverForTests(svc.ctx, input);
+      release();
+      await Promise.all([first, duplicate]);
+    } finally {
+      store.preserve = originalPreserve;
+    }
+    assert.equal(preserveCalls, 1, "only the owner writes the durable draft");
+    let results = await loadTaskResults(svc.ctx.host.require(workspaceId).env.fs);
+    assert.equal(results.filter((row) => row.report === "SINGLE_FLIGHT_REPORT").length, 1);
+    assert.equal(await store.get(workspaceId, taskPath), undefined);
+
+    await invokeManagedAutoDeliverRetryFromDraftForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+    });
+    results = await loadTaskResults(svc.ctx.host.require(workspaceId).env.fs);
+    assert.equal(results.filter((row) => row.report === "SINGLE_FLIGHT_REPORT").length, 1);
+  });
+});
+
+test("draft lookup failure reaches the managed publication diagnostic boundary", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-read-fail-loud");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const store = svc.ctx.managedTaskResultReportDrafts;
+    const originalGet = store.get.bind(store);
+    const events: Array<Record<string, unknown>> = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "session.state") events.push(event.payload as Record<string, unknown>);
+    });
+    store.get = async () => {
+      throw new Error("Managed TaskResult report draft state is malformed");
+    };
+    try {
+      await invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "",
+      });
+    } finally {
+      store.get = originalGet;
+      unsubscribe();
+    }
+    assert.ok(
+      events.some(
+        (event) =>
+          event.runtimeEvent === "session.prompt_complete.failed" &&
+          String(event.error).includes("draft state is malformed")
+      )
+    );
+    assert.equal((await loadTaskResults(svc.ctx.host.require(workspaceId).env.fs)).length, 0);
+  });
+});
+
+test("draft retry waits for an active failed owner then publishes once without provider replay", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-active-failure-retry");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const store = svc.ctx.managedTaskResultReportDrafts;
+    const originalMarkFailed = store.markFailed.bind(store);
+    let failedEntered!: () => void;
+    let releaseFailure!: () => void;
+    const entered = new Promise<void>((resolve) => { failedEntered = resolve; });
+    const held = new Promise<void>((resolve) => { releaseFailure = resolve; });
+    store.markFailed = async (...args) => {
+      const row = await originalMarkFailed(...args);
+      failedEntered();
+      await held;
+      return row;
+    };
+    const originalStop = svc.ctx.runtime.stopSession.bind(svc.ctx.runtime);
+    let providerStops = 0;
+    svc.ctx.runtime.stopSession = async (...args) => {
+      providerStops += 1;
+      return originalStop(...args);
+    };
+    try {
+      const owner = invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "ACTIVE_OWNER_RETRY_REPORT",
+        commits: ["not-a-commit"],
+      });
+      await entered;
+      const retry = invokeManagedAutoDeliverRetryFromDraftForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+      });
+      releaseFailure();
+      await Promise.all([owner, retry]);
+    } finally {
+      releaseFailure();
+      store.markFailed = originalMarkFailed;
+      svc.ctx.runtime.stopSession = originalStop;
+    }
+    const results = await loadTaskResults(svc.ctx.host.require(workspaceId).env.fs);
+    assert.equal(results.filter((row) => row.report === "ACTIVE_OWNER_RETRY_REPORT").length, 1);
+    assert.equal(providerStops, 1, "retry observes the already sealed provider without replay");
+    assert.equal(await store.get(workspaceId, taskPath), undefined);
+  });
 });
 
 // ---- integration: failure preserves draft; retry + restart ----
@@ -313,7 +495,6 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
     assert.equal(draft!.assistantText, reportText);
     assert.equal(draft!.sessionId, sessionId);
     assert.match(String(draft!.lastError ?? ""), /dirty|uncommitted|WORKTREE/i);
-    assert.ok(draft!.attemptCount >= 1);
 
     const failEv = diag.find((p) => p.runtimeEvent === "session.prompt_complete.failed");
     assert.ok(failEv);
@@ -824,6 +1005,133 @@ test("managed report retry repairs accepted TaskResult plus delivered Task witho
       sessionsBefore,
       "accepted WAL retry must not launch or replay the provider"
     );
+  });
+});
+
+test("managed auto-phase WAL retry converges without another provider seal or stop", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-auto-wal-no-reseal");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "auto-accept"
+    );
+    const mount = svc.ctx.host.require(workspaceId);
+    const task = await loadTaskRecord(mount.env.fs, taskPath);
+    const result = await createTaskResult(mount.env.fs, mount.env.clock, {
+      taskId: task.id!,
+      resultsDir: task.assigneeRoleId
+        ? `temp/roles/${task.assigneeRoleId}/results`
+        : `temp/sessions/${task.executionSessionId}/results`,
+      report: "AUTO_WAL_NO_RESEAL",
+      status: "ready",
+      integrationMode: "auto-accept",
+    });
+    await patchTaskRecord(mount.env.fs, taskPath, {
+      state: "submitted",
+      currentResultId: result.id,
+      updatedAt: mount.env.clock.now(),
+    });
+    await svc.ctx.managedTaskResultReportDrafts.preserve({
+      workspaceId,
+      taskPath,
+      taskId: task.id,
+      sessionId,
+      assistantText: result.report,
+    });
+
+    const originalStop = svc.ctx.runtime.stopSession.bind(svc.ctx.runtime);
+    let additionalStops = 0;
+    svc.ctx.runtime.stopSession = async (...args) => {
+      additionalStops += 1;
+      return originalStop(...args);
+    };
+    try {
+      await invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "",
+      });
+    } finally {
+      svc.ctx.runtime.stopSession = originalStop;
+    }
+    assert.equal(additionalStops, 0);
+    const recovered = await loadTaskRecord(mount.env.fs, taskPath);
+    assert.equal(recovered.state, "accepted");
+    assert.equal(recovered.currentResultId, result.id);
+    assert.equal(await svc.ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath), undefined);
+  });
+});
+
+test("recovered Result from a retired Session cannot clear or converge after rebind", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-recovered-rebind-race");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const mount = svc.ctx.host.require(workspaceId);
+    const task = await loadTaskRecord(mount.env.fs, taskPath);
+    const result = await createTaskResult(mount.env.fs, mount.env.clock, {
+      taskId: task.id!,
+      resultsDir: task.assigneeRoleId
+        ? `temp/roles/${task.assigneeRoleId}/results`
+        : `temp/sessions/${task.executionSessionId}/results`,
+      report: "RETIRED_SESSION_RECOVERY",
+      status: "ready",
+    });
+    await patchTaskRecord(mount.env.fs, taskPath, {
+      state: "submitted",
+      currentResultId: result.id,
+      updatedAt: mount.env.clock.now(),
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const ownerEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const ownerHold = new Promise<void>((resolve) => { release = resolve; });
+    const blocker = runTaskLifecycle(workspaceId, taskPath, async () => {
+      entered();
+      await ownerHold;
+    });
+    await ownerEntered;
+    const events: Array<Record<string, unknown>> = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "task.state") events.push(event.payload as Record<string, unknown>);
+    });
+    const completing = invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: result.report,
+    });
+    await pollUntil(async () =>
+      (await svc.ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath)) ? true : null,
+    5_000, "old Session completion preserves draft before Task flight");
+    await patchTaskRecord(mount.env.fs, taskPath, {
+      executionSessionId: "ss-rebound",
+      updatedAt: mount.env.clock.now(),
+    });
+    release();
+    try {
+      await Promise.all([blocker, completing]);
+    } finally {
+      unsubscribe();
+    }
+    const rebound = await loadTaskRecord(mount.env.fs, taskPath);
+    assert.equal(rebound.executionSessionId, "ss-rebound");
+    assert.equal(rebound.state, "submitted");
+    assert.equal(rebound.currentResultId, result.id);
+    assert.equal(
+      (await svc.ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath))?.assistantText,
+      result.report
+    );
+    assert.equal(events.length, 0, "retired Session completion must not project Task state");
   });
 });
 

@@ -314,6 +314,6 @@ test("Service: managed auto-submit second gate refuses merge; preserves Task + r
       String(draft!.lastError ?? ""),
       /EXECUTOR_LANE_HISTORY|MERGE_COMMIT|merge|history/i
     );
-    assert.ok(draft!.attemptCount >= 1);
+    assert.match(draft!.lastError ?? "", /EXECUTOR_LANE_HISTORY|merge/i);
   });
 });

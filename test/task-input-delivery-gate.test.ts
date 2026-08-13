@@ -255,7 +255,7 @@ test("P0: pending TaskInput blocks public task.submit; no dl- created", async ()
     const manual = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "BLOCKED_BY_PENDING_INPUT",
+      report: "BLOCKED_BY_PENDING_INPUT",
     });
     assert.ok(manual.error, "pending TaskInput must refuse public deliver");
     assertPendingTaskInputError(manual.error!);
@@ -266,12 +266,12 @@ test("P0: pending TaskInput blocks public task.submit; no dl- created", async ()
       "running"
     );
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
-      list.result as { deliveries: Array<{ id: string; summary: string }> }
-    ).deliveries;
-    assert.equal(deliveries.length, 0, "no dl- while pending input blocks");
+    const results = (
+      list.result as { results: Array<{ id: string; report: string }> }
+    ).results;
+    assert.equal(results.length, 0, "no Result while pending input blocks");
     assert.equal(
-      deliveries.some((d) => /BLOCKED_BY_PENDING_INPUT/.test(d.summary)),
+      results.some((result) => /BLOCKED_BY_PENDING_INPUT/.test(result.report)),
       false
     );
 
@@ -293,7 +293,7 @@ test("P0: processing TaskInput blocks public deliver", async () => {
     const manual = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "BLOCKED_BY_PROCESSING",
+      report: "BLOCKED_BY_PROCESSING",
     });
     assert.ok(manual.error);
     assertPendingTaskInputError(manual.error!);
@@ -303,7 +303,7 @@ test("P0: processing TaskInput blocks public deliver", async () => {
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
     assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
+      (list.result as { results: unknown[] }).results.length,
       0
     );
     const still = await svc.ctx.taskInputs.get(id, workspaceId, taskPath);
@@ -324,7 +324,7 @@ test("P0: retryable failed TaskInput blocks public deliver", async () => {
     const manual = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "BLOCKED_BY_FAILED",
+      report: "BLOCKED_BY_FAILED",
     });
     assert.ok(manual.error);
     assertPendingTaskInputError(manual.error!);
@@ -333,7 +333,7 @@ test("P0: retryable failed TaskInput blocks public deliver", async () => {
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
     assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
+      (list.result as { results: unknown[] }).results.length,
       0
     );
     const still = await svc.ctx.taskInputs.get(id, workspaceId, taskPath);
@@ -382,20 +382,20 @@ test("P0: terminal TaskInput (delivered/acked/cancelled) do not block", async ()
     const ok = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "TERMINAL_INPUTS_OK",
+      report: "TERMINAL_INPUTS_OK",
     });
     assert.ok(!ok.error, JSON.stringify(ok.error));
     assert.equal(
       (ok.result as { state: string }).state,
-      "delivered"
+      "submitted"
     );
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
-      list.result as { deliveries: Array<{ status: string; summary: string }> }
-    ).deliveries;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].status, "ready");
-    assert.equal(deliveries[0].summary, "TERMINAL_INPUTS_OK");
+    const results = (
+      list.result as { results: Array<{ status: string; report: string }> }
+    ).results;
+    assert.equal(results.length, 1);
+    assert.equal(results[0].status, "ready");
+    assert.equal(results[0].report, "TERMINAL_INPUTS_OK");
   });
 });
 
@@ -416,7 +416,7 @@ test("P0: uncertain blocks review-required and auto-accept TaskResult and is att
       const manual = await rpc(svc, "task.submit", {
         workspaceId,
         taskPath,
-        summary: `MUST_NOT_${acceptMode.toUpperCase()}`,
+        report: `MUST_NOT_${acceptMode.toUpperCase()}`,
       });
       assert.ok(manual.error);
       assertPendingTaskInputError(manual.error!);
@@ -446,9 +446,9 @@ test("P0: uncertain blocks review-required and auto-accept TaskResult and is att
       assert.match(row?.lastError ?? "", /seeded uncertain/);
       assert.ok(row?.uncertainAt);
 
-      const deliveries = await rpc(svc, "taskResult.list", { workspaceId });
+      const results = await rpc(svc, "taskResult.list", { workspaceId });
       assert.equal(
-        (deliveries.result as { deliveries: unknown[] }).deliveries.length,
+        (results.result as { results: unknown[] }).results.length,
         0,
         `${acceptMode} must not publish/auto-accept around uncertain`
       );
@@ -489,7 +489,7 @@ test("P0: explicit retry is new-row first; ack old uncertain leaves new blocker"
     const blocked = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "NEW_ROW_STILL_BLOCKS",
+      report: "NEW_ROW_STILL_BLOCKS",
     });
     assert.ok(blocked.error);
     assertPendingTaskInputError(blocked.error!);
@@ -517,7 +517,7 @@ test("P0: after input is delivered/acked a later public TaskResult succeeds", as
     const blocked = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "TOO_EARLY",
+      report: "TOO_EARLY",
     });
     assert.ok(blocked.error);
     assertPendingTaskInputError(blocked.error!);
@@ -529,17 +529,17 @@ test("P0: after input is delivered/acked a later public TaskResult succeeds", as
     const ok = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "AFTER_INPUT_DELIVERED",
+      report: "AFTER_INPUT_DELIVERED",
     });
     assert.ok(!ok.error, JSON.stringify(ok.error));
     assert.equal((ok.result as { state: string }).state, "submitted");
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
-      list.result as { deliveries: Array<{ summary: string; status: string }> }
-    ).deliveries;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].summary, "AFTER_INPUT_DELIVERED");
-    assert.equal(deliveries[0].status, "ready");
+    const results = (
+      list.result as { results: Array<{ report: string; status: string }> }
+    ).results;
+    assert.equal(results.length, 1);
+    assert.equal(results[0].report, "AFTER_INPUT_DELIVERED");
+    assert.equal(results[0].status, "ready");
   });
 });
 
@@ -595,7 +595,7 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
       );
       const list = await rpc(svc, "taskResult.list", { workspaceId });
       assert.equal(
-        (list.result as { deliveries: unknown[] }).deliveries.length,
+        (list.result as { results: unknown[] }).results.length,
         0,
         "no ready TaskResult from managed path while pending input"
       );
@@ -654,17 +654,17 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
       const after = await rpc(svc, "task.get", { workspaceId, taskPath });
       assert.equal(
         (after.result as { task: { state: string } }).task.state,
-        "delivered"
+        "submitted"
       );
       const afterList = await rpc(svc, "taskResult.list", { workspaceId });
-      const deliveries = (
+      const results = (
         afterList.result as {
-          deliveries: Array<{ summary: string; status: string }>;
+          results: Array<{ report: string; status: string }>;
         }
-      ).deliveries;
-      assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].status, "ready");
-      assert.equal(deliveries[0].summary, reportBody);
+      ).results;
+      assert.equal(results.length, 1);
+      assert.equal(results[0].status, "ready");
+      assert.equal(results[0].report, reportText);
       assert.equal(
         await svc.ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath),
         undefined,
@@ -709,7 +709,7 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
     const blocked = await rpc(svc, "task.submit", {
       workspaceId: a.workspaceId,
       taskPath: a.taskPath,
-      summary: "TOO_EARLY_AFTER_SEND",
+      report: "TOO_EARLY_AFTER_SEND",
     });
     assert.ok(blocked.error);
     assertPendingTaskInputError(blocked.error!);
@@ -727,8 +727,8 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
     assert.equal(
       (
         (await rpc(svc, "taskResult.list", { workspaceId: a.workspaceId }))
-          .result as { deliveries: unknown[] }
-      ).deliveries.length,
+          .result as { results: unknown[] }
+      ).results.length,
       0
     );
 
@@ -765,12 +765,12 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
     const delivered = await rpc(svc, "task.submit", {
       workspaceId: a.workspaceId,
       taskPath,
-      summary: "DELIVER_BEFORE_INPUT",
+      report: "DELIVER_BEFORE_INPUT",
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     assert.equal(
       (delivered.result as { state: string }).state,
-      "delivered"
+      "submitted"
     );
 
     const lateInput = await rpc(svc, "task.sendInput", {
@@ -792,10 +792,10 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
     const list = await rpc(svc, "taskResult.list", {
       workspaceId: a.workspaceId,
     });
-    const deliveries = (
-      list.result as { deliveries: Array<{ summary: string }> }
-    ).deliveries.filter((x) => x.summary === "DELIVER_BEFORE_INPUT");
-    assert.equal(deliveries.length, 1);
+    const results = (
+      list.result as { results: Array<{ report: string }> }
+    ).results.filter((x) => x.report === "DELIVER_BEFORE_INPUT");
+    assert.equal(results.length, 1);
     const pending = await svc.ctx.taskInputs.listRetryableForTask(
       a.workspaceId,
       taskPath
@@ -820,7 +820,7 @@ test("P0 race: concurrent sendInput and public deliver — honest either-way und
       rpc(svc, "task.submit", {
         workspaceId,
         taskPath,
-        summary: "RACE_DELIVER",
+        report: "RACE_DELIVER",
       }),
       rpc(svc, "task.sendInput", {
         workspaceId,
@@ -852,7 +852,7 @@ test("P0 race: concurrent sendInput and public deliver — honest either-way und
       );
       const list = await rpc(svc, "taskResult.list", { workspaceId });
       assert.equal(
-        (list.result as { deliveries: unknown[] }).deliveries.length,
+        (list.result as { results: unknown[] }).results.length,
         1
       );
       assert.equal(
@@ -874,9 +874,9 @@ test("P0 race: concurrent sendInput and public deliver — honest either-way und
       assert.equal(
         (
           (await rpc(svc, "taskResult.list", { workspaceId })).result as {
-            deliveries: unknown[];
+            results: unknown[];
           }
-        ).deliveries.length,
+        ).results.length,
         0
       );
     }
@@ -902,7 +902,7 @@ test("P0 race: sendInput cannot slip between final publish gate and taskSubmit (
     const deliverPromise = rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      summary: "TOCTOU_DELIVER_WINS",
+      report: "TOCTOU_DELIVER_WINS",
     });
     await new Promise((r) => setTimeout(r, 20));
     const sendPromise = rpc(svc, "task.sendInput", {
@@ -940,8 +940,8 @@ test("P0 race: sendInput cannot slip between final publish gate and taskSubmit (
     const list = await rpc(svc, "taskResult.list", { workspaceId });
     assert.equal(
       (
-        list.result as { deliveries: Array<{ summary: string }> }
-      ).deliveries.filter((x) => x.summary === "TOCTOU_DELIVER_WINS").length,
+        list.result as { results: Array<{ report: string }> }
+      ).results.filter((x) => x.report === "TOCTOU_DELIVER_WINS").length,
       1
     );
   });
@@ -970,7 +970,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
       const publicRes = await rpc(svc, "task.submit", {
         workspaceId,
         taskPath: publicPath,
-        summary: "PUBLIC_SHAPE",
+        report: "PUBLIC_SHAPE",
       });
       assert.ok(publicRes.error);
       const publicData = publicRes.error!.data as {
@@ -1051,7 +1051,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
 
       const list = await rpc(svc, "taskResult.list", { workspaceId });
       assert.equal(
-        (list.result as { deliveries: unknown[] }).deliveries.length,
+        (list.result as { results: unknown[] }).results.length,
         0
       );
       const stillManaged = await svc.ctx.taskInputs.get(

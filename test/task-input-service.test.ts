@@ -1689,6 +1689,22 @@ test("reject-resume: background completion projects processing → delivered", a
       await markDeliveredHold;
       return originalMarkDelivered(...args);
     };
+    const draftStore = svc.ctx.managedTaskResultReportDrafts;
+    const originalMarkDraftFailed = draftStore.markFailed.bind(draftStore);
+    let enteredDraftFailure!: () => void;
+    let releaseDraftFailure!: () => void;
+    const draftFailureEntered = new Promise<void>((resolve) => {
+      enteredDraftFailure = resolve;
+    });
+    const draftFailureHold = new Promise<void>((resolve) => {
+      releaseDraftFailure = resolve;
+    });
+    draftStore.markFailed = async (...args) => {
+      const row = await originalMarkDraftFailed(...args);
+      enteredDraftFailure();
+      await draftFailureHold;
+      return row;
+    };
     const diagnostics: Array<Record<string, unknown>> = [];
     const unsubscribe = svc.events.subscribe((ev) => {
       if (ev.type === "session.state") {
@@ -1712,6 +1728,38 @@ test("reject-resume: background completion projects processing → delivered", a
         }
       )) as typeof rejected;
       await markDeliveredEntered;
+      await draftFailureEntered;
+      releaseMarkDelivered();
+      await pollUntil(async () => {
+        const got = (await client.taskInputGet(
+          workspaceId,
+          taskPath,
+          rejected.input.id
+        )) as { input: { status: string } };
+        return got.input.status === "delivered" ? true : null;
+      }, 5_000, "TaskInput FIFO releases while auto-submit owner remains active");
+      const second = (await client.taskSendInput(workspaceId, taskPath, {
+        text: "FIFO_SECOND_WHILE_RESULT_OWNER_HELD",
+      })) as { input: { id: string } };
+      await pollUntil(async () => {
+        const raw = await fs.readFile(logPath, "utf8").catch(() => "{}");
+        const log = JSON.parse(raw) as { prompts?: string[] };
+        return (log.prompts ?? []).some((prompt) =>
+          prompt.includes("FIFO_SECOND_WHILE_RESULT_OWNER_HELD")
+        )
+          ? true
+          : null;
+      }, 5_000, "second same-Task FIFO continuation enters while result owner is held");
+      const secondRow = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        second.input.id
+      )) as { input: { status: string } };
+      assert.ok(
+        secondRow.input.status === "processing" || secondRow.input.status === "delivered",
+        `second FIFO row must have entered continuation, got ${secondRow.input.status}`
+      );
+      releaseDraftFailure();
       await pollUntil(async () =>
         diagnostics.some(
           (ev) =>
@@ -1723,7 +1771,9 @@ test("reject-resume: background completion projects processing → delivered", a
       5_000, "prompt_complete blocked while review-feedback processing");
     } finally {
       releaseMarkDelivered();
+      releaseDraftFailure();
       svc.ctx.taskInputs.markDelivered = originalMarkDelivered;
+      draftStore.markFailed = originalMarkDraftFailed;
       unsubscribe();
     }
     assert.equal(rejected.accepted, true);
