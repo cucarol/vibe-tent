@@ -70,7 +70,10 @@ export class AcpManagedSession implements ManagedSession {
   }
 
   isAlive(): boolean {
-    return !this.stopRequested && this.client.isAlive();
+    // A stop request closes this Session to new prompts, but it is not proof
+    // that the owned child exited. Runtime seal/probe authority must retain
+    // the handle until AcpClient observes the real child exit event.
+    return this.client.isAlive();
   }
 
   /**
@@ -237,41 +240,49 @@ function runManagedBootstrapPrompt(
   client: ManagedAcpClient,
   bootstrap: string
 ): Promise<void> {
-  return client
-    .sendPrompt(bootstrap)
-    .then(async (result) => {
-      const stopReason = (result.stopReason || "end_turn").toLowerCase();
-      const assistantText = (result.assistantText || "").trim();
-      // Only successful end_turn with non-empty message is a deliverable report.
-      if (stopReason !== "end_turn") {
-        client.reportFailed(
-          `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-result)`
-        );
-        await stopAcpClientQuiet(client);
-        return;
-      }
-      if (!assistantText) {
-        client.reportFailed("ACP assistant response empty (no auto-result)");
-        await stopAcpClientQuiet(client);
-        return;
-      }
-      emit({
-        type: "session.prompt_complete",
-        sessionId: plan.sessionId,
-        assistantText,
-        stopReason: result.stopReason || "end_turn",
-      });
-    })
-    .catch(async (err) => {
+  return run();
+
+  async function run(): Promise<void> {
+    let result: AcpStartResult;
+    try {
+      result = await client.sendPrompt(bootstrap);
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (/interrupted|session stopped/i.test(message)) {
-        client.reportFailed(`session interrupted: ${message}`);
-        await stopAcpClientQuiet(client);
-        return;
-      }
-      client.reportFailed(message);
-      await stopAcpClientQuiet(client);
+      await failAfterConfirmedStop(
+        /interrupted|session stopped/i.test(message)
+          ? `session interrupted: ${message}`
+          : message
+      );
+      return;
+    }
+
+    const stopReason = (result.stopReason || "end_turn").toLowerCase();
+    const assistantText = (result.assistantText || "").trim();
+    // Only successful end_turn with non-empty message is a submit-ready report.
+    if (stopReason !== "end_turn") {
+      await failAfterConfirmedStop(
+        `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-result)`
+      );
+      return;
+    }
+    if (!assistantText) {
+      await failAfterConfirmedStop("ACP assistant response empty (no auto-result)");
+      return;
+    }
+    emit({
+      type: "session.prompt_complete",
+      sessionId: plan.sessionId,
+      assistantText,
+      stopReason: result.stopReason || "end_turn",
     });
+  }
+
+  async function failAfterConfirmedStop(message: string): Promise<void> {
+    // Terminal projection is authority for releasing the runtime handle and
+    // Task execution binding. Emit it only after stop confirms child exit.
+    await client.stop("interrupt");
+    client.reportFailed(message);
+  }
 }
 
 /**

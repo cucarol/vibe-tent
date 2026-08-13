@@ -1497,6 +1497,18 @@ export class AgentRuntime implements AgentRuntimePort {
     lastError?: string,
     exitCode?: number | null
   ): Promise<void> {
+    const managed = this.managed.get(sessionId);
+    if (managed?.isAlive()) {
+      const message = truncateUtf8Text(
+        lastError ?? "managed terminal event arrived before child exit confirmation",
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
+      const current = await this.registry.read(sessionId);
+      if (current) {
+        await this.registry.update(sessionId, { lastError: message });
+      }
+      return;
+    }
     this.managed.delete(sessionId);
     const record = await this.registry.read(sessionId);
     if (!record) return;

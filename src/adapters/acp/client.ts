@@ -952,6 +952,9 @@ export class AcpClient {
   ): Promise<void> {
     void reason;
     if (this.childExited) {
+      if (this.limitError) {
+        this.reportFailed(this.limitError.message);
+      }
       this.cleanupStreams();
       return;
     }
@@ -962,6 +965,9 @@ export class AcpClient {
 
     const proc = this.proc;
     if (!proc) {
+      if (this.limitError) {
+        this.reportFailed(this.limitError.message);
+      }
       this.cleanupStreams();
       return;
     }
@@ -979,6 +985,9 @@ export class AcpClient {
           `${this.label} stop was not confirmed by child exit`
         )
       );
+    }
+    if (this.limitError) {
+      this.reportFailed(this.limitError.message);
     }
     this.cleanupStreams();
   }
@@ -1810,7 +1819,9 @@ export class AcpClient {
     const error = new AcpLimitError(code, detail);
     this.limitError = error;
     this.rejectAllPending(error);
-    this.reportFailed(error.message);
+    // A resource-limit decision is terminal for the prompt, not proof that the
+    // bridge child has exited. stopExclusive projects session.failed only after
+    // confirmed exit; a failed confirmation keeps runtime ownership reachable.
     (error as AcpLimitError & { terminalAlreadyEmitted: true }).terminalAlreadyEmitted = true;
     void this.stop("interrupt").catch(() => undefined);
     return error;

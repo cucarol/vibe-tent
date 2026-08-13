@@ -787,6 +787,20 @@ test("managed stop retains live truth until the child exit is confirmed", async 
   const sessionId = "ss-stoptruth";
   await startConnection(runtime, { sessionId, connectionId: "stop-unconfirmed", cwd });
 
+  emitRuntime({ type: "session.failed", sessionId, error: "premature terminal" });
+  const terminalDeadline = Date.now() + 2_000;
+  let retainedAfterTerminal = await runtime.registry.read(sessionId);
+  while (
+    retainedAfterTerminal?.lastError !== "premature terminal" &&
+    Date.now() < terminalDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    retainedAfterTerminal = await runtime.registry.read(sessionId);
+  }
+  assert.equal(retainedAfterTerminal?.state, "live");
+  assert.equal(retainedAfterTerminal?.pid, 8301);
+  assert.equal((await runtime.probe(sessionId)).isAlive, true);
+
   await assert.rejects(() => runtime.stopSession(sessionId, "user"), /exit was not confirmed/);
   const retained = await runtime.registry.read(sessionId);
   assert.equal(retained?.state, "live");

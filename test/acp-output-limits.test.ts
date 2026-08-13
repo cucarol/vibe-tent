@@ -22,7 +22,10 @@ import {
   redactBoundedDiagnosticText,
 } from "../src/adapters/acp/limits.js";
 import { MAX_ACP_IMAGES_TOTAL_BYTES } from "../src/adapters/acp/image-prompt.js";
-import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
+import {
+  AcpManagedSession,
+  startManagedAcpSession,
+} from "../src/adapters/acp/managed-session.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   createAgentRuntime,
@@ -356,13 +359,92 @@ async function assertStopped(client: AcpClient): Promise<void> {
   assert.equal(client.isAlive(), false);
 }
 
-test("AcpClient retries an explicit stop after an unconfirmed child exit", async () => {
+test("AcpManagedSession keeps real child liveness after a rejected stop", async () => {
+  let alive = true;
+  const session = new AcpManagedSession(
+    "ss-managed-stop-truth",
+    {
+      pid: 4242,
+      providerSession: "provider-stop-truth",
+      sessionConfig: {} as never,
+      isAlive: () => alive,
+      connect: async () => ({
+        pid: 4242,
+        providerSessionId: "provider-stop-truth",
+        loadSessionSupported: false,
+        resumeSessionSupported: false,
+        sessionConfig: {} as never,
+      }),
+      sendPrompt: async () => ({
+        pid: 4242,
+        providerSessionId: "provider-stop-truth",
+        stopReason: "end_turn",
+        assistantText: "unused",
+      }),
+      stop: async () => {
+        throw new Error("child exit was not confirmed");
+      },
+      reportFailed: () => undefined,
+    },
+    () => undefined
+  );
+
+  await assert.rejects(() => session.stop("interrupt"), /child exit was not confirmed/);
+  assert.equal(session.isAlive(), true, "stop intent must not substitute for child exit");
+  alive = false;
+  assert.equal(session.isAlive(), false);
+});
+
+test("managed prompt failure is terminal only after confirmed stop", async () => {
+  const events: RuntimeEvent[] = [];
+  let failedReports = 0;
+  const session = await startManagedAcpSession({
+    plan: {
+      sessionId: "ss-prompt-stop-truth",
+      connectionId: "prompt-stop-truth",
+      cwd: process.cwd(),
+      env: {},
+      bootstrapPrompt: "go",
+    },
+    emit: (event) => events.push(event),
+    client: {
+      pid: 4243,
+      providerSession: "provider-prompt-stop-truth",
+      sessionConfig: {} as never,
+      isAlive: () => true,
+      connect: async () => ({
+        pid: 4243,
+        providerSessionId: "provider-prompt-stop-truth",
+        loadSessionSupported: false,
+        resumeSessionSupported: false,
+        sessionConfig: {} as never,
+      }),
+      sendPrompt: async () => {
+        throw new Error("prompt failed");
+      },
+      stop: async () => {
+        throw new Error("child exit was not confirmed");
+      },
+      reportFailed: () => {
+        failedReports += 1;
+      },
+    },
+  });
+
+  await assert.rejects(() => session.waitBootstrap(), /child exit was not confirmed/);
+  assert.equal(session.isAlive(), true);
+  assert.equal(failedReports, 0);
+  assert.equal(events.some((event) => event.type === "session.failed"), false);
+});
+
+test("ACP limit failure emits terminal only after confirmed child exit", async () => {
   const events: RuntimeEvent[] = [];
   const client = await makeClient({ sessionId: "ss-stopretry", events });
   await client.connect();
   const internals = client as unknown as {
     proc: import("node:child_process").ChildProcess | null;
     waitForExitOrForceKill(timeoutMs: number): Promise<void>;
+    triggerLimit(code: typeof ACP_OUTPUT_LIMIT_CODE, detail: string): AcpLimitError;
   };
   const proc = internals.proc;
   assert.ok(proc);
@@ -375,13 +457,24 @@ test("AcpClient retries an explicit stop after an unconfirmed child exit", async
     throw new Error("child exit was not confirmed");
   };
 
-  await assert.rejects(() => client.stop("user"), /child exit was not confirmed/);
+  const limit = internals.triggerLimit(
+    ACP_OUTPUT_LIMIT_CODE,
+    "injected limit before unconfirmed stop"
+  );
+  assert.equal(limit.code, ACP_OUTPUT_LIMIT_CODE);
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(client.isAlive(), true);
+  assert.equal(
+    events.some((event) => event.type === "session.failed"),
+    false,
+    "limit decision is not a terminal child-exit fact"
+  );
 
   allowExit = true;
   internals.waitForExitOrForceKill = originalWait;
   await client.stop("user");
   assert.equal(client.isAlive(), false);
+  assert.equal(events.filter((event) => event.type === "session.failed").length, 1);
 });
 
 test("AcpClient waits for the exit event after ChildProcess.exitCode is populated", async () => {
@@ -476,6 +569,10 @@ test("AcpClient rejects one UTF-8 byte over assistant budget with stable ACP_OUT
     (error) => assertLimit(error, ACP_OUTPUT_LIMIT_CODE)
   );
   await assertStopped(client);
+  await waitFor(
+    () => events.some((event) => event.type === "session.failed"),
+    "limit terminal event after confirmed child exit"
+  );
   const failed = events.filter((event) => event.type === "session.failed");
   assert.equal(failed.length, 1);
   assert.match((failed[0] as Extract<RuntimeEvent, { type: "session.failed" }>).error, /^ACP_OUTPUT_LIMIT:/);
