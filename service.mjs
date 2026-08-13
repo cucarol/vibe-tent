@@ -37195,6 +37195,28 @@ var AgentRuntime = class {
             `Session already active as managed runtime (state=${existing.state}): ${req.sessionId}`
           );
         }
+        if (existing.adapterId !== EXTERNAL_ADAPTER_ID) {
+          throw new Error(
+            `Terminal managed Session cannot be reopened as external: ${req.sessionId}`
+          );
+        }
+        if (roleId && existing.roleId !== roleId) {
+          throw new Error(
+            `External Session Role binding mismatch: existing=${existing.roleId ?? "(none)"} requested=${roleId}`
+          );
+        }
+        const reopened = await this.registry.update(req.sessionId, {
+          state: "external",
+          ...workspace ? { workspace } : {},
+          ...cwd ? { runtimeWorkspace: { cwd } } : {},
+          ...req.currentTaskId ? { currentTaskId: req.currentTaskId } : {},
+          ...externalKey ? { externalKey } : {},
+          pid: void 0,
+          exitCode: void 0,
+          lastError: void 0,
+          stopReason: void 0
+        });
+        return this.externalHandle(reopened);
       }
     }
     if (externalKey || workspace && roleId) {
