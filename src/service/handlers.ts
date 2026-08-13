@@ -6279,7 +6279,7 @@ async function promoteManagedDraftBeforeTerminal(
   }
   const draftOutcome = parseTaskOutcomeReport(draft.assistantText);
   const visibleReport =
-    draftOutcome?.outcome === "blocked" || draftOutcome?.outcome === "needs-input"
+    draftOutcome?.outcome === "blocked"
       ? draftOutcome.report || draft.assistantText
       : draft.assistantText;
   const exactVisible =
@@ -7233,7 +7233,7 @@ async function assertNoPendingResultDraftBeforeManagedSessionResume(
   const draft = await ctx.managedTaskResultReportDrafts.get(workspaceId, taskPath);
   if (!draft) return;
   const outcome = parseTaskOutcomeReport(draft.assistantText);
-  if (outcome?.outcome === "blocked" || outcome?.outcome === "needs-input") return;
+  if (outcome?.outcome === "blocked") return;
   throw new RpcError(
     RPC_LIFECYCLE,
     "task.startSession cannot resume while a pending managed result report draft exists; call task.resume to retry its publication",
@@ -10772,7 +10772,7 @@ async function requestManagedAutoSubmitRetryFromDraft(
   if (!draft) return;
   if (draft.sessionId !== input.sessionId) return;
   let priorOutcome = parseTaskOutcomeReport(draft.assistantText);
-  if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
+  if (priorOutcome?.outcome === "blocked") {
     // Control reports are durable evidence for the parked turn, not deferred
     // TaskResult candidates. Only a real later provider report may supersede one.
     return;
@@ -10783,7 +10783,7 @@ async function requestManagedAutoSubmitRetryFromDraft(
     draft = await ctx.managedTaskResultReportDrafts.get(input.workspaceId, input.taskPath);
     if (!draft || draft.sessionId !== input.sessionId) return;
     priorOutcome = parseTaskOutcomeReport(draft.assistantText);
-    if (priorOutcome?.outcome === "blocked" || priorOutcome?.outcome === "needs-input") {
+    if (priorOutcome?.outcome === "blocked") {
       return;
     }
   }
@@ -11348,7 +11348,7 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
 /**
  * Managed ACP path: capture final assistant response → same task.submit lifecycle.
  * - summary/report = assistant final reply body after outcome wire
- * - outcome blocked|needs-input → park via existing wait paths; no ready TaskResult
+ * - outcome blocked → park via the existing wait path; no ready TaskResult
  * - review-required → pending independent accept; auto-accept/agent-decide only at
  *   the user-facing responsibility boundary, regardless of Role/Session executor
  * - empty/error already filtered by adapter; still refuse empty here
@@ -11474,7 +11474,7 @@ async function tryManagedAutoSubmitOwner(
         }
         // The current Task binding above proves this report belongs to the exact
         // live Session. A formally resumed/replaced turn may supersede a prior
-        // blocked/needs-input control report even when that report came from the
+        // blocked control report even when that report came from the
         // retired Session; non-control cross-Session drafts remain fail-closed.
         await ctx.managedTaskResultReportDrafts.preserve({
           workspaceId: input.workspaceId,

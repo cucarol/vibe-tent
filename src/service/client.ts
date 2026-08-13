@@ -687,7 +687,7 @@ export class ServiceClient {
       contextNodeIds: string[];
       prompt: string;
       /**
-       * Explicit parent actor (V0.2). Required on every dispatch.
+       * Explicit requester (V0.2). Required on every dispatch.
        * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
        */
       requester: { kind: "user" | "role"; id: string };

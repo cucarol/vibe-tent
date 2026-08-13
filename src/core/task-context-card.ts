@@ -753,7 +753,7 @@ export function routeLaunchCompatibilityDigest(input: {
 
 /** Integration authority: actor equals requester; mutator is always service. */
 export type IntegrationAuthority = {
-  /** Exact parent actor — ordinary accept authority. */
+  /** Exact requester — ordinary accept authority. */
   actor: TaskActorRef;
   /** Git mutator is Local Service only (never the executor). */
   mutator: typeof INTEGRATION_MUTATOR_SERVICE;

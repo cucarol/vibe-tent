@@ -42,7 +42,7 @@ Task state uses the existing lifecycle. An explicit blocked return is `waiting` 
 
 ## 5. TaskResult
 
-A TaskResult is an executor's formal result for one Task. Every `task.submit` creates a fresh canonical `rs-` record; `currentResultId` is the only review selector. There is no directory-latest or history scan for review authority.
+A TaskResult is an executor's formal result for one Task. A fresh logical submission creates a new canonical `rs-` record. An exact retry must match every immutable candidate field; it reuses or converges to the persisted candidate and `resultId` and never creates a second Result. `currentResultId` is the only review selector. There is no directory-latest or history scan for review authority.
 
 The immutable candidate contains exact identity, non-empty report, ordered canonical commits, checks, artifactRefs, integration mode, creation time, and target-head snapshot when commits exist. Only the review projection may transition once from `ready` to `accepted` or `rejected`.
 

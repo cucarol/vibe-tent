@@ -137,6 +137,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /Role and Session are different/);
   assert.match(spec, /A Task is one work package and one review unit/);
   assert.match(spec, /A TaskResult is an executor's formal result for one Task/);
+  assert.match(spec, /fresh logical submission creates a new canonical `rs-` record/i);
+  assert.match(spec, /exact retry must match every immutable candidate field.*persisted candidate and `resultId`/is);
   assert.match(spec, /review itself never mutates a Node/);
   assert.match(spec, /same work Node cannot be occupied by another active Task/);
   assert.match(spec, /currentResultId.*only review selector/i);
@@ -160,7 +162,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSkill, /name: tent-task/);
   assert.match(taskSkill, /tent task request-decision/);
   assert.match(taskSkill, /TaskInput/i);
-  assert.match(taskSkill, /Submission creates a fresh TaskResult/);
+  assert.match(taskSkill, /fresh logical submission creates a new TaskResult/i);
+  assert.match(taskSkill, /exact\s+retry must match every immutable candidate field.*persisted.*`resultId`/is);
   assert.match(taskSkill, /review-required.*never self-accepts/is);
   assert.match(taskSkill, /auto-accept.*agent-decide/is);
   assert.match(taskSkill, /exact work Node occupation/i);
@@ -184,6 +187,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskPaths, /workNodeIds|Context Card/i);
   assert.doesNotMatch(taskPaths, /honor contract/i);
   assert.match(taskCli, /tent task submit <taskPath> --report/);
+  assert.match(taskCli, /fresh logical submission creates a new ready TaskResult/i);
+  assert.match(taskCli, /exact\s+retry must match every immutable candidate field.*persisted.*`resultId`/is);
   assert.match(taskCli, /tent task request-decision/);
   assert.match(taskCli, /--question <text>\|-/);
   assert.match(taskCli, /--option <id> \| --text <text>\|- \| --deny/);
@@ -199,6 +204,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskCli, /submits natural non-empty\s+final prose/i);
   assert.match(taskCli, /TaskInput terminal\/ack may schedule one draft retry/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
+  assert.match(
+    publicDesktopContracts.join("\n"),
+    /fresh logical `task\.submit` creates a new `rs-` TaskResult.*exact\s+retry.*persisted candidate and `resultId`/is,
+  );
   assert.match(taskSession, /Temporary managed ACP Session boundaries/i);
   assert.match(taskSession, /immutable Connection snapshot/i);
   assert.match(taskSession, /existing waiting\/status detail/i);

@@ -47,7 +47,9 @@ tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision in
 ```
 
 The report and commits must be honest and complete. Every commit belongs to the
-exact Task lane. Submission creates a fresh TaskResult. In `review-required`, the
+exact Task lane. A fresh logical submission creates a new TaskResult. An exact
+retry must match every immutable candidate field; it converges to the persisted
+candidate and `resultId` rather than creating another Result. In `review-required`, the
 executor never self-accepts; `auto-accept` and `agent-decide` follow the frozen
 Task mode, with `agent-decide` requiring `integrate` or `request-review`. Exact
 requester authority reviews the current `resultId` when review is required.

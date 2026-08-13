@@ -83,7 +83,7 @@ export interface DispatchOptions {
   prompt?: string;
   workspace?: RoleWorkspaceContract;
   /**
-   * Explicit parent actor (V0.2). Required on new dispatch.
+   * Explicit requester (V0.2). Required on new dispatch.
    * Role-dispatched Task Agent → parent Role; user-direct → user.
    */
   requester: import("./task-model.js").TaskActorRef;

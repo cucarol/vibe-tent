@@ -39,7 +39,7 @@ export type TaskStatusDetail = {
   executionSessionId?: string;
 };
 
-/** Parent actor on a Task; this is also the sole review authority. */
+/** Exact requester on a Task; this is also the sole review authority. */
 export type TaskActorKind = "user" | "role";
 export type TaskActorRef = {
   kind: TaskActorKind;

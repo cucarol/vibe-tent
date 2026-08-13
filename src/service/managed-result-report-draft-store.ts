@@ -1,7 +1,7 @@
 // Machine-local managed TaskResult *report draft* preservation.
 //
 // Scope: the complete bounded final assistantText for one managed turn, including
-// blocked/needs-input control reports. Not chat history, not a sixth pending-
+// blocked control reports. Not chat history, not a sixth pending-
 // interaction surface, and not a ready TaskResult under temp/*/results.
 //
 // Survives service restart so seal / dirty-worktree / collect / integrate /

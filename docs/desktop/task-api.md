@@ -13,7 +13,9 @@ immutable storage partition; it is never current execution or review authority.
 
 ## TaskResultRecord
 
-`task.submit` creates a fresh `rs-` TaskResult. Immutable fields are identity,
+One fresh logical `task.submit` creates a new `rs-` TaskResult. An exact retry
+must match every immutable candidate field; it reuses or converges to the
+persisted candidate and `resultId` and never creates a second Result. Immutable fields are identity,
 `taskId`, non-empty report, ordered commits, checks, artifactRefs, integration
 mode, target head, and creation time. The review projection transitions once:
 

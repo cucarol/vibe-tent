@@ -29,7 +29,10 @@ requester, responsibility, execution, lane, and review authority.
 
 ## Submit and review
 
-Submission creates a fresh ready TaskResult with a non-empty report. A zero-commit
+One fresh logical submission creates a new ready TaskResult with a non-empty
+report. An exact retry must match every immutable candidate field; it reuses or
+converges to the persisted candidate and `resultId` and never creates a second
+Result. A zero-commit
 TaskResult is a valid formal success. Commit-bearing results use ordered canonical
 full object ids from the exact WorkspaceLane and snapshot target head.
 

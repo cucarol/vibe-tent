@@ -289,7 +289,11 @@ async function assertInstalledSkills(root: string): Promise<void> {
   assert.match(role, /name: tent-role/);
   assert.match(role, /also apply `tent-task`/i);
   assert.match(task, /name: tent-task/);
-  assert.match(task, /Submission creates a fresh TaskResult/i);
+  assert.match(task, /fresh\s+logical\s+submission\s+creates\s+a\s+new\s+TaskResult/i);
+  assert.match(
+    task,
+    /exact\s+retry\s+must\s+match\s+every\s+immutable\s+candidate\s+field[\s\S]*persisted\s+candidate\s+and\s+`resultId`/i,
+  );
   assert.match(task, /review-required.*never self-accepts/is);
   assert.ok(init.length < 6000, "tent-init should stay cache-friendly");
   assert.ok(role.length < 6000, "tent-role should stay cache-friendly");
