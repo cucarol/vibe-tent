@@ -6478,7 +6478,9 @@ function assertTaskSessionPostStartOwnership(
     JSON.stringify(actual.requester) === JSON.stringify(expected.requester) &&
     actual.nodeContextJson === expected.nodeContextJson;
   const validSameSessionProgress =
-    current.state === "running" || current.state === "waiting";
+    current.state === "running" ||
+    current.state === "waiting" ||
+    current.state === "submitted";
   if (immutableIdentityUnchanged && validSameSessionProgress) return;
   throw new RpcError(
     RPC_LIFECYCLE,

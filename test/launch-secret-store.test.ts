@@ -459,11 +459,12 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
     startManagedSession: async (plan: ConnectionLaunchPlan, emit) => {
       capturedEnv = { ...(plan.env ?? {}) };
       emit({ type: "session.live", sessionId: plan.sessionId, pid: 1 });
+      let alive = true;
       return {
         sessionId: plan.sessionId,
         pid: 1,
-        isAlive: () => true,
-        stop: async () => undefined,
+        isAlive: () => alive,
+        stop: async () => { alive = false; },
       };
     },
   };

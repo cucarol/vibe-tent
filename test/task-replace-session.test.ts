@@ -33,7 +33,7 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 type TaskSnap = {
-  id?: string; state: string; executionSessionId?: string;
+  id?: string; state: string; executionSessionId?: string; currentResultId?: string;
   workNodeIds?: string[]; contextNodeIds?: string[];
   contextCard?: {
     workNodeIds: string[];
@@ -233,7 +233,7 @@ test("managed start refuses a Role Task; only an exact Connection Task owns a Se
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], roleId: "rl-executor",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], assigneeRoleId: "rl-executor",
       prompt: "Role Task must never receive a Connection-managed Session", acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -277,11 +277,11 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
     ]);
     const listed = await rpc(svc, "task.list", { workspaceId });
     assert.ok(!listed.error, JSON.stringify(listed.error));
-    const rows = (listed.result as { tasks: Array<{ path: string; state: string; sessionId?: string }> }).tasks;
-    const held = rows.find((row) => row.state === "running" && row.sessionId);
+    const rows = (listed.result as { tasks: Array<{ path: string; state: string; executionSessionId?: string }> }).tasks;
+    const held = rows.find((row) => row.state === "running" && row.executionSessionId);
     assert.ok(held, JSON.stringify(rows));
     const taskPath = held!.path;
-    const reservedSessionId = held!.sessionId!;
+    const reservedSessionId = held!.executionSessionId!;
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
     assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
     release.resolve();
@@ -356,7 +356,7 @@ test("replaceSession accepts an immediate prompt_complete progression on the pre
       await mapRuntimeEventToService(svc.ctx, {
         type: "session.prompt_complete",
         sessionId: handle.sessionId,
-        assistantText: "outcome: needs-input\n\nreplacement needs a user answer",
+        assistantText: "replacement completed with a final report",
         stopReason: "end_turn",
       });
       return handle;
@@ -374,9 +374,9 @@ test("replaceSession accepts an immediate prompt_complete progression on the pre
     assert.notEqual(replacementSessionId, priorSessionId);
     const task = await getTask(svc, workspaceId, taskPath);
     assert.equal(task.executionSessionId, replacementSessionId);
-    assert.equal(task.state, "waiting");
-    assert.match(task.wait?.summary ?? "", /needs a user answer/i);
-    assert.equal((await svc.runtime.probe(replacementSessionId)).isAlive, true);
+    assert.equal(task.state, "submitted");
+    assert.match(task.currentResultId ?? "", /^rs-/);
+    assert.equal((await svc.runtime.probe(replacementSessionId)).isAlive, false);
   });
 });
 
@@ -866,10 +866,10 @@ test("startSession rejects a changed exact Task/Session identity before flight j
       acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
-    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    const direct = dispatched.result as { taskPath: string; executionSessionId: string };
     const task = await getTask(svc, workspaceId, direct.taskPath);
     assert.ok(task.id);
-    await svc.runtime.registry.update(direct.sessionId, { currentTaskId: "tk-foreign1" });
+    await svc.runtime.registry.update(direct.executionSessionId, { currentTaskId: "tk-foreign1" });
 
     try {
       const started = await rpc(svc, "task.startSession", {
@@ -885,7 +885,7 @@ test("startSession rejects a changed exact Task/Session identity before flight j
         "invalid identity must fail before a managed provider flight is installed"
       );
     } finally {
-      await svc.runtime.registry.update(direct.sessionId, { currentTaskId: task.id });
+      await svc.runtime.registry.update(direct.executionSessionId, { currentTaskId: task.id });
     }
   });
 });
@@ -1032,6 +1032,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const delivered = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
+      report: "ready for accept/replace race",
       summary: "ready for accept/replace race",
       commits: [sourceRef],
     });

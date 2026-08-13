@@ -596,7 +596,7 @@ test("relation validation compact: dual target, empty kind, direction, empty pat
       actor: "user",
     });
     assert.ok(invalidSource.error);
-    assert.equal(invalidSource.error!.code, -32004);
+    assert.equal(invalidSource.error!.code, -32009);
 
     // raw docs.write cannot bypass relations semantic guard
     const rawBypass = await rpc(svc, "docs.write", {
