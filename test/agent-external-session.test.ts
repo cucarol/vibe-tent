@@ -167,6 +167,17 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
     const after = await runtime.probe(sessionId);
     assert.equal(after.state, "stopped");
     assert.equal(after.isAlive, false);
+
+    const reopened = await runtime.enterExternalSession({
+      sessionId,
+      roleId: "rl-executor",
+      workspace: "ws-1",
+      externalKey: "gui-key-1",
+    });
+    assert.equal(reopened.sessionId, sessionId);
+    assert.equal(reopened.state, "external");
+    assert.equal(reopened.createdAt, h1.createdAt);
+    assert.equal((await runtime.probe(sessionId)).isAlive, true);
   } finally {
     await runtime.shutdown();
   }
@@ -264,6 +275,34 @@ test("service RPC session.enter/status/leave: idempotent, no submit", async () =
     };
     assert.equal(left2.left, false);
     assert.equal(left2.alreadyLeft, true);
+
+    const reopened = (await client.sessionEnter({
+      workspaceId,
+      sessionId,
+      roleId: "rl-executor",
+      externalKey: "rpc-key-a",
+      currentTaskId: (task.task as { id?: string }).id,
+      cwd: ws,
+    })) as {
+      session: { sessionId: string; state: string };
+      sessionToken: string;
+      reused: boolean;
+    };
+    assert.equal(reopened.session.sessionId, sessionId);
+    assert.equal(reopened.session.state, "external");
+    assert.equal(reopened.reused, false);
+    const reopenedRoleClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: sessionId,
+      currentSessionToken: reopened.sessionToken,
+    });
+    const recovered = (await reopenedRoleClient.taskClaim(
+      workspaceId,
+      dispatched.taskPath
+    )) as { task: { state: string; executionSessionId?: string } };
+    assert.equal(recovered.task.state, "running");
+    assert.equal(recovered.task.executionSessionId, sessionId);
 
     // dataDir used so service endpoint exists under test isolation
     assert.ok(dataDir);

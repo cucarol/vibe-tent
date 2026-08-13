@@ -504,7 +504,28 @@ export class AgentRuntime implements AgentRuntimePort {
             `Session already active as managed runtime (state=${existing.state}): ${req.sessionId}`
           );
         }
-        // Terminal row: re-open as external with the same id (replace metadata).
+        if (existing.adapterId !== EXTERNAL_ADAPTER_ID) {
+          throw new Error(
+            `Terminal managed Session cannot be reopened as external: ${req.sessionId}`
+          );
+        }
+        if (roleId && existing.roleId !== roleId) {
+          throw new Error(
+            `External Session Role binding mismatch: existing=${existing.roleId ?? "(none)"} requested=${roleId}`
+          );
+        }
+        const reopened = await this.registry.update(req.sessionId, {
+          state: "external",
+          ...(workspace ? { workspace } : {}),
+          ...(cwd ? { runtimeWorkspace: { cwd } } : {}),
+          ...(req.currentTaskId ? { currentTaskId: req.currentTaskId } : {}),
+          ...(externalKey ? { externalKey } : {}),
+          pid: undefined,
+          exitCode: undefined,
+          lastError: undefined,
+          stopReason: undefined,
+        });
+        return this.externalHandle(reopened);
       }
     }
 
