@@ -710,7 +710,7 @@ export class ServiceClient {
   taskClaimDirect(
     workspaceId: string,
     args: {
-      assigneeRoleId: string;
+      roleId: string;
       workNodeIds: string[];
       contextNodeIds: string[];
       prompt: string;

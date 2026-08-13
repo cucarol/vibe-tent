@@ -19,11 +19,16 @@ import {
   type RuntimeEvent,
   type AgentConnectionConfig,
 } from "../src/runtime/index.js";
-import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
+import {
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
+  DEFAULT_GROK_ENV_KEY,
+  GROK_ACP_ADAPTER_ID,
+} from "../src/adapters/grok-acp/index.js";
 import { CODEX_ACP_ADAPTER_ID } from "../src/adapters/codex-acp/types.js";
 import { CLAUDE_ACP_ADAPTER_ID } from "../src/adapters/claude-acp/types.js";
 import { OPENCODE_ACP_ADAPTER_ID } from "../src/adapters/opencode-acp/index.js";
 import { COPILOT_ACP_ADAPTER_ID } from "../src/adapters/copilot-acp/types.js";
+import { materializeAgentConnectionLaunch } from "../src/service/connections.js";
 
 const selected = new Set(
   (process.env.TENT_LIVE_PROVIDERS || "")
@@ -71,19 +76,17 @@ const codexModel = process.env.TENT_LIVE_CODEX_MODEL || "gpt-5.4";
 function connection(
   connectionId: string,
   adapterId: string,
-  command?: string,
-  args?: string[]
+  overrides: Partial<AgentConnectionConfig> = {}
 ): AgentConnectionConfig {
-  return {
+  return materializeAgentConnectionLaunch({
     connectionId,
     provider: connectionId,
     adapterId,
-    ...(command ? { command } : {}),
-    ...(args ? { args } : {}),
     permissionPolicy: "deny",
     promptTimeoutMs: 300_000,
     permissionTimeoutMs: 30_000,
-  };
+    ...overrides,
+  });
 }
 
 async function runNative(
@@ -116,11 +119,11 @@ const providers: ProviderCase[] = [
   {
     name: "grok",
     connection: {
-      ...connection("foreground-grok", GROK_ACP_ADAPTER_ID, nativePaths.grok),
-      model: process.env.CPA_GROK_MODEL || "grok-4.5",
-      envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: "deny",
-      promptTimeoutMs: 300_000,
+      ...connection("foreground-grok", GROK_ACP_ADAPTER_ID, {
+        model: process.env.CPA_GROK_MODEL || "grok-4.5",
+        envKey: DEFAULT_GROK_ENV_KEY,
+        endpoint: process.env[DEFAULT_GROK_BASE_URL_ENV_KEY],
+      }),
     },
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(nativePaths.grok, ["--resume", sessionId, "--single", prompt], cwd, {
@@ -130,8 +133,7 @@ const providers: ProviderCase[] = [
   {
     name: "codex",
     connection: {
-      ...connection("foreground-codex", CODEX_ACP_ADAPTER_ID),
-      model: codexModel,
+      ...connection("foreground-codex", CODEX_ACP_ADAPTER_ID, { model: codexModel }),
     },
     nativeResume: async (sessionId, prompt, cwd, dataDir) => {
       const outputFile = path.join(cwd, "codex-last-message.txt");
@@ -167,7 +169,10 @@ const providers: ProviderCase[] = [
   },
   {
     name: "opencode",
-    connection: connection("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
+    connection: connection("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, {
+      command: nativePaths.opencode,
+      args: ["acp"],
+    }),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd, {
         TENT_SERVICE_DATA_DIR: dataDir,
@@ -194,6 +199,13 @@ const providers: ProviderCase[] = [
       ),
   },
 ];
+
+test("foreground provider fixtures materialize canonical command and args", () => {
+  for (const provider of providers) {
+    assert.ok(provider.connection.command, `${provider.name} command`);
+    assert.ok(Array.isArray(provider.connection.args), `${provider.name} args`);
+  }
+});
 
 async function waitForComplete(
   events: RuntimeEvent[],

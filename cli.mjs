@@ -4484,7 +4484,7 @@ state: ${row.state ?? "running"}
         }
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || void 0;
         const result = await client.taskClaimDirect(workspaceId, {
-          assigneeRoleId: roleId,
+          roleId,
           workNodeIds,
           contextNodeIds,
           prompt,

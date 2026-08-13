@@ -9,7 +9,11 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
-import { DEFAULT_GROK_BASE_URL_ENV_KEY, DEFAULT_GROK_ENV_KEY, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
+import {
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
+  DEFAULT_GROK_ENV_KEY,
+  grokAcpRouteTemplate,
+} from "../src/adapters/grok-acp/index.js";
 import { createAgentRuntime, type RuntimeEvent } from "../src/runtime/index.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -56,16 +60,15 @@ function waitForRuntimeEvent(
   );
 }
 
-function liveConnection() {
-  return {
+function liveConnection(endpoint = baseUrl) {
+  return grokAcpRouteTemplate({
     connectionId: "grok-live-e2e",
-    provider: "grok",
-    adapterId: GROK_ACP_ADAPTER_ID,
     model: process.env.CPA_GROK_MODEL || "grok-4.5",
     envKey: DEFAULT_GROK_ENV_KEY,
-    permissionPolicy: "deny" as const,
+    endpoint,
+    permissionPolicy: "deny",
     promptTimeoutMs: 180_000,
-  };
+  });
 }
 
 async function rmTreeWithRetry(target: string): Promise<void> {
@@ -76,6 +79,19 @@ async function rmTreeWithRetry(target: string): Promise<void> {
     retryDelay: 100,
   });
 }
+
+test("real Grok ACP fixture materializes the canonical launch and endpoint", () => {
+  const endpoint = "http://127.0.0.1:8317";
+  const connection = liveConnection(endpoint);
+  assert.ok(connection.command);
+  assert.deepEqual(connection.args.slice(-5), [
+    "--cli-chat-proxy-base-url",
+    endpoint,
+    "--xai-api-base-url",
+    endpoint,
+    "stdio",
+  ]);
+});
 
 test("real Grok ACP: dispatch → managed report → review accept", async () => {
   assert.ok(apiKey, `${DEFAULT_GROK_ENV_KEY} is required`);
@@ -124,23 +140,22 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
 
-    const delivered = await pollUntil(async () => {
+    const submitted = await pollUntil(async () => {
       const got = await rpc("task.get", { workspaceId, taskPath });
       assert.ok(!got.error, JSON.stringify(got.error));
       const task = (got.result as { task: { state: string } }).task;
       return task.state === "submitted" ? task : null;
     });
-    assert.equal(delivered.state, "submitted");
+    assert.equal(submitted.state, "submitted");
 
     const results = await rpc("taskResult.list", { workspaceId });
     assert.ok(!results.error, JSON.stringify(results.error));
-    const rows = (results.result as { results: Array<{ id: string; summary: string }> }).results;
+    const rows = (results.result as { results: Array<{ id: string; report: string }> }).results;
     assert.equal(rows.length, 1);
-    assert.match(rows[0]!.summary, /TENT_GROK_E2E_OK/i);
+    assert.match(rows[0]!.report, /TENT_GROK_E2E_OK/i);
 
     const accepted = await rpc("task.accept", {
       workspaceId,
-      taskPath,
       resultId: rows[0]!.id,
       actor: "user",
     });

@@ -176,7 +176,7 @@ export async function runTaskCommand(
         }
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || undefined;
         const result = await client.taskClaimDirect(workspaceId, {
-          assigneeRoleId: roleId,
+          roleId,
           workNodeIds,
           contextNodeIds,
           prompt,

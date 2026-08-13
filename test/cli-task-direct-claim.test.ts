@@ -71,7 +71,7 @@ test("direct Role claim forwards work/context Nodes and durable provenance witho
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(capture.directCalls.length, 1);
   assert.deepEqual(capture.directCalls[0], {
-      assigneeRoleId: "rl-planner",
+    roleId: "rl-planner",
     workNodeIds: ["cx-one", "cx-two"],
     contextNodeIds: ["cx-context"],
     prompt: "own this work",
@@ -80,6 +80,10 @@ test("direct Role claim forwards work/context Nodes and durable provenance witho
   for (const forbidden of ["target", "requester", "reviewer", "as" + "Sub", "callerKind"]) {
     assert.equal(Object.prototype.hasOwnProperty.call(capture.directCalls[0]!, forbidden), false);
   }
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(capture.directCalls[0]!, "assigneeRoleId"),
+    false,
+  );
 });
 
 test("direct Role claim is mutually exclusive with queued taskPath claim and requires Role context", async () => {

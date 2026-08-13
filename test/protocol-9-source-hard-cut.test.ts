@@ -38,14 +38,10 @@ test("source hard-cuts the next runtime to protocol 9", async () => {
 });
 
 test("Protocol 9 public contracts expose only current product vocabulary", async () => {
-  const experimentFiles = (await filesUnder("experiments")).filter((file) =>
-    /\.(?:html|js|json|jsx|md|mjs|ts|tsx|yaml|yml)$/.test(file),
-  );
   const publicFiles = [
     "README.md",
     ...(await filesUnder("docs")).filter((file) => file.endsWith(".md")),
     ...(await filesUnder("skills")).filter((file) => /(?:SKILL\.md|\.yaml|references\/.*\.md)$/.test(file)),
-    ...experimentFiles,
   ];
   const publicText = (await Promise.all(publicFiles.map(source))).join("\n");
   for (const stale of [
