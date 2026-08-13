@@ -33060,7 +33060,6 @@ async function runManagedSessionFlight(workspaceId, taskPath, route, operation, 
   }
 }
 var runtimeProjectionQueue = new MutationBus();
-var PROJECTION_RETRY_DELAY_MS = 40;
 var runtimeProjectionTestHooks = null;
 function managedSubmitKey(sessionId, taskPath) {
   return `${sessionId}::${taskPath}`;
@@ -33100,12 +33099,6 @@ function isManagedAutoSubmitSealing(sessionId, taskPath, taskId) {
   }
   return false;
 }
-function projectionRetryDelayMs() {
-  return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
-}
-function sleepMs(ms) {
-  return new Promise((resolve15) => setTimeout(resolve15, ms));
-}
 function classifyProjectionError(err) {
   if (err instanceof TaskLifecycleError) {
     return { errorClass: "TaskLifecycleError", errorCode: err.code };
@@ -33124,19 +33117,11 @@ function classifyProjectionError(err) {
 function mapRuntimeEventToService(ctx, ev) {
   return runtimeProjectionQueue.run(ev.sessionId, async () => {
     try {
-      await projectRuntimeEventWithRetry(ctx, ev);
+      await projectRuntimeEvent(ctx, ev);
     } catch (err) {
       await reportRuntimeProjectionFailure(ctx, ev, err);
     }
   });
-}
-async function projectRuntimeEventWithRetry(ctx, ev) {
-  try {
-    await projectRuntimeEventOnce(ctx, ev, 1);
-  } catch {
-    await sleepMs(projectionRetryDelayMs());
-    await projectRuntimeEventOnce(ctx, ev, 2);
-  }
 }
 async function reportRuntimeProjectionFailure(ctx, ev, err) {
   const classified = classifyProjectionError(err);
@@ -33163,12 +33148,12 @@ async function reportRuntimeProjectionFailure(ctx, ev, err) {
     "service"
   );
 }
-async function projectRuntimeEventOnce(ctx, ev, attempt) {
+async function projectRuntimeEvent(ctx, ev) {
   if (runtimeProjectionTestHooks?.beforeProject) {
-    await runtimeProjectionTestHooks.beforeProject(ev, attempt);
+    await runtimeProjectionTestHooks.beforeProject(ev);
   }
-  if (runtimeProjectionTestHooks && typeof runtimeProjectionTestHooks.failAttemptsRemaining === "number" && runtimeProjectionTestHooks.failAttemptsRemaining > 0) {
-    runtimeProjectionTestHooks.failAttemptsRemaining -= 1;
+  if (runtimeProjectionTestHooks && typeof runtimeProjectionTestHooks.failProjectionsRemaining === "number" && runtimeProjectionTestHooks.failProjectionsRemaining > 0) {
+    runtimeProjectionTestHooks.failProjectionsRemaining -= 1;
     const injected = new Error("injected runtime projection failure");
     injected.name = "ProjectionInjectedError";
     injected.code = "PROJECTION_INJECTED";
