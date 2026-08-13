@@ -21865,6 +21865,9 @@ var AcpClient = class {
   async stopExclusive(reason) {
     void reason;
     if (this.childExited) {
+      if (this.limitError) {
+        this.reportFailed(this.limitError.message);
+      }
       this.cleanupStreams();
       return;
     }
@@ -21874,6 +21877,9 @@ var AcpClient = class {
     this.rejectAllPending(new Error("session stopped"));
     const proc = this.proc;
     if (!proc) {
+      if (this.limitError) {
+        this.reportFailed(this.limitError.message);
+      }
       this.cleanupStreams();
       return;
     }
@@ -21888,6 +21894,9 @@ var AcpClient = class {
           `${this.label} stop was not confirmed by child exit`
         )
       );
+    }
+    if (this.limitError) {
+      this.reportFailed(this.limitError.message);
     }
     this.cleanupStreams();
   }
@@ -22557,7 +22566,6 @@ var AcpClient = class {
     const error = new AcpLimitError(code, detail);
     this.limitError = error;
     this.rejectAllPending(error);
-    this.reportFailed(error.message);
     error.terminalAlreadyEmitted = true;
     void this.stop("interrupt").catch(() => void 0);
     return error;
@@ -22600,7 +22608,7 @@ var AcpManagedSession = class {
     return this.client.sessionConfig;
   }
   isAlive() {
-    return !this.stopRequested && this.client.isAlive();
+    return this.client.isAlive();
   }
   /**
    * Turn busy ≠ session live. Session may remain alive between turns;
@@ -22647,6 +22655,7 @@ var AcpManagedSession = class {
   beginBackgroundTurn(work) {
     const turn = this.runTurn(work);
     this.bootstrapDone = turn;
+    void turn.catch(() => void 0);
     return turn;
   }
   /** Track turn busy/idle around one managed session/prompt. */
@@ -22684,19 +22693,28 @@ function bindAcpPermissionHooks(sessionId, permissionPolicy, hooks) {
   };
 }
 function runManagedBootstrapPrompt(plan, emit2, client, bootstrap) {
-  return client.sendPrompt(bootstrap).then(async (result) => {
+  return run();
+  async function run() {
+    let result;
+    try {
+      result = await client.sendPrompt(bootstrap);
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      await failAfterConfirmedStop(
+        /interrupted|session stopped/i.test(message2) ? `session interrupted: ${message2}` : message2
+      );
+      return;
+    }
     const stopReason = (result.stopReason || "end_turn").toLowerCase();
     const assistantText = (result.assistantText || "").trim();
     if (stopReason !== "end_turn") {
-      client.reportFailed(
+      await failAfterConfirmedStop(
         `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-result)`
       );
-      await stopAcpClientQuiet(client);
       return;
     }
     if (!assistantText) {
-      client.reportFailed("ACP assistant response empty (no auto-result)");
-      await stopAcpClientQuiet(client);
+      await failAfterConfirmedStop("ACP assistant response empty (no auto-result)");
       return;
     }
     emit2({
@@ -22705,16 +22723,11 @@ function runManagedBootstrapPrompt(plan, emit2, client, bootstrap) {
       assistantText,
       stopReason: result.stopReason || "end_turn"
     });
-  }).catch(async (err) => {
-    const message2 = err instanceof Error ? err.message : String(err);
-    if (/interrupted|session stopped/i.test(message2)) {
-      client.reportFailed(`session interrupted: ${message2}`);
-      await stopAcpClientQuiet(client);
-      return;
-    }
+  }
+  async function failAfterConfirmedStop(message2) {
+    await client.stop("interrupt");
     client.reportFailed(message2);
-    await stopAcpClientQuiet(client);
-  });
+  }
 }
 async function startManagedAcpSession(input) {
   const { plan, emit: emit2, client } = input;
@@ -37361,6 +37374,8 @@ var AgentRuntime = class {
       if (typeof adapter.startManagedSession === "function") {
         const managed = await adapter.startManagedSession(plan, (rawEvent) => {
           const ev = boundRuntimeDiagnosticEvent(rawEvent);
+          const managedAtEvent = this.managed.get(req.sessionId) ?? startedManaged;
+          const terminalWhileAlive = (ev.type === "session.failed" || ev.type === "session.exited") && managedAtEvent?.isAlive() === true;
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             terminalProjection = this.trackManagedTerminal(
@@ -37399,7 +37414,7 @@ var AgentRuntime = class {
               acpObservation: { ...ev.observation }
             }).catch(() => void 0);
           }
-          this.emit(ev);
+          if (!terminalWhileAlive) this.emit(ev);
         });
         startedManaged = managed;
         if (terminalDuringManagedStart) {
@@ -37606,6 +37621,8 @@ var AgentRuntime = class {
         resumeToken,
         (rawEvent) => {
           const ev = boundRuntimeDiagnosticEvent(rawEvent);
+          const managedAtEvent = this.managed.get(req.sessionId) ?? resumedManaged;
+          const terminalWhileAlive = (ev.type === "session.failed" || ev.type === "session.exited") && managedAtEvent?.isAlive() === true;
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             terminalProjection = this.trackManagedTerminal(
@@ -37644,7 +37661,7 @@ var AgentRuntime = class {
               acpObservation: { ...ev.observation }
             }).catch(() => void 0);
           }
-          this.emit(ev);
+          if (!terminalWhileAlive) this.emit(ev);
         }
       );
       resumedManaged = managed;
@@ -38019,6 +38036,18 @@ var AgentRuntime = class {
     }
   }
   async onManagedTerminal(sessionId, terminalState, lastError, exitCode) {
+    const managed = this.managed.get(sessionId);
+    if (managed?.isAlive()) {
+      const message2 = truncateUtf8Text(
+        lastError ?? "managed terminal event arrived before child exit confirmation",
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
+      const current = await this.registry.read(sessionId);
+      if (current) {
+        await this.registry.update(sessionId, { lastError: message2 });
+      }
+      return;
+    }
     this.managed.delete(sessionId);
     const record = await this.registry.read(sessionId);
     if (!record) return;
