@@ -1102,7 +1102,9 @@ test("recovered Result from a retired Session cannot clear or converge after reb
     await ownerEntered;
     const events: Array<Record<string, unknown>> = [];
     const unsubscribe = svc.events.subscribe((event) => {
-      if (event.type === "task.state") events.push(event.payload as Record<string, unknown>);
+      if (event.type !== "task.state") return;
+      const payload = event.payload as Record<string, unknown>;
+      if (payload.reason !== "watch") events.push(payload);
     });
     const completing = invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
