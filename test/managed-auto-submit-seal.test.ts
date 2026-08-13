@@ -13,8 +13,8 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
 import { createServiceClient } from "../src/service/client.js";
 import {
-  invokeManagedAutoDeliverForTests,
-  resetManagedAutoDeliverDedupForTests,
+  invokeManagedAutoSubmitForTests,
+  resetManagedAutoSubmitFlightsForTests,
 } from "../src/service/handlers.js";
 import { startLocalTentService } from "../src/service/service.js";
 
@@ -26,7 +26,7 @@ const CONNECTION: AgentConnectionConfig = {
 };
 
 test("managed auto-result refuses when stop and both seal probes fail", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-seal-closed-ws-"));
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-seal-closed-data-"));
   await scaffoldInWorkspace(new NodeFs(workspace), {
@@ -84,7 +84,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       }
     });
     try {
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await invokeManagedAutoSubmitForTests(svc.ctx, {
         workspaceId: mounted.workspaceId,
         taskPath: dispatched.taskPath,
         sessionId,
@@ -115,7 +115,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
     assert.equal(results.results.length, 0, "no ready TaskResult without a proven seal");
 
     const sealFailure = diagnostics.find(
-      (event) => event.runtimeEvent === "session.seal_before_deliver.failed"
+      (event) => event.runtimeEvent === "session.seal_before_submit.failed"
     );
     assert.ok(sealFailure, "stable seal failure diagnostic must be emitted");
     assert.match(String(sealFailure.error), /pre-stop probe failed/);

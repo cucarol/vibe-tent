@@ -1,4 +1,4 @@
-// ProcessSupervisor — child-process lifecycle only (B0 agent-runtime.md §7).
+// ProcessSupervisor — child-process lifecycle only.
 // Does not understand Nodes, collaboration policy, or Task completion.
 
 import { spawn, type ChildProcess } from "node:child_process";

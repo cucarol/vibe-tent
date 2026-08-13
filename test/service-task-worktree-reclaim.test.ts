@@ -132,11 +132,11 @@ test("terminal reject preserves the lane until explicit exact reconcile", async 
 
     // Prefer real box id from tent tree when available.
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-    const inboxBox =
+    const inboxNode =
       [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
       [...tent.byId.values()][0];
-    const nodeId = inboxBox?.id ?? "cx-inbox";
-    const nodePath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxNode?.id ?? "cx-inbox";
+    const nodePath = inboxNode?.path ?? "inbox";
 
     const taskPath = await writeTaskRecord(sysFs, clock, {
       requester: { kind: "user", id: "user" },
@@ -243,11 +243,11 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   await fs.writeFile(path.join(lane.worktree, "UNCOMMITTED.txt"), "dirty\n");
 
   const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox =
+  const inboxNode =
     [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
     [...tent.byId.values()][0];
-  const nodeId = inboxBox?.id ?? "cx-inbox";
-  const nodePath = inboxBox?.path ?? "inbox";
+  const nodeId = inboxNode?.id ?? "cx-inbox";
+  const nodePath = inboxNode?.path ?? "inbox";
 
   const taskPath = await writeTaskRecord(sysFs, clock, {
     requester: { kind: "user", id: "user" },
@@ -348,11 +348,11 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
   const taskId = "tk-historicalonly";
   const lane = await ensureTaskWorkspace(ws, taskId);
   const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox = [...tent.byId.values()][0];
+  const inboxNode = [...tent.byId.values()][0];
   const taskPath = await writeTaskRecord(sysFs, clock, {
     requester: { kind: "user", id: "user" },
     executionSessionId: "ss-fakedefault",
-    ...taskNodeContext(inboxBox?.id ?? "cx-1", inboxBox?.path ?? "inbox"),
+    ...taskNodeContext(inboxNode?.id ?? "cx-1", inboxNode?.path ?? "inbox"),
     manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
     prompt: "old terminal never observed by reclaim feature",
     id: taskId,
@@ -397,9 +397,9 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       runtimeWorkspace: { cwd: lane.worktree },
     });
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-    const inboxBox = [...tent.byId.values()][0];
-    const nodeId = inboxBox?.id ?? "cx-1";
-    const nodePath = inboxBox?.path ?? "inbox";
+    const inboxNode = [...tent.byId.values()][0];
+    const nodeId = inboxNode?.id ?? "cx-1";
+    const nodePath = inboxNode?.path ?? "inbox";
 
     const taskPath = await writeTaskRecord(sysFs, clock, {
       requester: { kind: "user", id: "user" },
@@ -488,9 +488,9 @@ test("external Session leave never deletes a lane; explicit reconcile remains ex
     const sysFs = new NodeFs(systemRoot);
     const clock = { now: () => new Date().toISOString() };
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-    const inboxBox = [...tent.byId.values()][0];
-    const nodeId = inboxBox?.id ?? "cx-1";
-    const nodePath = inboxBox?.path ?? "inbox";
+    const inboxNode = [...tent.byId.values()][0];
+    const nodeId = inboxNode?.id ?? "cx-1";
+    const nodePath = inboxNode?.path ?? "inbox";
 
     const targetId = "tk-exttarget";
     const otherId = "tk-extother";
@@ -616,11 +616,11 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const sysFs = new NodeFs(systemRoot);
     const clock = { now: () => new Date().toISOString() };
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-    const inboxBox =
+    const inboxNode =
       [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
       [...tent.byId.values()][0];
-    const nodeId = inboxBox?.id ?? "cx-inbox";
-    const nodePath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxNode?.id ?? "cx-inbox";
+    const nodePath = inboxNode?.path ?? "inbox";
 
     const taskPath = await writeTaskRecord(sysFs, clock, {
       requester: { kind: "role", id: "rl-executor" },
@@ -718,9 +718,9 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
       runtimeWorkspace: { cwd: lane.worktree },
     });
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-    const inboxBox = [...tent.byId.values()][0];
-    const nodeId = inboxBox?.id ?? "cx-1";
-    const nodePath = inboxBox?.path ?? "inbox";
+    const inboxNode = [...tent.byId.values()][0];
+    const nodeId = inboxNode?.id ?? "cx-1";
+    const nodePath = inboxNode?.path ?? "inbox";
 
     const taskPath = await writeTaskRecord(sysFs, clock, {
       requester: { kind: "user", id: "user" },

@@ -155,7 +155,7 @@ contextCard: {schemaVersion: v1, objective: 第一行
 第三行, frozenDecisions: [], scope: {include: [], exclude: []}, acceptance: [第一行
 
 第二行
-第三行], refs: {nodes: [{id: cx-one, path: 节点一}], tasks: [], deliveries: [], git: []}}
+第三行], refs: {nodes: [{id: cx-one, path: 节点一}], tasks: [], results: [], git: []}}
 state: queued
 ---
 # Task
@@ -178,7 +178,7 @@ contextCard: {schemaVersion: v1, objective: 先读取项目说明
 
 目标
 1. 保留已有事实
-2. 使用正式生命周期], refs: {nodes: [{id: cx-a, path: 节点甲}, {id: cx-b, path: 节点乙}], tasks: [], deliveries: [], git: []}}
+2. 使用正式生命周期], refs: {nodes: [{id: cx-a, path: 节点甲}, {id: cx-b, path: 节点乙}], tasks: [], results: [], git: []}}
 state: queued
 ---
 # Task

@@ -1,4 +1,4 @@
-// Markdown / Node desktop workspace (B3) — public surface.
+// Markdown / Node desktop workspace public surface.
 
 export type { DocsClient } from "./docs-client.js";
 export { CoreDocsClient } from "./core-docs-client.js";

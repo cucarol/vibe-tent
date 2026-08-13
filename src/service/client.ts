@@ -956,7 +956,7 @@ export class ServiceClient {
   }
 
   /**
-   * End external session binding only — never deliver/accept tasks.
+   * End external Session binding only — never submit/review TaskResults.
    * Reports incompleteTasks still bound to the sessionId / externalKey.
    * Accepts either a sessionId string or an options object (hook closed-loop).
    */

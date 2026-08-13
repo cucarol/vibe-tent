@@ -335,7 +335,7 @@ export interface HandlerContext {
    */
   taskInputs: TaskInputStore;
   /**
-   * Machine-local managed auto-deliver report drafts (final assistantText only).
+   * Machine-local managed auto-submit report drafts (final assistantText only).
    * Not chat history; not a ready TaskResult; not a sixth pending-interaction.
    * Survives restart so publish failures can retry without re-prompting the Agent.
    */
@@ -675,7 +675,7 @@ function health(ctx: HandlerContext) {
     instanceId: ctx.instanceId,
     pid: ctx.getPid(),
     version: ctx.version,
-    /** Wire protocol contract — independent of package version (0.1.0). */
+    /** Wire protocol contract — independent of package version (0.2.0). */
     protocolVersion: ctx.protocolVersion,
     startedAt: ctx.startedAt,
     workspaceCount: ctx.host.list().length,
@@ -3547,7 +3547,7 @@ async function taskClaimRpc(
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  // Per-Task lifecycle flight + workspace mutation: claim must not race deliver/backfill.
+  // Per-Task lifecycle flight + workspace mutation: claim must not race submit/backfill.
   return runTaskLifecycle(workspaceId, taskPath, () =>
     ctx.mutations.run(workspaceId, async () => {
       // Prepare Role lane/base BEFORE Core claim transition so a failed prepare
@@ -4003,7 +4003,7 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     // managed report preserved before a prior publication failure. It runs after
     // the resume flight releases and never re-prompts provider.
     try {
-      await requestManagedAutoDeliverRetryFromDraft(ctx, {
+      await requestManagedAutoSubmitRetryFromDraft(ctx, {
         workspaceId,
         taskPath,
         sessionId,
@@ -4396,8 +4396,8 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     );
   }
 
-  // Per-Task lifecycle flight + MutationBus: wait out same-Task accept/auto-deliver
-  // Git windows, then re-read state so sendInput cannot slip past auto-deliver.
+  // Per-Task lifecycle flight + MutationBus: wait out same-Task accept/auto-submit
+  // Git windows, then re-read state so sendInput cannot slip past auto-submit.
   const { current, input } = await runTaskLifecycle(workspaceId, taskPath, () =>
   ctx.mutations.run(workspaceId, async () => {
     const current = await reconcileServiceTaskLifecycle(ctx, workspaceId, taskPath, {
@@ -4511,7 +4511,7 @@ function parseContextRefs(raw: unknown): string[] {
  */
 const managedTaskInputQueue = new MutationBus();
 
-/** In-flight background deliver promises (sendInput path). Must not go unhandled. */
+/** In-flight background injection promises (sendInput path). Must not go unhandled. */
 const managedTaskInputBackgroundInflight = new Set<Promise<unknown>>();
 let managedTaskInputAccepting = true;
 
@@ -4588,8 +4588,8 @@ function trackManagedTaskInputBackground(work: Promise<unknown>): void {
     (err) => {
       managedTaskInputBackgroundInflight.delete(work);
       const message = err instanceof Error ? err.message : String(err);
-      // Last-resort log: deliverManagedTaskInput already markFailed when possible.
-      console.error(`[taskInput] background managed deliver failed: ${message}`);
+      // Last-resort log: injectManagedTaskInput already markFailed when possible.
+      console.error(`[taskInput] background managed injection failed: ${message}`);
     }
   );
 }
@@ -4607,7 +4607,7 @@ function enqueueManagedTaskInputBackground(
     // Shutdown in progress: leave durable pending/failed for next process.
     return;
   }
-  const work = deliverManagedTaskInput(ctx, item).then(
+  const work = injectManagedTaskInput(ctx, item).then(
     () => undefined,
     async (err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -4673,7 +4673,7 @@ export function stopManagedTaskInputBackgroundAccept(): void {
 }
 
 /**
- * Bounded drain of background U2A delivers (sendInput + reject-resume review
+ * Bounded drain of background U2A injections (sendInput + reject-resume review
  * feedback) after runtime interrupt/shutdown has already been requested so hung
  * provider turns can settle without waiting a full promptTimeout.
  * After stopManagedTaskInputBackgroundAccept, new background enqueues are ignored.
@@ -4728,7 +4728,7 @@ export function resetManagedTaskInputBackgroundForTests(): void {
  * Authoritative inject session is derived inside the per-task FIFO (Task binding
  * wins). Pre-replace workers must never rebind/inject a retired session.
  */
-async function deliverManagedTaskInput(
+async function injectManagedTaskInput(
   ctx: HandlerContext,
   item: TaskInputRecord
 ): Promise<ManagedTaskInputTaskResult> {
@@ -4851,7 +4851,7 @@ async function deliverManagedTaskInput(
         // The durable TaskInput terminal fact and event release this FIFO. Draft
         // retry is tracked independently and never prompts the provider again.
         trackManagedTaskInputBackground(
-          requestManagedAutoDeliverRetryFromDraft(ctx, {
+          requestManagedAutoSubmitRetryFromDraft(ctx, {
             workspaceId: forInject.workspaceId,
             taskPath: forInject.taskPath,
             sessionId,
@@ -4917,7 +4917,7 @@ async function deliverManagedTaskInput(
  * Managed ACP: feed fixed-format U2A payload into the same session.
  * Prefer live sendFollowUpPrompt; else resumeSession when capable.
  * External agents poll taskInput.* — no auto chat.
- * Caller must hold the per-task managed U2A FIFO (deliverManagedTaskInput).
+ * Caller must hold the per-task managed U2A FIFO (injectManagedTaskInput).
  */
 async function continueManagedAfterTaskInput(
   ctx: HandlerContext,
@@ -5021,11 +5021,11 @@ export function holdManagedTaskInputQueueForTests(
 
 /**
  * Public task.submit / task.requestReview must not publish a ready TaskResult
- * while the bound managed session still has an in-flight turn. Auto-deliver
+ * while the bound managed session still has an in-flight turn. Auto-submit
  * seals first (isTurnActive → false) then calls core taskSubmit directly — it
  * never relies on this RPC gate. External / idle sessions pass through.
  */
-async function assertManagedTurnIdleForPublicDeliver(
+async function assertManagedTurnIdleForPublicSubmit(
   ctx: HandlerContext,
   task: { executionSessionId?: string; path: string; state: string }
 ): Promise<void> {
@@ -5049,13 +5049,13 @@ async function assertManagedTurnIdleForPublicDeliver(
 /**
  * Shared authority: a pending Decision Request, or any TaskInput still pending,
  * processing, failed, or uncertain on this task blocks a ready TaskResult. Same check for public
- * task.submit / task.requestReview and managed auto-deliver.
+ * task.submit / task.requestReview and managed auto-submit.
  *
  * Uncertain is at-most-once and never re-injected, but blocks until explicit
  * acknowledgement. delivered / consumed / cancelled rows do not block.
  * Reads each durable domain store directly; interaction.listPending is projection only.
  */
-async function assertNoBlockingTaskInputsForDeliver(
+async function assertNoBlockingTaskInputsForSubmit(
   ctx: HandlerContext,
   workspaceId: string,
   task: { path: string; id?: string; state: string }
@@ -5078,7 +5078,7 @@ async function assertNoBlockingTaskInputsForDeliver(
       }
     );
   }
-  const blockers = await ctx.taskInputs.listBlockingForDeliver(
+  const blockers = await ctx.taskInputs.listBlockingForSubmit(
     workspaceId,
     task.path
   );
@@ -5170,7 +5170,7 @@ async function resolveTaskWorktreeForDirtyCheck(
  * while agent edits remain uncommitted. Non-Git / no-lane tasks pass through.
  * Checks only the task lane worktree — never main or sibling lanes.
  */
-async function assertTaskWorktreeCleanForDeliver(
+async function assertTaskWorktreeCleanForSubmit(
   workspaceRoot: string,
   task: TaskRecord,
   fs: import("../core/adapter.js").FsAdapter
@@ -5214,7 +5214,7 @@ async function assertTaskWorktreeCleanForDeliver(
  * - Ordinary code-task lane (branch recorded) without exact baseCommit → fail
  *   loud (never silently substitute roleBranchBase at TaskResult).
  */
-async function assertOrdinaryExecutorLaneHistoryForDeliver(
+async function assertOrdinaryExecutorLaneHistoryForSubmit(
   workspaceRoot: string,
   task: TaskRecord
 ): Promise<void> {
@@ -5392,13 +5392,13 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // Fail-loud authority: do not honor caller "I'm done" while the managed
       // turn is still busy (tools/write/commit may still race). Task stays
       // running; no ready TaskResult is published.
-      await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+      await assertManagedTurnIdleForPublicSubmit(ctx, taskForIntegrate);
       // Open TaskInput (pending/processing/retryable failed) must be consumed first.
-      await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
+      await assertNoBlockingTaskInputsForSubmit(ctx, workspaceId, taskForIntegrate);
       // Same gate for public submit: dirty task worktree must not publish stale commits.
-      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate, mount.env.fs);
+      await assertTaskWorktreeCleanForSubmit(mount.workspaceRoot, taskForIntegrate, mount.env.fs);
       // Ordinary executor lane: linear single-parent history from recorded base (cx-5q6za6).
-      await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
+      await assertOrdinaryExecutorLaneHistoryForSubmit(mount.workspaceRoot, taskForIntegrate);
       // Public commits[] must resolve as commit objects in exact base..task-branch range.
       canonicalCommits = await resolveSubmitCommitsForExecutorLane(
         mount.workspaceRoot,
@@ -6727,7 +6727,7 @@ async function prepareAuthorizedTaskStartSession(
           }
         );
       }
-      await assertNoDeliverableDraftBeforeManagedSessionResume(ctx, workspaceId, taskPath);
+      await assertNoPendingResultDraftBeforeManagedSessionResume(ctx, workspaceId, taskPath);
       return resumeTaskForManagedSessionOperation(
         ctx,
         workspaceId,
@@ -7225,7 +7225,7 @@ async function assertReplaceSessionEligible(
   }
 }
 
-async function assertNoDeliverableDraftBeforeManagedSessionResume(
+async function assertNoPendingResultDraftBeforeManagedSessionResume(
   ctx: HandlerContext,
   workspaceId: string,
   taskPath: string
@@ -7236,7 +7236,7 @@ async function assertNoDeliverableDraftBeforeManagedSessionResume(
   if (outcome?.outcome === "blocked" || outcome?.outcome === "needs-input") return;
   throw new RpcError(
     RPC_LIFECYCLE,
-    "task.startSession cannot resume while a deliverable managed report draft is pending; call task.resume to retry its publication",
+    "task.startSession cannot resume while a pending managed result report draft exists; call task.resume to retry its publication",
     {
       code: "MANAGED_RESULT_DRAFT_REQUIRES_RESUME",
       taskPath,
@@ -8388,7 +8388,7 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * End or unbind an external session. Never delivers or accepts tasks. Any exact
+ * End or unbind an external Session. Never submits or reviews TaskResults. Any exact
  * running Task remains occupied and is parked recoverably before the binding stops.
  * Resolves by sessionId **or** workspace-scoped externalKey.
  */
@@ -8430,7 +8430,7 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
 
   const { rec, sessionId } = resolved;
 
-  // Snapshot incomplete tasks before unbinding (leave must not deliver/accept).
+  // Snapshot incomplete Tasks before unbinding (leave must not submit/review).
   let incompleteTasks = await listIncompleteTasksBoundToSession(
     ctx,
     rec.workspace || workspaceId,
@@ -8517,7 +8517,7 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
     alreadyLeft: !left,
     incompleteTasks,
     /**
-     * Explicit contract: leave never auto-delivers or accepts.
+     * Explicit contract: leave never auto-submits or accepts.
      * Callers must use task.submit / task.accept separately.
      */
   };
@@ -9641,7 +9641,7 @@ async function taskInputAckRpc(ctx: HandlerContext, p: Record<string, unknown>) 
       // Service latency in the draft-only retry cannot turn a successful ack
       // into a client timeout followed by "already consumed" on retry.
       trackManagedTaskInputBackground(
-        requestManagedAutoDeliverRetryFromDraft(ctx, {
+        requestManagedAutoSubmitRetryFromDraft(ctx, {
           workspaceId,
           taskPath,
           sessionId,
@@ -10630,7 +10630,7 @@ function emitRetentionPurged(
  * One owner Promise per exact managed Session+Task publication attempt. Durable
  * Task/Result authority decides whether a later call still has work to do.
  */
-const managedAutoDeliverFlights = new Map<string, Promise<void>>();
+const managedAutoSubmitFlights = new Map<string, Promise<void>>();
 
 /**
  * Session ids currently inside reject-resume native resumeSession.
@@ -10752,7 +10752,7 @@ export function resetRuntimeProjectionForTests(): void {
   runtimeProjectionTestHooks = null;
 }
 
-function managedDeliverKey(sessionId: string, taskPath: string): string {
+function managedSubmitKey(sessionId: string, taskPath: string): string {
   return `${sessionId}::${taskPath}`;
 }
 
@@ -10761,12 +10761,12 @@ function managedDeliverKey(sessionId: string, taskPath: string): string {
  * A concurrent publication is awaited, then the durable draft is re-read once.
  * No timers, recursive owner retry, or provider re-prompting.
  */
-async function requestManagedAutoDeliverRetryFromDraft(
+async function requestManagedAutoSubmitRetryFromDraft(
   ctx: HandlerContext,
   input: { workspaceId: string; taskPath: string; sessionId: string }
 ): Promise<void> {
-  const key = managedDeliverKey(input.sessionId, input.taskPath);
-  const active = managedAutoDeliverFlights.get(key);
+  const key = managedSubmitKey(input.sessionId, input.taskPath);
+  const active = managedAutoSubmitFlights.get(key);
   if (active) await active;
   let draft = await ctx.managedTaskResultReportDrafts.get(input.workspaceId, input.taskPath);
   if (!draft) return;
@@ -10777,7 +10777,7 @@ async function requestManagedAutoDeliverRetryFromDraft(
     // TaskResult candidates. Only a real later provider report may supersede one.
     return;
   }
-  const raced = managedAutoDeliverFlights.get(key);
+  const raced = managedAutoSubmitFlights.get(key);
   if (raced) {
     await raced;
     draft = await ctx.managedTaskResultReportDrafts.get(input.workspaceId, input.taskPath);
@@ -10787,22 +10787,22 @@ async function requestManagedAutoDeliverRetryFromDraft(
       return;
     }
   }
-  await tryManagedAutoDeliver(ctx, {
+  await tryManagedAutoSubmit(ctx, {
     ...input,
     assistantText: "",
   });
 }
 
 /** True while seal-before-submit holds the in-flight lock for this session+task. */
-function isManagedAutoDeliverSealing(
+function isManagedAutoSubmitSealing(
   sessionId: string,
   taskPath: string,
   taskId?: string
 ): boolean {
-  if (managedAutoDeliverFlights.has(managedDeliverKey(sessionId, taskPath))) {
+  if (managedAutoSubmitFlights.has(managedSubmitKey(sessionId, taskPath))) {
     return true;
   }
-  if (taskId && managedAutoDeliverFlights.has(managedDeliverKey(sessionId, taskId))) {
+  if (taskId && managedAutoSubmitFlights.has(managedSubmitKey(sessionId, taskId))) {
     return true;
   }
   return false;
@@ -10982,7 +10982,7 @@ async function projectRuntimeEventOnce(
     // Pending tool approvals must not hang after process death.
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
     // Session terminal input cleanup:
-    // - intentional seal/post-deliver stop (stopReason=user);
+    // - intentional seal/post-submit stop (stopReason=user);
     // - reject-resume park / in-flight native restore;
     // - recoverable session-unavailable park (pre-TaskResult);
     // - published TaskResult / collaboration-terminal Task
@@ -11084,7 +11084,7 @@ async function projectRuntimeEventOnce(
         // Unintentional managed Session death before TaskResult → recoverable park
         // waiting(external) (shared helper with remount reconcile). Diagnostic-only
         // once TaskResult is published, reject-resume park owns the occupation, or
-        // seal/post-deliver intentionally stopped the process (stopReason=user).
+        // seal/post-submit intentionally stopped the process (stopReason=user).
         if (
           shouldSkipTaskFailOnSessionTerminal({
             sessionId: ev.sessionId,
@@ -11106,7 +11106,7 @@ async function projectRuntimeEventOnce(
               : `Managed session exited before result (code=${ev.exitCode ?? "unknown"})`,
         });
       } else if (ev.type === "session.prompt_complete") {
-        await tryManagedAutoDeliver(ctx, {
+        await tryManagedAutoSubmit(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
           sessionId: ev.sessionId,
@@ -11318,18 +11318,18 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
   stopReason?: string;
   task: TaskRecord;
 }): boolean {
-  // Intentional seal / post-deliver stop — adapter may emit failed or exited.
+  // Intentional seal / post-submit stop — adapter may emit failed or exited.
   if (input.stopReason === "user") return true;
-  // In-flight auto-deliver seal: stopReason may race child exit.
+  // In-flight auto-submit seal: stopReason may race child exit.
   if (
     input.eventType === "session.exited" &&
-    isManagedAutoDeliverSealing(input.sessionId, input.task.path, input.task.id)
+    isManagedAutoSubmitSealing(input.sessionId, input.task.path, input.task.id)
   ) {
     return true;
   }
   if (
     input.eventType === "session.failed" &&
-    isManagedAutoDeliverSealing(input.sessionId, input.task.path, input.task.id)
+    isManagedAutoSubmitSealing(input.sessionId, input.task.path, input.task.id)
   ) {
     return true;
   }
@@ -11362,7 +11362,7 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
  *   the managed Session live; re-assert under the final publish mutation (TOCTOU).
  *   Seal never cancels TaskInput blockers.
  */
-async function tryManagedAutoDeliver(
+async function tryManagedAutoSubmit(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
@@ -11376,23 +11376,23 @@ async function tryManagedAutoDeliver(
     commits?: string[];
   }
 ): Promise<void> {
-  const key = managedDeliverKey(input.sessionId.trim(), input.taskPath);
-  const existing = managedAutoDeliverFlights.get(key);
+  const key = managedSubmitKey(input.sessionId.trim(), input.taskPath);
+  const existing = managedAutoSubmitFlights.get(key);
   if (existing) {
     await existing;
     return;
   }
   let owner!: Promise<void>;
-  owner = tryManagedAutoDeliverOwner(ctx, input).finally(() => {
-    if (managedAutoDeliverFlights.get(key) === owner) {
-      managedAutoDeliverFlights.delete(key);
+  owner = tryManagedAutoSubmitOwner(ctx, input).finally(() => {
+    if (managedAutoSubmitFlights.get(key) === owner) {
+      managedAutoSubmitFlights.delete(key);
     }
   });
-  managedAutoDeliverFlights.set(key, owner);
+  managedAutoSubmitFlights.set(key, owner);
   await owner;
 }
 
-async function tryManagedAutoDeliverOwner(
+async function tryManagedAutoSubmitOwner(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
@@ -11499,7 +11499,7 @@ async function tryManagedAutoDeliverOwner(
     }
 
     if (parsedOutcome?.outcome === "blocked") {
-      await handleManagedNonDeliveredOutcome(ctx, {
+      await handleManagedNonSubmittedOutcome(ctx, {
         workspaceId: input.workspaceId,
         taskPath: input.taskPath,
         sessionId,
@@ -11562,7 +11562,7 @@ async function tryManagedAutoDeliverOwner(
         }
         // Refuse before stopping the managed Session. A committed TaskResult has
         // already passed this gate in its original attempt.
-        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, current);
+        await assertNoBlockingTaskInputsForSubmit(ctx, input.workspaceId, current);
 
         const sealed = await sealManagedSessionBeforeTaskResult(ctx, {
           workspaceId: input.workspaceId,
@@ -11571,14 +11571,14 @@ async function tryManagedAutoDeliverOwner(
         });
         if (!sealed) {
           throw new Error(
-            "managed session could not be sealed before auto-deliver (process still mutable)"
+            "managed session could not be sealed before auto-submit (process still mutable)"
           );
         }
 
         phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
         const task = await loadTaskRecord(mount.env.fs, input.taskPath);
 
-        // Only deliver from active running managed session for this sessionId.
+        // Only submit from the active running managed Session for this sessionId.
         if (task.state !== "running") {
           // Already submitted / review / terminal / interrupted — ignore duplicate.
           return { kind: "skip" };
@@ -11590,14 +11590,14 @@ async function tryManagedAutoDeliverOwner(
         // TOCTOU revalidation: same TaskInput authority under the publish mutation
         // so a concurrent sendInput cannot slip a blocker past the pre-seal gate.
         // sendInput state+add is also on this MutationBus + lifecycle flight.
-        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
+        await assertNoBlockingTaskInputsForSubmit(ctx, input.workspaceId, task);
 
         // Seal-after, publish-before: refuse dirty task worktree so uncommitted
         // agent edits cannot be skipped in favor of stale already-committed SHAs.
         // Fail-loud keeps task running for commit-then-retry (same as public submit).
-        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task, mount.env.fs);
+        await assertTaskWorktreeCleanForSubmit(mount.workspaceRoot, task, mount.env.fs);
         // Ordinary executor lane history gate (cx-5q6za6): no merge/foreign ancestry.
-        await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
+        await assertOrdinaryExecutorLaneHistoryForSubmit(mount.workspaceRoot, task);
 
         // Collect pending role-lane commits unless the caller supplied an explicit list
         // (tests only). Production always auto-collects via the authoritative lane contract.
@@ -11816,7 +11816,7 @@ async function tryManagedAutoDeliverOwner(
  * Managed blocked report. Never publishes a TaskResult; records one bounded
  * statusDetail and parks through the existing waiting state.
  */
-async function handleManagedNonDeliveredOutcome(
+async function handleManagedNonSubmittedOutcome(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
@@ -12002,7 +12002,7 @@ async function collectManagedTaskResultCommits(
  *
  * **Must not cancel TaskInput rows.** Open pending/processing/failed inputs are
  * TaskResult blockers; silently cancelling them on seal would let a ready TaskResult
- * publish without consumption. Authority stays on assertNoBlockingTaskInputsForDeliver.
+ * publish without consumption. Authority stays on assertNoBlockingTaskInputsForSubmit.
  * Post-success cleanup may still cancel leftover open rows in stopManagedSessionAfterTaskResult.
  */
 async function sealManagedSessionBeforeTaskResult(
@@ -12049,7 +12049,7 @@ async function sealManagedSessionBeforeTaskResult(
   const message = failures.join("; ") || "dead and idle state was not proven";
   try {
     await ctx.runtime.registry.update(input.sessionId, {
-      lastError: `managed session seal before deliver failed: ${message}`,
+      lastError: `managed Session seal before submit failed: ${message}`,
     });
   } catch {
     // registry row may already be gone
@@ -12060,7 +12060,7 @@ async function sealManagedSessionBeforeTaskResult(
     {
       sessionId: input.sessionId,
       taskPath: input.taskPath,
-      runtimeEvent: "session.seal_before_deliver.failed",
+      runtimeEvent: "session.seal_before_submit.failed",
       error: message,
       taskFailed: false,
     },
@@ -12093,7 +12093,7 @@ async function stopManagedSessionAfterTaskResult(
         ctx,
         input.workspaceId,
         input.sessionId,
-        "session.stop_after_deliver"
+        "session.stop_after_submit"
       );
     } catch {
       // ignore
@@ -12106,7 +12106,7 @@ async function stopManagedSessionAfterTaskResult(
     const message = err instanceof Error ? err.message : String(err);
     try {
       await ctx.runtime.registry.update(input.sessionId, {
-        lastError: `managed session stop after deliver failed: ${message}`,
+        lastError: `managed Session stop after submit failed: ${message}`,
       });
     } catch {
       // registry row may already be gone
@@ -12117,7 +12117,7 @@ async function stopManagedSessionAfterTaskResult(
       {
         sessionId: input.sessionId,
         taskPath: input.taskPath,
-        runtimeEvent: "session.stop_after_deliver.failed",
+        runtimeEvent: "session.stop_after_submit.failed",
         error: message,
         // TaskResult already succeeded; task must not be failed for stop issues.
         taskFailed: false,
@@ -12263,7 +12263,7 @@ export function setBeforeReplaceTaskInputRollbackForTests(
 
 /**
  * Test-only: inside backfill lifecycle flight + mutation, before re-read/write.
- * Production never sets this. Used to prove backfill cannot interleave with deliver.
+ * Production never sets this. Used to prove backfill cannot interleave with submit.
  */
 let beforeTaskBackfillWorkspaceLaneBaseForTests:
   | ((input: { workspaceId: string; taskPath: string }) => Promise<void>)
@@ -12276,8 +12276,8 @@ export function setBeforeTaskBackfillWorkspaceLaneBaseForTests(
 }
 
 /** Test helper: clear in-process managed result flights (does not touch disk). */
-export function resetManagedAutoDeliverDedupForTests(): void {
-  managedAutoDeliverFlights.clear();
+export function resetManagedAutoSubmitFlightsForTests(): void {
+  managedAutoSubmitFlights.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
   afterTaskRejectContinuationPersistForTests = null;
@@ -12294,15 +12294,15 @@ export function resetTaskStartSessionInFlightForTests(): void {
 }
 
 /**
- * Test helper: invoke managed U2A deliver (sendInput / reject-resume review).
+ * Test helper: invoke managed U2A injection (sendInput / reject-resume review).
  * Used to simulate post-restart retry of a durable pending TaskInput without
  * relying on in-memory enqueue state from the original RPC.
  */
-export async function invokeDeliverManagedTaskInputForTests(
+export async function invokeInjectManagedTaskInputForTests(
   ctx: HandlerContext,
   item: TaskInputRecord
 ): Promise<ManagedTaskInputTaskResult> {
-  return deliverManagedTaskInput(ctx, item);
+  return injectManagedTaskInput(ctx, item);
 }
 
 /**
@@ -12391,7 +12391,7 @@ async function restoreManagedSessionAfterRejectResume(
     );
   }
 
-  // Empty bootstrap: go live without first session/prompt so auto-deliver cannot
+  // Empty bootstrap: go live without first session/prompt so auto-submit cannot
   // race seal before the single ## Review Feedback inject.
   const emptyBootstrap = "";
 
@@ -12399,7 +12399,7 @@ async function restoreManagedSessionAfterRejectResume(
   try {
     probe = await ctx.runtime.probe(priorSessionId);
     if (probe.isAlive && SessionRegistry.isNonTerminal(probe.state)) {
-      // Still live (unusual after managed deliver stop) — rebind only.
+      // Still live (unusual after managed submit stop) — rebind only.
       await ctx.runtime.registry.update(priorSessionId, {
         providerContextRestored: true,
       });
@@ -12582,10 +12582,10 @@ async function parkTaskAfterRejectResumeFailure(
 }
 
 /**
- * Test helper: invoke managed auto-deliver.
+ * Test helper: invoke managed auto-submit.
  * Optional explicit commits override production auto-collection (conflict tests).
  */
-export async function invokeManagedAutoDeliverForTests(
+export async function invokeManagedAutoSubmitForTests(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
@@ -12599,14 +12599,14 @@ export async function invokeManagedAutoDeliverForTests(
     commits?: string[];
   }
 ): Promise<void> {
-  return tryManagedAutoDeliver(ctx, input);
+  return tryManagedAutoSubmit(ctx, input);
 }
 
-export async function invokeManagedAutoDeliverRetryFromDraftForTests(
+export async function invokeManagedAutoSubmitRetryFromDraftForTests(
   ctx: HandlerContext,
   input: { workspaceId: string; taskPath: string; sessionId: string }
 ): Promise<void> {
-  return requestManagedAutoDeliverRetryFromDraft(ctx, input);
+  return requestManagedAutoSubmitRetryFromDraft(ctx, input);
 }
 
 // ---- helpers ----
@@ -12756,7 +12756,7 @@ function projectNode(
  *
  * Before any Git write, re-resolves the integration contract and compares the
  * current target branch HEAD to the review-time snapshot (TaskResult.targetHead or
- * the expected SHA captured at deliver/auto-integrate start). Drift or a missing
+ * the expected SHA captured at submit/auto-integrate start). Drift or a missing
  * snapshot fails loud with stable retryable TARGET_MOVED and does not touch Git.
  */
 function makeCommitIntegrator(
@@ -12766,7 +12766,7 @@ function makeCommitIntegrator(
   options: {
     /**
      * Review-time snapshot: TaskResult.targetHead on accept, or SHA captured at
-     * deliver / auto-integrate start for commit-bearing paths.
+     * submit / auto-integrate start for commit-bearing paths.
      * Missing on commit-bearing integrate → TARGET_MOVED (legacy fail-loud).
      * Re-resolved from ready TaskResult under the target flight on accept.
      */
@@ -12803,7 +12803,7 @@ function makeCommitIntegrator(
       }
 
       // Accept path: re-load ready TaskResult targetHead under the same target lock.
-      // Deliver/auto-integrate keeps the snapshot captured at publish prepare.
+      // Submit/auto-integrate keeps the snapshot captured at publication prepare.
       let expected = options.expectedTargetHead;
       if (options.action === "task.accept") {
         const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
@@ -13235,7 +13235,7 @@ function projectStartSessionResult(
  * contextGeneration; later Tasks on the same Session append delta only.
  * Skill/role bodies compose fill tent-role / Role / tent-task slots.
  * Never copies Node/manifest bodies. Never instructs tent task claim/get/submit.
- * Distinct from relayPromptForTask (external manual path still claim+deliver).
+ * Distinct from relayPromptForTask (external manual path still claim+submit).
  */
 async function buildSessionBootstrapPrompt(
   ctx: HandlerContext,
@@ -13376,7 +13376,7 @@ function projectTask(task: import("../core/task.js").TaskRecord): TaskProjection
     throw new RpcError(
       -32022,
       `Task ${task.id || task.path} is missing canonical requester`,
-      { code: "TASK_PARENT_ACTOR_MISSING", taskPath: task.path }
+      { code: "TASK_REQUESTER_MISSING", taskPath: task.path }
     );
   }
   const requester = task.requester;

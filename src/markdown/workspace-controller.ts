@@ -1,4 +1,4 @@
-// Platform-agnostic Markdown workspace view-model (B3).
+// Platform-agnostic Markdown workspace view-model.
 // Electron renderer / HTML preview shell bind to this controller; they do not own docs truth.
 
 import type { DocsClient } from "./docs-client.js";

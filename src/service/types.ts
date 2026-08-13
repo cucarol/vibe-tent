@@ -1,4 +1,4 @@
-// Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
+// Local Service Protocol 9 wire types.
 
 import type { AcceptMode, TaskState, TaskStatusDetail } from "../core/task-model.js";
 export type { ArtifactRef } from "../core/artifact.js";
@@ -829,7 +829,7 @@ export const CLIENT_METHODS = [
    * External / pull-host session lifecycle (no ACP spawn).
    * enter: register or reuse state=external SessionRegistry row.
    * status: probe + incomplete task bindings for that session.
-   * leave: stop/unbind external session only — never deliver/accept.
+   * leave: stop/unbind external Session only — never submit/review.
    */
   "session.enter",
   "session.status",

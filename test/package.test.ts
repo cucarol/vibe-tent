@@ -99,10 +99,7 @@ test("tent new adopts an existing project without touching project files", async
   assert.equal(await fs.readFile(readme, "utf8"), "# Existing project\n");
   assert.equal(await fs.readFile(agents, "utf8"), "# Existing rules\n");
   assert.match(await fs.readFile(path.join(workspace, ".tent", "index.md"), "utf8"), /type: index/);
-  assert.deepEqual(
-    Object.keys(JSON.parse(await fs.readFile(path.join(workspace, ".tent", "types.json"), "utf8"))).sort(),
-    ["asset", "goal", "output", "prompt", "reference"]
-  );
+  assert.equal(await exists(path.join(workspace, ".tent", "types.json")), false);
   assert.equal(await exists(path.join(workspace, ".tent", "temp")), true);
   assert.equal(await exists(path.join(workspace, ".git")), false);
   assert.match(await fs.readFile(path.join(workspace, ".gitignore"), "utf8"), /\.tent\//);
@@ -292,7 +289,8 @@ async function assertInstalledSkills(root: string): Promise<void> {
   assert.match(role, /name: tent-role/);
   assert.match(role, /also apply `tent-task`/i);
   assert.match(task, /name: tent-task/);
-  assert.match(task, /TaskResult is never acceptance/i);
+  assert.match(task, /Submission creates a fresh TaskResult/i);
+  assert.match(task, /review-required.*never self-accepts/is);
   assert.ok(init.length < 6000, "tent-init should stay cache-friendly");
   assert.ok(role.length < 6000, "tent-role should stay cache-friendly");
   assert.ok(task.length < 6000, "tent-task should stay cache-friendly");

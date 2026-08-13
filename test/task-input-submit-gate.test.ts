@@ -15,8 +15,8 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import {
-  invokeManagedAutoDeliverForTests,
-  resetManagedAutoDeliverDedupForTests,
+  invokeManagedAutoSubmitForTests,
+  resetManagedAutoSubmitFlightsForTests,
   resetManagedTaskInputBackgroundForTests,
   stopManagedTaskInputBackgroundAccept,
 } from "../src/service/handlers.js";
@@ -241,7 +241,7 @@ function assertPendingTaskInputError(err: {
 }
 
 test("P0: pending TaskInput blocks public task.submit; no dl- created", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("tent-ti-gate-pending-");
   await withService(async (svc) => {
     const { workspaceId, taskPath } = await runningTask(svc, ws);
@@ -280,7 +280,7 @@ test("P0: pending TaskInput blocks public task.submit; no dl- created", async ()
   });
 });
 
-test("P0: processing TaskInput blocks public deliver", async () => {
+test("P0: processing TaskInput blocks public submit", async () => {
   const ws = await makeWorkspace("tent-ti-gate-processing-");
   await withService(async (svc) => {
     const { workspaceId, taskPath } = await runningTask(svc, ws);
@@ -311,7 +311,7 @@ test("P0: processing TaskInput blocks public deliver", async () => {
   });
 });
 
-test("P0: retryable failed TaskInput blocks public deliver", async () => {
+test("P0: retryable failed TaskInput blocks public submit", async () => {
   const ws = await makeWorkspace("tent-ti-gate-failed-");
   await withService(async (svc) => {
     const { workspaceId, taskPath } = await runningTask(svc, ws);
@@ -544,7 +544,7 @@ test("P0: after input is delivered/acked a later public TaskResult succeeds", as
 });
 
 test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays live; draft retry after input delivered", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   resetManagedTaskInputBackgroundForTests();
   // Prevent background inject from racing the open pending row to delivered.
   stopManagedTaskInputBackgroundAccept();
@@ -579,7 +579,7 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
         }
       });
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await invokeManagedAutoSubmitForTests(svc.ctx, {
         workspaceId,
         taskPath,
         sessionId: sessionId!,
@@ -606,7 +606,7 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
         "pending",
         "pre-seal gate must not cancel open blocker rows"
       );
-      assert.notEqual(still?.resolvedBy, "session.stop_after_deliver");
+      assert.notEqual(still?.resolvedBy, "session.stop_after_submit");
 
       // Pre-seal refusal: managed Session must remain live (not sealed/stopped).
       const probe = await rpc(svc, "session.get", { workspaceId, sessionId });
@@ -644,7 +644,7 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
       const afterInput = await svc.ctx.taskInputs.get(id, workspaceId, taskPath);
       assert.equal(afterInput?.status, "delivered");
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await invokeManagedAutoSubmitForTests(svc.ctx, {
         workspaceId,
         taskPath,
         sessionId: sessionId!,
@@ -685,7 +685,7 @@ test("P0: managed auto-submit refuses open TaskInput pre-seal; Session stays liv
   );
 });
 
-test("P0 race: input before deliver blocks; deliver first makes sendInput refuse", async () => {
+test("P0 race: input before submit blocks; submit first makes sendInput refuse", async () => {
   const ws = await makeWorkspace("tent-ti-gate-order-");
   await withService(async (svc) => {
     // --- Input first → public deliver blocked ---
@@ -808,7 +808,7 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
   });
 });
 
-test("P0 race: concurrent sendInput and public deliver — honest either-way under MutationBus", async () => {
+test("P0 race: concurrent sendInput and public submit — honest either-way under MutationBus", async () => {
   const ws = await makeWorkspace("tent-ti-gate-race-");
   await withService(async (svc) => {
     const { workspaceId, taskPath } = await runningTask(svc, ws);
@@ -948,7 +948,7 @@ test("P0 race: sendInput cannot slip between final publish gate and taskSubmit (
 });
 
 test("P0: public and managed paths share PENDING_TASK_INPUT authority payload shape", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   stopManagedTaskInputBackgroundAccept();
   const ws = await makeWorkspace("tent-ti-gate-shared-");
   const logPath = path.join(
@@ -1032,7 +1032,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
           diag.push(ev.payload as Record<string, unknown>);
         }
       });
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await invokeManagedAutoSubmitForTests(svc.ctx, {
         workspaceId,
         taskPath: managedPath,
         sessionId: managedSession,

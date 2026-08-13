@@ -17,7 +17,7 @@ import { previewOperationalRetention } from "../src/core/retention.js";
 import { ensureTaskWorkspace } from "../src/core/workspace.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
-  resetManagedAutoDeliverDedupForTests,
+  resetManagedAutoSubmitFlightsForTests,
   setBeforeTaskClaimCoreForTests,
 } from "../src/service/handlers.js";
 import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
@@ -671,8 +671,8 @@ test("Connection Task projects exact Session and TaskResult remains Task-scoped"
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
-    const deliveries = await loadTaskResults(envFs);
-    assert.ok(deliveries.some((x) => x.taskId));
+    const results = await loadTaskResults(envFs);
+    assert.ok(results.some((x) => x.taskId));
   });
 });
 

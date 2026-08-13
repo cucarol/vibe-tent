@@ -1,4 +1,4 @@
-// Desktop shell shared types (B5). No Electron imports.
+// Desktop shell shared types. No Electron imports.
 
 export type ServiceHealthView = {
   status: "ok" | "stopping" | "offline";

@@ -1,397 +1,106 @@
-# Tent Specification
+# Vibe Tent V0.2 Specification
 
-Tent / 帷幄 is a local control plane for durable user-agent collaboration. It
-stores project intent, context, relationships, work packages, execution state,
-review, and results without replacing the user's editor or Agent UI.
+Protocol 9 is the only current public contract. Retired public commands and wire fields are removed rather than kept as aliases.
 
-The Local Service is the authority for mounted workspaces and mutations. The
-Desktop and CLI are clients of that same contract.
+## 1. Product vocabulary
 
-The top-level authority model contains Node, Task, Role, Session, and
-Connection. A Task Result is an immutable child record of its Task. Decision
-Requests and TaskInputs are interaction records; Canvas and Inbox are views.
+The top-level entities are Node, Role, Task, Session, and Agent Connection. A TaskResult is an immutable child record of one Task. TaskInput, DecisionRequest, and Proposal are interactions. Canvas and Inbox are views, never Core authorities.
 
-## 1. Workspace And System Root
+Host conversations are external continuity sources for Sessions. Tent has no Subagent entity: native host sub-collaboration stays host-local, while Tent-managed ACP execution is represented by its Task plus execution Session and never by a second Role.
 
-A Tent belongs to one project workspace:
+## 2. Node
 
-```text
-workspace/
-  AGENTS.md          # project-wide Agent instructions (optional)
-  .tent/             # Tent system root, ignored by workspace Git
-    index.md          # structural marker
-    tags.json
-    roles.json
-    temp/             # operational Task/Result pipeline
-    attachments/
-```
+A Node is durable Markdown context with a canonical `cx-` id, parent/child placement, body, tags, relations, mode, and one optional arbitrary `type` marker. Missing type is valid. Unknown or hyphenated markers remain exact strings and never imply composite semantics.
 
-The workspace stores real project files and Git history. `.tent/` stores Tent
-facts and does not use its own Git repository. Workspace identity comes from
-the mounted workspace path, never from a Node field or type setting.
+Node bodies hold facts that remain useful across Tasks or Sessions. Operational Task, Session, and TaskResult records stay outside the Node tree. Updating an existing relevant Node or deriving an Output Node is an explicit Node-authority action after a TaskResult is accepted; review itself never mutates a Node.
 
-Runtime discovery requires `.tent/index.md`. Project instructions live in the
-workspace `AGENTS.md`; `.tent/RULES.md` is not a runtime contract.
+Project instructions live in the workspace `AGENTS.md`. Tent does not copy that authority into another rules file.
 
-## 2. Nodes
+## 3. Role, Session, and Agent Connection
 
-A Node is a folder plus a same-named Markdown identity note:
+Role and Session are different. A Role has durable responsibility and can continue across replaceable Sessions. A Session is one bounded execution with a canonical `ss-` id. An Agent Connection is machine-local, non-secret launch configuration with an arbitrary stable `connectionId`; it is availability, not identity or authorization.
 
-```text
-Release plan/
-  Release plan.md
-```
+Connection creation materializes canonical `command` plus complete `args` once. A Session stores an immutable Connection snapshot and uses it for start/resume. Public Connection projection uses `endpoint`; secrets are resolved only at the launch boundary and are never persisted or projected.
 
-A folder without a same-named note is a transparent group. `temp/` and
-`attachments/` are system areas, not Nodes.
+Session `currentTaskId`, `isAlive`, `canResume`, `isTurnActive`, and `providerContextRestored` describe current execution truth. Session diagnostics never replace Task authority.
 
-Minimal Node frontmatter:
+A host or external Session may exist without a current Task and later enter a Role or claim work. A Tent-managed ACP Session created for one Task is exact-Task bound.
 
-```yaml
-id: cx-7k2f9q
-type: goal
-tags: [release]
-mode: archived
-```
+## 4. Task
 
-Durable Node facts are:
+A Task is one work package and one review unit. Its TaskRecord contains:
 
-- stable `cx-` identity;
-- name and parent hierarchy;
-- Markdown body;
-- one optional direct type marker;
-- tags and explicit semantic relations;
-- archive state;
-- annotations;
-- Output provenance fields where applicable.
+- canonical Task id and non-empty `prompt`;
+- `workNodeIds[]` and `contextNodeIds[]`;
+- optional `assigneeRoleId` and `executionSessionId`;
+- exact `requester` (`user` or Role), which receives the result and owns review authority;
+- `acceptMode`, WorkspaceLane facts, state, wait/status detail, and optional `currentResultId`.
 
-Paths may change; ids do not. Controlled rename and move mutations use the
-stable id plus stale-path checks. Duplicate ids fail loud unless a copied
-subtree is explicitly adopted as a fork and receives fresh ids.
+The Service derives execution and authority from canonical fields. The same work Node cannot be occupied by another active Task. Occupation is per exact work Node: parent and child Nodes are independent and never imply a subtree lock. Context Card v2 and incremental TaskInput/review deltas are persisted host-injected facts, not chat memory.
 
-Node collaboration progress is never persisted as generic `owner`, `status`,
-or `acceptedBy` fields. It is projected from Task, Session, and Task Result.
+Task state uses the existing lifecycle. An explicit blocked return is `waiting` with `statusDetail.kind=blocked`; a clear terminal failure is `failed` with bounded `statusDetail`. Needs-input is represented by a DecisionRequest rather than a Task state or result wrapper.
 
-## 3. Type, Tags, And Archive
+## 5. TaskResult
 
-A Node may carry one direct `type` string. It is an optional semantic marker,
-not a registry reference, hierarchy, compound primary/secondary value, progress
-field, or lifecycle authority. Tent does not maintain a type registry or a
-create/delete type mechanism. Tags remain independent reusable facets for
-retrieval and cross-cutting classification.
+A TaskResult is an executor's formal result for one Task. Every `task.submit` creates a fresh canonical `rs-` record; `currentResultId` is the only review selector. There is no directory-latest or history scan for review authority.
 
-`mode: archived` freezes a Node subtree and acts as reversible soft deletion.
-Archived or invalid Nodes reject ordinary content and structure mutations.
-There is no general `read-only` Node mode and no type-based R/W gate.
+The immutable candidate contains exact identity, non-empty report, ordered canonical commits, checks, artifactRefs, integration mode, creation time, and target-head snapshot when commits exist. Only the review projection may transition once from `ready` to `accepted` or `rejected`.
 
-## 4. Roles, Connections, And Sessions
+Zero-commit TaskResults are valid formal successes. Commit-bearing results require an exact recorded Git lane, canonical full object ids, clean Task worktree, and target-head protection. Artifact references, rather than commit fields, describe external files, directories, or URLs.
 
-A Role is a durable responsibility to the user. Its registry definition has a
-stable Role id, name/display name, optional prompt, and user-facing result
-policy. A Role is not a provider configuration or an ACL.
+Exact Result accept/reject is an irreversible boundary. Private submit/review intents only converge their exact candidate; they are not public states, queues, scanners, or compatibility APIs.
 
-Settings owns machine-local Agent Connections. A Connection has a stable
-`connectionId`, optional `endpoint`, and an exact materialized `command` plus
-complete `args`. Provider defaults are resolved only when the Connection is
-created or explicitly updated; adapters do not append hidden launch arguments.
-It may reference an encrypted machine-local Launch
-Secret for process or MCP injection. Secret values never enter workspace Nodes,
-Tasks, Sessions, Git, events, or public projections. A Connection persists one
-canonical `command` plus complete `args`, and is not Task
-responsibility or identity.
+## 6. Submit and review
 
-A durable Role takes ownership of its own work directly:
+The public lifecycle is:
 
 ```text
-tent task claim --work-node <nodeId> [--work-node <nodeId> ...] \
-  [--context-node <nodeId> ...] --prompt <text>|-
+Task running
+  -> task.submit(report, commits?, checks?, artifactRefs?)
+  -> TaskResult ready; Task submitted; currentResultId exact
+  -> task.accept(resultId) | task.reject(resultId)
 ```
 
-This creates and immediately claims one Role Task. It has no target and is not
-downstream assignment. Tent inherits its persisted `requester` responsibility
-from an explicit current Task or the verified current Role execution context;
-a Role root falls back to the user.
+Review authority comes from `requester`. The user path and exact Role Session authority are transport-bound. Accept integrates exact commits when required, then records accepted review and Task state. Reject records rejected review and may resume the same Task. Accept/reject never bind an Output Node or edit any Node.
 
-Dispatch is downstream assignment only and has two public targets:
+`acceptMode` is a hard Task policy: `review-required` leaves the ready result for
+the requester and the executor never self-accepts; `auto-accept` runs the exact
+accept/integration lifecycle automatically; `agent-decide` requires submit
+decision `integrate` or `request-review`. Callers cannot change the frozen mode
+or bypass its review authority. Non-review modes are legal only for a Task
+directly accountable to user; downstream executor-to-parent-Role Tasks are
+forced `review-required`.
 
-- `role:<roleId>` creates a queued handoff to a durable Role;
-- `connection:<connectionId>` reserves a Session with an immutable non-secret
-  Connection snapshot, creates the formal Task already bound to that exact
-  Session, then starts the provider outside the lifecycle mutation.
+A response-loss retry proves the same immutable candidate and converges forward. A different candidate or stale result id fails loud with zero extra authority mutation.
 
-A temporary ACP Session remains execution state of its exact Task. Durable
-responsibility, review authority, and Node ownership remain with the Role and
-Task chain.
+## 7. Managed final reports and status detail
 
-Session records use `currentTaskId`, `isAlive`, `canResume`, `isTurnActive`,
-and optional `providerContextRestored`. These are execution facts, never Task
-responsibility or review authority.
+A natural, non-empty managed ACP final report defaults to a TaskResult. Service first preserves one durable report draft, then performs the exact submit lifecycle. One per-Session/Task in-flight Promise deduplicates concurrent completion; there is no success cache or provider re-prompt.
 
-Role and Session are different:
+`outcome: blocked` parks the Task with bounded status detail. User input is requested through DecisionRequest. Publication failure keeps the report draft and records bounded `statusDetail`; successful TaskResult publication clears both. A committed TaskResult always outranks fallback status detail.
 
-- a Role remains durable across its execution contexts;
-- a temporary managed ACP Session is one Task execution instance;
-- that Session may resume only when the same provider conversation is
-  still recoverable and Core proves compatibility;
-- persisted Nodes, Tasks, Results, and Git are the recovery
-  authority when a Session cannot continue.
+Provider crash, transient adapter failure, projection refresh failure, or an unclassified format problem does not create a special entity or public state. Tent preserves Task/context/worktree, stops or releases execution when safe, and uses the existing waiting/failed exit with bounded diagnostic evidence.
 
-Two composable Skills define executor behavior:
+## 8. Interactions
 
-- `tent-role`: durable Role responsibility, Node context, downstream review,
-  and user-facing result review;
-- `tent-task`: the execution protocol for every concrete Tent Task.
+TaskInput is exact-workspace and exact-Task scoped and preserves an at-most-once provider boundary. External poll/ack remains explicit; an uncertain handoff is never automatically reinjected. TaskInput state is interaction authority, not a second result path.
 
-A Role executing a Task uses both. A one-shot or managed downstream executor
-uses `tent-task` only.
+DecisionRequest is the only needs-input authority. A same-response retry is idempotent. Proposal captures a suggested Node mutation; applying it remains an explicit Node-authority action.
 
-## 5. Task And Context Card
+## 9. Views
 
-A Task is one work package and one review unit. It is not a Node. Its exact
-`workNodeIds[]` are acquired atomically; `contextNodeIds[]` are shared read-only
-context. While the Task is active, another Task cannot acquire the same work
-Node. Parent and child Nodes do not imply subtree locks.
+Graph is the sole Node identity/title/type/mode projection. `workspace.collaboration` joins authoritative Tasks, TaskResults, Decisions, Roles, Connections, and exact Session binding into selected-node collaboration plus the actionable user Inbox. It does not create authority, cache lifecycle state, or expose provider transport details.
 
-Dispatch persists one canonical Task record:
+Inbox contains only actions the user can take now: exact current ready TaskResults whose requester is user and actionable user DecisionRequests. Canvas is a visual composition of Node facts.
 
-- exact `requester`, the sole parent responsibility and review authority;
-- optional durable `assigneeRoleId` responsibility and/or exact
-  `executionSessionId`;
-- the immutable raw `prompt` in the Task body;
-- frozen work/context Node ids and snapshots in Context Card v2;
-- optional Git WorkspaceLane;
-- optional execution provenance written only after a Session computes it.
+## 10. Storage, paths, and Git
 
-Work and context Node references live authoritatively in separate Context Card
-v2 buckets; ids are authoritative and paths are refreshable hints. Dispatch
-drafts are UI state and become Tasks only on confirmed dispatch.
+The workspace root contains `.tent/`; operational paths are relative to its system root. Role Tasks live in the Role partition. Session-only Task paths retain their creation Session as a physical partition only; `executionSessionId` is the sole current runtime identity.
 
-The stable managed prompt prefix contains the Task protocol, project
-instructions, Role prompt where applicable, and compatible Agent context.
-Dynamic Task state and TaskInput are appended as a tail. Exact compatibility
-generation is required before a managed Session may reuse a cached prefix.
+WorkspaceLane records branch, base commit, target branch, worktree, and integration authority. Git integration, Node writes, deletion, secret handling, cross-Task input isolation, byte/frame limits, and exact TaskResult review retain hard protection. Reversible failures use the ordinary waiting/failed fallback rather than new recovery products.
 
-Task states and transitions are owned by Core. Clients must use Service
-commands and consume projections rather than deriving lifecycle from files.
-The canonical states are `queued | running | waiting | submitted | accepted |
-rejected | interrupted | failed`.
+## 11. Local Service and Protocol 9
 
-## 6. Sessions And Runtime
+Local Service is the only mounted-workspace mutation authority. Clients attach, verify Protocol 9, send typed RPC, and re-read projections. Any incompatible protocol is rejected before business RPC.
 
-The Service owns temporary managed ACP Session launch, binding, replacement,
-input injection, and terminal projection.
-
-A Task remains the Result boundary. A temporary ACP Session belongs to its
-exact Task. Resume reconnects that same recoverable provider conversation,
-while explicit replacement preserves the Task and worktree without envelope
-edits.
-
-Agent authentication, accounts, subscriptions, and provider-native model
-configuration belong to the Agent. A machine-local Connection may select a
-program, model, endpoint, and optional Launch Secret injection, but Tent does
-not manage OAuth tokens, account pools, refresh, rotation, or provider login.
-A Connection contains launch facts only; it is not Session identity and does
-not define provider-owned Session configuration.
-
-For stable ACP v1, adapters may invoke an advertised in-band `agent`
-authentication method by exact id. Tent never infers OAuth, API-key, or browser
-semantics from that id. Preview `terminal` authentication is out-of-band and is
-not advertised or invoked by the headless Local Service; unsupported auth
-types fail loud instead of being guessed.
-
-ACP initialize capabilities and authentication method ids, plus the complete
-`configOptions` returned by session new/load/resume and later
-`config_option_update` notifications, are authoritative for that exact Session.
-Tent preserves a bounded, non-secret audit snapshot on the Session record,
-including flat or grouped select options and advertised boolean options.
-Unknown option types/categories are ignored safely and missing options do not
-invent defaults. Tent currently observes these options; it does not mutate them
-through `session/set_config_option`.
-
-ACP stdio is a bounded adapter boundary. Tent rejects an oversized JSON-RPC
-frame before parsing it, bounds per-turn assistant report bytes and message
-segments, and bounds outbound bootstrap/request frames. There is no global
-count limit on real content, thought, tool-state, status-state, or configuration
-progress. A consecutive storm of control updates that changes no observable
-state fails loud, while diagnostic update fan-out is sampled and aggregated.
-A deliverable assistant report that crosses the limit fails loud with
-`ACP_OUTPUT_LIMIT`, stops the provider, and cannot create a Result. Diagnostic
-tails are independently truncated and redacted; diagnostic truncation is never
-used to turn an oversized report into a Result.
-
-## 7. Task Result And Review
-
-A Task Result is an immutable child record created by one formal Task submit.
-It is separate from the Task, Session, and any Output Node. Its immutable
-payload contains the report plus optional commits, checks, artifact references,
-target head, and integration mode. Each submit creates a fresh `rs-` record;
-the Task's `currentResultId` is the sole review selector. Result directories and
-history are never scanned to guess the current review candidate.
-
-The executor submits a Result to the reviewer derived from the exact persisted
-`requester`. Downstream Task Agents always use review-to-parent and cannot
-self-accept.
-
-Every Task freezes one `acceptMode` at creation:
-
-- `review-required`: the frozen `requester` authority accepts or rejects;
-- `auto-accept`: Service creates a durable ready Result, then mechanically
-  integrates and accepts under Core;
-- `agent-decide`: the executor Session explicitly chooses integration or review.
-
-Result review changes only the review projection once from `ready` to
-`accepted` or `rejected`; its submitted payload never changes. Reject may resume
-the same Task with review feedback, after which a later submit creates a fresh
-Result and leaves the rejected record intact. Accept may first integrate declared
-commits outside the final mutation boundary. Exact submit and review intents
-forward-converge filesystem crash windows without a scanner, queue, public
-recovery state, or alternate selector. Once a Result or review decision is
-durably committed, process or transport failure does not roll it back.
-Integration is fail-loud, never pushes, and does not write generic status back
-to Nodes.
-
-Result `artifactRefs[]` is the sole artifact-reference authority. Accept and
-reject do not mutate a Node or bind an Output. Only after Result acceptance may
-a separate explicit Node-authority action update an existing Node or derive an
-Output Node. An Output is still a Node, not another top-level entity.
-
-If a caller loses or abandons an in-flight request after Service persisted its
-accept intent, an exact retry first converges that same committed operation.
-Separately, if acceptance completed and only its successful response was lost,
-the intent is absent and a repeated command may return `INVALID_TRANSITION`
-because the Task is terminal. The caller must then reread the exact Task,
-Result and Task projections to resolve the outcome. V0.2 adds no accept
-idempotency token, receipt, compatibility path, or automatic retry.
-
-A non-empty natural managed final report creates a Result directly after the
-producing turn and workspace lane settle. Explicit blocked work uses the existing
-Task `waiting` state with `statusDetail.kind=blocked`; `failed` is terminal. Neither
-case creates a Result. Bounded `statusDetail` is the single honest handoff for a
-report or error that did not become a Result. Needs-input is expressed only by a
-Decision Request. Missing format, transient provider/adapter failure, or Result
-publication failure does not create an incident-specific state or entity: Tent
-retains Task/Context Card/worktree, stops or releases execution, and uses the
-existing `waiting` or `failed` path with bounded status detail. A committed
-Result always wins over this fallback.
-
-## 8. User And Agent Interaction
-
-The Service persists interaction types separately:
-
-- TaskInput for user/parent feedback to a Task executor;
-- DecisionRequest for an exact requester Session question to a frozen user or
-  Role authority; the response becomes deterministic exact-Task TaskInput;
-- tool approval where a provider requires it;
-- exact Result review.
-
-`workspace.collaboration` is the product-facing read projection for an optional
-selected Node and the local user's actionable Inbox. With no Node selection,
-`selectedNode` is `null` while the Inbox remains authoritative. A selected Node carries
-its id, an exact active-Task collaboration view, and the latest Task's optional
-`statusDetail` with canonical Task id. Selection is deterministic by Task update
-instant then exact id, so a newer Task without a return supersedes historical
-failure. Node name, type, mode,
-and hierarchy remain graph authority. Responsibility derives from the Task's
-exact `requester`; execution derives separately from its Role assignee or
-machine Connection. The projection never exposes Task paths, active Session
-binding/liveness, provider transport, credentials, commits, or target heads; a
-formal `statusDetail` may retain its bounded source execution Session id as diagnostic
-metadata.
-
-The user Inbox contains only exact ready Results whose responsibility is the
-user and pending user-targeted DecisionRequests whose Task is currently
-`waiting(user-input)`. Role review stays with that Role. TaskInput remains
-internal at-most-once authority and is not an Inbox item. Items are ordered
-deterministically, stale historical inventory is omitted, and malformed current
-actionable bindings fail closed. Resolution always uses the owning exact
-Result or Decision id; public review and response mutations never accept a
-Task path/id. The projection adds no mutation, cache, entity, or generic
-"resolve pending" operation.
-
-`interaction.listPending` remains a lower-level read during source sequencing.
-The protocol-7 Desktop cut removes its user-Inbox use together with the retired
-`node.collaboration(s)` reads after consumers move to `workspace.collaboration`.
-
-Annotations belong to Node text. They become Agent work only when the user
-explicitly converts or sends them as Task context/input.
-
-## 9. Git Lanes
-
-Durable Role lane:
-
-```text
-branch:   tent-role/<role>
-worktree: <workspace>-worktrees/<role>
-```
-
-Managed Task Agent lane:
-
-```text
-branch:   tent-task/<task-id>
-worktree: <workspace>-worktrees/task-<task-id>
-```
-
-Role lanes are durable. Task lanes are temporary and enter exact pending
-reclaim only after terminal Task state, Session settle, clean worktree,
-unambiguous ownership, and required integration. Reclaim never deletes commits,
-branches, Task records, or Role lanes and never performs historical mass-prune.
-
-Result commit ancestry is checked against the Task lane's capture-once base,
-recorded when that execution lane first binds. Ordinary executors may not merge
-parent history into their lane to bypass review.
-
-## 10. Mutation And Projection
-
-All in-workspace mutations go through the Local Service and MutationBus. The
-CLI and Desktop do not directly edit `.tent` operational state.
-
-Core fails loud on duplicate identity, stale paths/etags, archived mutation,
-invalid registries, authority mismatch, dirty or ambiguous Git lanes, and
-integration conflicts.
-
-Events are invalidation signals, not a second fact store. Clients re-query the
-relevant projection after an event. Transport health and projection health are
-distinct; clients must bound queries, expose retryable errors, and avoid
-presenting stale local view state as authoritative graph data.
-
-## 11. Public CLI
-
-Primary collaboration commands attach to the Local Service:
-
-```text
-tent status
-tent tree
-tent role list|show|config
-tent task list|get|dispatch|claim|submit|accept|reject|cancel|send-input|...
-tent task request-decision <taskPath> --question <text>|- [--options id=label,...]
-tent task decision list|get|respond|escalate ...
-tent task dispatch --target role:<roleId>|connection:<connectionId> \
-  --work-node <nodeId> [--context-node <nodeId> ...] ...
-tent role-init <role>
-tent skill-install [--target ...] [--force]
-```
-
-Retired public commands are removed rather than kept as aliases. Public Task
-dispatch accepts repeated `--work-node` and `--context-node` references and
-`role:*|connection:*` targets.
-
-## 12. Conformance
-
-The public contract has one Node model, one Agent Connection launch selector,
-and one dispatch grammar. A private workspace that predates this contract must
-be canonicalized explicitly and audibly before use; Tent does not publish a
-permanent migration API, dual-read, or dual-write compatibility layer.
-
-OKF validation:
-
-```text
-npm run okf:check
-npm run okf:check:strict
-```
-
-## 13. Product Boundary
-
-Tent may provide Canvas, Outline, Focus, Search, Pending, and settings surfaces,
-but the presentation is not the Core model. Canvas placement is local view
-state; dragging a card does not reparent a Node. Tent does not become an IDE,
-workspace file explorer, or replacement Agent chat router.
+Core owns authority semantics; Service owns transport, exact caller binding, runtime orchestration, and events. Events invalidate projections but are not facts by themselves. Generated CLI/Service/Desktop artifacts are rebuilt only in a dedicated release task after source integration.

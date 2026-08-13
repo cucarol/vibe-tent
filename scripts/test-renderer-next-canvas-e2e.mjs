@@ -552,8 +552,8 @@ async function exerciseBrowser() {
     let firstCurrentMembers = instanceMembers(state.presentation.document, firstInstanceId);
     let currentRoot = firstCurrentMembers.find((placement) => placement.entityRef === "cx-product");
     let currentWorkbench = firstCurrentMembers.find((placement) => placement.entityRef === "cx-workbench");
-    let delivery = firstCurrentMembers.find((placement) => placement.entityRef === "cx-delivery");
-    assert.ok(currentRoot && currentWorkbench && delivery);
+    let artifact = firstCurrentMembers.find((placement) => placement.entityRef === "cx-artifact");
+    assert.ok(currentRoot && currentWorkbench && artifact);
     await selectPlacement(page, currentRoot.placementId);
     controls = await selectedControls(page, currentRoot.placementId);
     let currentDirection = await controls.getAttribute("data-expanded");
@@ -564,24 +564,24 @@ async function exerciseBrowser() {
     state = await readState(page);
     firstCurrentMembers = instanceMembers(state.presentation.document, firstInstanceId);
     currentWorkbench = firstCurrentMembers.find((placement) => placement.entityRef === "cx-workbench");
-    delivery = firstCurrentMembers.find((placement) => placement.entityRef === "cx-delivery");
-    assert.ok(currentWorkbench && delivery);
+    artifact = firstCurrentMembers.find((placement) => placement.entityRef === "cx-artifact");
+    assert.ok(currentWorkbench && artifact);
     await selectPlacement(page, currentWorkbench.placementId);
     controls = await selectedControls(page, currentWorkbench.placementId);
     if ((await controls.getAttribute("data-expanded")) === "collapsed") {
       await expandSubtree(page, currentWorkbench.placementId, "down");
     }
-    await page.locator(`[data-tent-placement-id="${delivery.placementId}"]`).waitFor();
+    await page.locator(`[data-tent-placement-id="${artifact.placementId}"]`).waitFor();
     const workbenchTree = page.getByRole("treeitem", { name: /主界面：Canvas、节点与焦点/ });
     const disclosure = workbenchTree.locator(".tn-outline-disclosure");
     if ((await workbenchTree.getAttribute("aria-expanded")) === "true") await disclosure.click();
     await page.getByRole("treeitem", { name: /主界面视觉与交互证据/ }).waitFor({ state: "hidden" });
     const cameraBefore = await page.locator("[data-testid=canvas-subtree-lines] > g").getAttribute("transform");
-    await selectPlacement(page, delivery.placementId);
-    const deliveryTree = page.getByRole("treeitem", { name: /主界面视觉与交互证据/ });
-    await deliveryTree.waitFor({ state: "visible" });
-    assert.equal(await deliveryTree.getAttribute("aria-selected"), "true");
-    assert.equal(await deliveryTree.evaluate((element) => document.activeElement === element), true);
+    await selectPlacement(page, artifact.placementId);
+    const artifactTree = page.getByRole("treeitem", { name: /主界面视觉与交互证据/ });
+    await artifactTree.waitFor({ state: "visible" });
+    assert.equal(await artifactTree.getAttribute("aria-selected"), "true");
+    assert.equal(await artifactTree.evaluate((element) => document.activeElement === element), true);
     assert.match(await page.locator("#tn-focus-panel").innerText(), /主界面视觉与交互证据/);
     const cameraAfter = await page.locator("[data-testid=canvas-subtree-lines] > g").getAttribute("transform");
     assert.equal(cameraAfter, cameraBefore, "Canvas selection must not move the camera");

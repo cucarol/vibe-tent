@@ -1,97 +1,61 @@
 ---
 name: tent-role
-description: "Operate a durable Tent (帷幄) Role across replaceable Sessions: resume Role identity and prompt, maintain Node context, dispatch formal work to Roles or through machine Agent Connections, review Tasks and Deliveries, preserve decisions, and remain accountable to the user. Also apply tent-task while executing a concrete Task."
+description: "Operate a durable Tent Role across replaceable Sessions: resume Role identity, maintain Node context, dispatch and review Tasks, and remain accountable to the user. Apply tent-task while executing a concrete Task."
 ---
 
 # tent-role
 
-Use this contract whenever acting as a durable Role. Also apply `tent-task`
-while owning or executing a concrete Task.
+Use this Skill for a durable Role that must remain accountable across Sessions.
+Also apply `tent-task` whenever the Role executes a concrete Task.
 
-## Resume from persisted facts
+## Enter the exact Role
 
-1. Work from the workspace root containing `.tent/`; operational paths are
-   relative to that system root, never `<workspace>/temp`.
-2. Read workspace `AGENTS.md`, `.tent/temp/<role>/init.md`, the Role projection,
-   and relevant Nodes. If init is missing, run `tent role-init <role>`; do not
-   fabricate it.
-3. Use the verified Role execution context supplied by the host. Session
-   registration and managed bootstrap belong to Service and host integration;
-   do not fabricate or hand-bind them.
-4. After restart, compaction, handoff, or Session recovery, re-query the exact
-   Task, Delivery, Session, Context Card, and Git facts.
-5. Treat the Role prompt as jointly maintained. Ask before changing durable
-   responsibility, values, or unresolved product decisions.
+1. Run `tent role-init <role>` and read the returned Role id, prompt, system root,
+   workspace, and Session binding.
+2. Re-read the Role, relevant Nodes, active Tasks, exact TaskResults, Sessions,
+   and Git facts. Never reconstruct authority from chat memory.
+3. If Role or Session identity cannot be proven, stop and report the mismatch.
 
-Never invent a Role prompt, Connection availability, Task, Delivery, Session
-binding, compatibility result, or persisted state.
+Role is durable responsibility; Session is replaceable execution. An Agent
+Connection is machine availability only.
 
-## Maintain Node-first context
+## Keep durable context small
 
-- The Task and its Delivery report are the default durable record of one work
-  attempt. Do not duplicate ordinary execution history into Nodes.
-- Promote only decisions, facts, and accepted results that must survive across
-  Tasks or Sessions, and only into an existing relevant writable Node. If no
-  such Node exists, report that boundary to the parent or user; never create a
-  process-only Node merely to archive the current Task.
-- Put the concrete work request in the Task prompt and durable facts in the
-  referenced Nodes; do not duplicate them into parallel Context Card fields.
-- Task work Nodes are its occupied write context; context Nodes are shared
-  read-only context. Parent, child, relation, and link expansion stays read-only
-  unless explicitly included.
-- Keep irreversible product choices and final user judgment with this Role
-  unless the user explicitly delegates them.
+Task plus TaskResult are the default durable record for one work unit. Promote
+only cross-Task/cross-Session decisions, constraints, or accepted results into
+an existing relevant writable Node. If none exists, report to the requester;
+never create a process-only Node.
 
-## Claim own work and dispatch downstream
+The host injects persisted Context Card v2 and incremental TaskInput/review
+deltas. They are authoritative persisted facts, never chat memory.
 
-- Use `tent task claim --work-node <nodeId> … [--context-node <nodeId> …]
-  --prompt <text>|-` to create and
-  immediately claim this Role's own execution Task. Use `--from-task
-  <taskPath>` only when inheriting that exact active Task's persisted
-  responsibility chain. This form has no target and is not delegation.
-- Use `tent task dispatch --target role:<roleId> --work-node <nodeId> …
-  --prompt <text>|-` only for a queued handoff to another durable Role.
-- Use `tent task dispatch --target connection:<connectionId> --work-node <nodeId> …
-  --prompt <text>|-` only for downstream temporary managed ACP work through
-  machine Settings.
-- An Agent Connection resolves provider/model/endpoint/credential metadata. Never read
-  private registry files or copy secrets into a Node, Task, or report.
-- A temporary ACP Session remains execution state of its exact downstream
-  Task; durable responsibility stays with the Role and `parentActor` chain.
-- Caller authority and parent lane are derived by Tent. Do not recreate
-  internal identity, reviewer, or accept-mode knobs.
+## Dispatch
 
-Resume a managed Session only for its exact bound Task when Service proves the
-same provider conversation is recoverable from the immutable Connection snapshot,
-provider token, and recorded lane. A changed context generation sends the full
-current stable prefix; it does not select another Session. If native recovery
-fails, use explicit Task replacement or dispatch new work; never present fresh
-context as the old Session.
+- Direct Role work: `tent task claim --work-node ... --prompt ...`.
+- Durable handoff: `tent task dispatch --target role:<roleId> ...`.
+- Machine execution: `tent task dispatch --target connection:<connectionId> ...`.
+- Preserve exact work/context Node ids and requester chain. Do not invent Role,
+  Connection, Session, or Task facts.
 
-## Review downstream Delivery
+Use SubGrok only through Tent-managed Task/Session lifecycle. Codex/native host
+subagents stay inside the host: they do not enter Tent or create/impersonate a
+Tent Task, Session, or TaskResult. Only the parent Role's already-formal Task and
+TaskResult remain in Tent.
 
-- Use `workspace.collaboration` for the selected Node and user-actionable Inbox
-  read. Treat graph as Node identity/content authority and derive actionability
-  only from exact projected responsibility and Delivery/Decision ids. Never
-  infer review authority from execution, Session state, or a badge/count.
-- Trust persisted `parentActor` as the sole reviewer authority. Downstream executors use
-  review-to-parent, never self-accept or elevate Role-to-user policy.
-- Inspect the real diff, commit ancestry, target-head snapshot, checks, Task
-  interactions, Session settle state, and Delivery record.
-- `TARGET_MOVED` requires reject/resume and a new Delivery. Never bypass the
-  snapshot, hand-edit state, or merge unrelated lanes.
-- Use `task.replaceSession` only for the same eligible Task while the turn is
-  idle. A changed work contract requires a new Task.
+## Review
 
-## Deliver to the user
+Read the exact current `resultId` from Task/Inbox projection. Review only when
+requester authority belongs to this Role, interactions are settled, and Git
+facts/checks are exact. Accept/reject never edits a Node or binds Output.
 
-- Follow the Task's frozen `review-required | auto-accept | agent-decide`
-  `acceptMode` without elevating it.
-- `agent-decide` chooses integration or user review; it does not impersonate an
-  independent reviewer.
-- Report judgment, evidence, remaining risk, and real blockers rather than
-  forwarding raw downstream output.
+An accepted result may later inform an explicit update to an existing Node or
+an explicit Output Node derivation. Keep that Node-authority decision separate
+from review.
 
-`tent-task` owns Task lane execution, TaskInput/DecisionRequest, verification, final
-report, and Delivery wire. Do not create a second lifecycle for delegation or
-Session continuity.
+## Report to the user
+
+Surface completed Tasks, current TaskResults, unresolved Decisions, blocked or
+failed status detail, and durable Node changes. Do not turn routine host chat or
+Session diagnostics into permanent Nodes.
+
+Use [tent-task](../tent-task/SKILL.md) for execution details.

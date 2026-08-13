@@ -1,4 +1,4 @@
-// Service-internal AgentRuntimePort IDL (B0 agent-runtime.md §4).
+// Service-internal AgentRuntimePort IDL.
 // Not a client command surface — Desktop/CLI/MCP use task.* only.
 
 import type {
@@ -57,7 +57,7 @@ export type RuntimeEvent =
    * `assistantText` is the final user-facing assistant reply only: last non-empty
    * contiguous agent_message_chunk segment after tool/status/thought separators
    * (not intermediate narrations, thoughts, or tool/status diagnostics).
-   * Local Service may auto-deliver this as the task report — never a chat-UI message.
+   * Local Service may auto-submit this as the TaskResult report — never a chat-UI message.
    */
   | {
       type: "session.prompt_complete";
@@ -134,7 +134,7 @@ export interface ResumeSessionRequest {
   env?: Record<string, string>;
   /**
    * Optional post-load bootstrap (managed ACP). History replay from session/load
-   * must never auto-deliver; only a subsequent session/prompt may.
+   * must never auto-submit; only a subsequent session/prompt may.
    */
   bootstrapPrompt?: string;
   /**

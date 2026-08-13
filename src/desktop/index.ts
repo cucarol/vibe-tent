@@ -1,4 +1,4 @@
-// Desktop shell public surface (B5).
+// Desktop shell public surface.
 
 export * from "./types.js";
 export * from "./prefs.js";

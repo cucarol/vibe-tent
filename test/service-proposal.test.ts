@@ -88,7 +88,7 @@ function rpc(
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
-async function mountBox(
+async function mountNode(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string,
   name = "proposal-target"
@@ -127,7 +127,7 @@ test("proposal RPC: submit → list pending → accept → lists + file terminal
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const { workspaceId, nodeId } = await mountBox(svc, ws);
+    const { workspaceId, nodeId } = await mountNode(svc, ws);
 
     const submitted = (await client.proposalSubmit(workspaceId, {
       nodeId,
@@ -176,7 +176,7 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const { workspaceId, nodeId } = await mountBox(svc, ws, "reject-resubmit");
+    const { workspaceId, nodeId } = await mountNode(svc, ws, "reject-resubmit");
 
     const first = (await client.proposalSubmit(workspaceId, {
       nodeId,
@@ -221,7 +221,7 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
 test("proposal RPC: resolve actor != user denied; proposal remains pending", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountBox(svc, ws, "actor-deny");
+    const { workspaceId, nodeId } = await mountNode(svc, ws, "actor-deny");
     const submitted = await rpc(svc, "proposal.submit", {
       workspaceId,
       nodeId,
@@ -256,7 +256,7 @@ test("proposal RPC: resolve actor != user denied; proposal remains pending", asy
 test("proposal RPC: exactly one proposal.updated per success; zero on failed transition", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountBox(svc, ws, "events");
+    const { workspaceId, nodeId } = await mountNode(svc, ws, "events");
     const events: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.type === "proposal.updated") {

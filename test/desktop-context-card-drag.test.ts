@@ -1,5 +1,5 @@
 /**
- * Desktop B6 — Context Card Windows MVP drag.
+ * Desktop Context Card drag contract.
  *
  * Proves:
  * - payload is stable contextCardToDragText (pointer + fixed prompt)

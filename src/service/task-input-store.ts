@@ -457,7 +457,7 @@ export class TaskInputStore {
    * Rows that must block a ready TaskResult for this task
    * (pending/processing/failed/uncertain).
    */
-  async listBlockingForDeliver(
+  async listBlockingForSubmit(
     workspaceId: string,
     taskPath: string
   ): Promise<TaskInputRecord[]> {
@@ -797,7 +797,7 @@ export class TaskInputStore {
         status: "pending",
         updatedAt: now,
       };
-      // Keep lastError for diagnostics until a successful deliver clears it.
+      // Keep lastError for diagnostics until successful injection clears it.
       const next = new Map(this.items);
       next.set(id, nextRow);
       await this.persistSnapshot(next);
@@ -809,7 +809,7 @@ export class TaskInputStore {
   /**
    * External agent formal ack: pending|failed|delivered|uncertain → consumed.
    * Scoped by workspaceId+taskPath; fail-loud on unknown id, scope mismatch, or terminal.
-   * Mid-inject processing cannot be acked (wait for deliver/fail/uncertain).
+   * Mid-inject processing cannot be acked (wait for injection/fail/uncertain).
    * Ack of uncertain is cleanup only — it does not re-inject.
    */
   async ack(

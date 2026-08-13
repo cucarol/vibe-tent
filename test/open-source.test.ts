@@ -83,6 +83,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, "cucarol");
   assert.equal(pkg.author, manifest.author);
+  assert.equal(pkg.version, "0.2.0");
   assert.equal(manifest.name, "Vibe Tent");
   assert.equal(manifest.minAppVersion, undefined, "release manifest has no Obsidian compatibility axis");
   assert.equal(manifest.isDesktopOnly, undefined, "release manifest has no Obsidian plugin flag");
@@ -136,41 +137,42 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /Role and Session are different/);
   assert.match(spec, /A Task is one work package and one review unit/);
   assert.match(spec, /A TaskResult is an executor's formal result for one Task/);
-  assert.match(spec, /Task, Session, and any Output Node/);
-  assert.match(spec, /another Task cannot acquire the same work\s+Node/);
-  assert.match(spec, /role:<roleId>/);
-  assert.match(spec, /connection:<connectionId>/);
-  assert.match(spec, /natural ACP final report defaults to a TaskResult/i);
-  assert.match(spec, /Retired public commands\s+are removed rather than kept as aliases/);
+  assert.match(spec, /review itself never mutates a Node/);
+  assert.match(spec, /same work Node cannot be occupied by another active Task/);
+  assert.match(spec, /currentResultId.*only review selector/i);
+  assert.match(spec, /Accept\/reject never bind an Output Node or edit any Node/);
+  assert.match(spec, /natural, non-empty managed ACP final report defaults to a TaskResult/i);
+  assert.match(spec, /Retired public commands and wire fields are removed rather than kept as aliases/);
   assert.match(spec, /Project instructions live in the\s+workspace `AGENTS\.md`/);
   assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
   assert.doesNotMatch(spec, /## 6\. Proposal, Report, And Fork/);
   // Two composable contracts: every Task executor uses tent-task; durable Roles add tent-role.
   assert.match(roleSkill, /name: tent-role/);
   assert.match(roleSkill, /tent role-init <role>/);
-  assert.match(roleSkill, /\.tent\/temp\/<role>\/init\.md/);
   assert.match(roleSkill, /also apply `tent-task`/i);
-  assert.match(roleSkill, /Role prompt/);
-  assert.match(roleSkill, /downstream/i);
-  assert.match(roleSkill, /immutable Connection snapshot/i);
+  assert.match(roleSkill, /Never reconstruct authority from chat memory/i);
+  assert.match(roleSkill, /Task plus TaskResult are the default durable record/i);
   assert.match(roleSkill, /task claim --work-node/i);
   assert.match(roleSkill, /task dispatch --target connection:/i);
+  assert.match(roleSkill, /Native host\s+subagents stay inside the host/i);
   assert.ok(roleSkill.length < 6000, "tent-role SKILL.md should stay compact");
 
   assert.match(taskSkill, /name: tent-task/);
   assert.match(taskSkill, /tent task request-decision/);
-  assert.match(taskSkill, /task-input/i);
-  assert.match(taskSkill, /TaskResult is never acceptance/i);
-  assert.match(taskSkill, /Work refs are occupied/i);
-  assert.match(taskSkill, /natural, non-empty managed ACP final report is deliverable by default/i);
-  assert.match(taskSkill, /preserves every non-empty final\s+report as a durable draft/i);
+  assert.match(taskSkill, /TaskInput/i);
+  assert.match(taskSkill, /Submission creates a fresh TaskResult/);
+  assert.match(taskSkill, /review-required.*never self-accepts/is);
+  assert.match(taskSkill, /auto-accept.*agent-decide/is);
+  assert.match(taskSkill, /exact work Node occupation/i);
+  assert.match(taskSkill, /natural non-empty final report content is submitted directly/i);
+  assert.match(taskSkill, /Publication failure keeps the durable report draft/i);
   assert.match(taskSkill, /outcome: blocked/);
-  assert.match(taskSkill, /outcome: needs-input/);
+  assert.match(taskSkill, /Needs-input uses a\s+DecisionRequest/i);
   assert.match(taskSkill, /Context Card/i);
   assert.match(taskSkill, /references\//);
   assert.match(
     taskSkill,
-    /Never send input to the same Task as its executor|same Task as its executor/i
+    /Never send TaskInput to the same Task you are currently executing/i
   );
   assert.match(taskSkill, /dispatcher/i);
   assert.doesNotMatch(taskSkill, /Agents never call `tent task send-input`/i);
@@ -178,24 +180,28 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.ok(taskSkill.length < 6000, "tent-task SKILL.md should stay compact");
 
   assert.match(taskPaths, /system root/i);
-  assert.match(taskPaths, /\.tent\/temp/);
+  assert.match(taskPaths, /<workspace>\/\.tent/);
   assert.match(taskPaths, /workNodeIds|Context Card/i);
   assert.doesNotMatch(taskPaths, /honor contract/i);
-  assert.match(taskCli, new RegExp(["tent task", "deliver"].join(" ")));
+  assert.match(taskCli, /tent task submit <taskPath> --report/);
   assert.match(taskCli, /tent task request-decision/);
+  assert.match(taskCli, /--question <text>\|-/);
+  assert.match(taskCli, /--option <id> \| --text <text>\|- \| --deny/);
+  assert.doesNotMatch(taskCli, /request-decision.*--prompt|decision respond.*--response/);
   assert.match(taskCli, /tent task send-input/);
-  assert.match(taskCli, /tent task task-input list/);
-  assert.match(taskCli, /tent task task-input ack/);
+  assert.match(taskCli, /tent task task-input list \(<taskPath> \| --task <taskPath>\)/);
+  assert.match(taskCli, /tent task task-input get <inputId> --task <taskPath>/);
+  assert.match(taskCli, /tent task task-input ack <inputId> --task <taskPath>/);
   assert.match(taskCli, /self-`send-input`|same.*task you are currently executing/i);
   assert.match(taskCli, /dispatcher/i);
   assert.match(taskCli, /--target role:<roleId>\|connection:<connectionId>/);
-  assert.match(taskCli, /preserves every non-empty final report as a durable draft/i);
-  assert.match(taskCli, /publishes natural report content as TaskResult/i);
-  assert.match(taskCli, /schedules exactly one durable report-draft retry/i);
+  assert.match(taskCli, /Managed ACP preserves one durable report draft/i);
+  assert.match(taskCli, /submits natural non-empty\s+final prose/i);
+  assert.match(taskCli, /TaskInput terminal\/ack may schedule one draft retry/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
   assert.match(taskSession, /Temporary managed ACP Session boundaries/i);
   assert.match(taskSession, /immutable Connection snapshot/i);
-  assert.match(taskSession, /waiting\(session_unavailable\)/i);
+  assert.match(taskSession, /existing waiting\/status detail/i);
   assert.match(taskSession, /Context Card/i);
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);
 
@@ -224,6 +230,12 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     /task\.askUser/i,
     /Settings route/i,
     /route:<routeId>/i,
+    /\bDelivery\b/i,
+    /\bdeliveryId\b/i,
+    /task\.deliver/i,
+    /\bparentActor\b/i,
+    /\bactiveDeliveryId\b/i,
+    /\blastReturn\b/i,
   ]) {
     assert.doesNotMatch(canonicalPublicContracts, retired);
   }
@@ -231,20 +243,19 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(taskSkill, /Lead the terminal report with exactly one/i);
 });
 
-test("docs/skill drift: in-workspace Node/Task/TaskResult model and retired type axes", async () => {
+test("docs/skill drift: Protocol 9 Node/Task/TaskResult model and optional type", async () => {
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const taskPaths = await fs.readFile(
     path.join(repoRoot, "skills", "tent-task", "references", "paths.md"),
     "utf8"
   );
 
-  // SPEC: in-workspace root, fixed Node semantics, WorkspaceLane; no live workspacePointer axis.
-  assert.match(spec, /in-workspace/i);
+  // SPEC: current protocol, optional Node type, exact Result selector, WorkspaceLane.
+  assert.match(spec, /Protocol 9/);
   assert.match(spec, /WorkspaceLane/);
-  assert.match(spec, /goal \| prompt \| output/);
-  assert.match(spec, /Task, Session, and TaskResult/);
-  assert.match(spec, /coordination flags are presentation or retired concerns/);
-  assert.match(spec, /does not publish a\s+permanent migration API/i);
+  assert.match(spec, /one optional arbitrary `type` marker/);
+  assert.match(spec, /Node, Role, Task, Session, and Agent Connection/);
+  assert.match(spec, /currentResultId.*only review selector/i);
   assert.doesNotMatch(
     spec,
     /Base type definitions may set optional `workspacePointer: true`/
@@ -255,8 +266,8 @@ test("docs/skill drift: in-workspace Node/Task/TaskResult model and retired type
 
   // tent-task keeps the automatic lane naming contract in its path reference.
   assert.match(taskPaths, /WorkspaceLane/);
-  assert.match(taskPaths, /tent-role\/<role>/);
-  assert.match(taskPaths, /tent-task\/<taskId>/);
+  assert.match(taskPaths, /TaskResultRecord/);
+  assert.match(taskPaths, /Work only in that exact lane/);
   assert.doesNotMatch(
     taskPaths,
     /types\.json` 开启了 `workspacePointer`/

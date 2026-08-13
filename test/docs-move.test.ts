@@ -311,7 +311,7 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
       "    nodes:",
       `      - { id: ${child} }`,
       "    tasks: []",
-      "    deliveries: []",
+      "    results: []",
       "    git: []",
       "  requester: { kind: user, id: user }",
       "  assignee: { kind: role, id: executor }",

@@ -1,5 +1,5 @@
 // ContextRef + ContextCard — ephemeral transport payloads (not durable entities).
-// Desktop drag (architecture B6) uses these shapes; core only builds the stable text.
+// Desktop drag uses these shapes; Core only builds the stable text.
 
 export type ContextRefKind =
   | "node"

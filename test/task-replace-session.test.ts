@@ -20,7 +20,7 @@ import {
   isManagedSessionInFlightForTests,
   mapRuntimeEventToService,
   REPLACE_SESSION_RESTORE_REASON,
-  resetManagedAutoDeliverDedupForTests,
+  resetManagedAutoSubmitFlightsForTests,
   resetManagedTaskInputQueueForTests,
   setBeforeReplaceTaskInputRollbackForTests,
   SESSION_UNAVAILABLE_WAIT_CODE,
@@ -381,7 +381,7 @@ test("replaceSession accepts an immediate prompt_complete progression on the pre
 });
 
 test("replaceSession: success preserves Task + providerContextRestored=false + audit", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -440,7 +440,7 @@ test("replaceSession: success preserves Task + providerContextRestored=false + a
 });
 
 test("replaceSession: eligibility - isTurnActive, waitCode, force refused", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   {
     const ws = await makeWorkspace();
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-busy-"));
@@ -500,7 +500,7 @@ test("replaceSession: eligibility - isTurnActive, waitCode, force refused", asyn
 });
 
 test("replaceSession: session_unavailable + late events + atomic rebind; launch/persist failures park", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
@@ -701,7 +701,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
 });
 
 test("replaceSession: startSession never silent-replaces; shared flight; managed-input race", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   resetManagedTaskInputQueueForTests();
   {
     const ws = await makeWorkspace();
@@ -954,7 +954,7 @@ test("replaceSession does not join an older same-connection flight after exact r
  * refuses authoritative accepted state. Unrelated Task (other role) replace stays concurrent.
  */
 test("replaceSession: waits on same-Task accept Git then refuses accepted; unrelated concurrent", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   // Two roles so each Task can hold its own managed session (role occupancy).
   const ws = await makeWorkspace("replace-life-flight");
   await git(ws, "init", "-q", "-b", "main");

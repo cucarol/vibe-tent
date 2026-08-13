@@ -47,7 +47,7 @@ test("task input store: result-blocking includes uncertain but retryability does
   assert.equal(isTaskInputTaskResultBlockingStatus("cancelled"), false);
 });
 
-test("task input store: listBlockingForDeliver includes uncertain and excludes terminal", async () => {
+test("task input store: listBlockingForSubmit includes uncertain and excludes terminal", async () => {
   const dataDir = await tempDir("tent-ti-block-");
   const store = new TaskInputStore(dataDir);
   const workspaceId = "ws-block";
@@ -131,7 +131,7 @@ test("task input store: listBlockingForDeliver includes uncertain and excludes t
   const cancelled = await store.get("ti-cancel-target", workspaceId, taskPath);
   assert.equal(cancelled?.status, "cancelled");
 
-  const blockers = await store.listBlockingForDeliver(workspaceId, taskPath);
+  const blockers = await store.listBlockingForSubmit(workspaceId, taskPath);
   const ids = blockers.map((b) => b.id).sort();
   assert.deepEqual(
     ids,

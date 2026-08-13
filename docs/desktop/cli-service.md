@@ -1,147 +1,45 @@
-# CLI And Local Service Contract
+# CLI and Local Service contract
 
-The `tent` CLI is a thin Local Service client. Run it from the workspace root
-that contains `.tent/`. CLI exit never stops the Service, and CLI commands never
-fall back to direct operational-file writes.
+The CLI attaches to Local Service, verifies Protocol 9, mounts the workspace,
+then calls typed RPC. It never edits `.tent/temp` directly.
 
-## Attach and protocol
-
-The CLI discovers the machine-local endpoint and token, performs the
-`protocolVersion=8` handshake, mounts the requested workspace, then calls the
-typed RPC. A missing, legacy, or incompatible endpoint fails loud; the CLI does
-not bypass Service or call an ACP adapter directly.
-
-`--workspace <path>` selects a workspace explicitly. Without it, the CLI walks
-from the current directory to the nearest `.tent/index.md` marker.
-
-## Public command groups
+## Task lifecycle
 
 ```text
-tent node list|get|create|write|move|archive|restore|...
-tent role list|show|config
-tent session enter|status|leave
-tent task list|get|dispatch|claim|deliver|accept|reject|interrupt|cancel|...
-tent status|tree|tags|find
+tent task list
+tent task get <taskPath>
+tent task claim <taskPath>
+tent task claim --work-node <nodeId> ... --prompt <text>|-
+tent task dispatch --target role:<roleId>|connection:<connectionId> ...
+tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review]
+tent task accept <resultId> --actor <user|role>
+tent task reject <resultId> --actor <user|role> [--note ...] [--resume|--no-resume]
+tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label]
+tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny)
 ```
 
-The public collaboration nouns are Node, Role, Session, Task, and Delivery.
-Machine Agent Connections are launch configuration, not collaboration objects.
+`task.submit` first creates a ready TaskResult; the frozen accept mode determines
+whether review follows automatically. A zero-commit TaskResult is valid.
+Commit-bearing results require canonical full object ids
+from the exact recorded WorkspaceLane. `TARGET_MOVED` requires a new execution
+decision; clients never rewrite immutable result payload.
 
-## Direct Role ownership and downstream dispatch
+`review-required` waits for requester review; `auto-accept` runs exact automatic
+accept/integration; `agent-decide` requires `--decision integrate|request-review`.
+Review targets the exact positional `resultId`. Service resolves only the Task's
+`currentResultId`, validates requester authority, and applies the existing Git
+and review lifecycle. A review-required executor never accepts its own result.
 
-A durable Role creates and immediately claims its own Task directly:
+## Role and Connection targets
 
-```text
-tent task claim \
-  --work-node <nodeId> [--work-node <nodeId> ...] \
-  [--context-node <nodeId> ...] \
-  --prompt <text>|-
-```
+`role:<roleId>` creates queued work for that durable Role. A Role requester is
+valid only from its exact authenticated Role Session. `connection:<connectionId>`
+creates a managed Session from the immutable Connection snapshot. Agent Connection
+is launch configuration, not Task identity or authorization.
 
-This form has no `--target`; it is execution ownership, not delegation. An
-optional `--from-task <taskPath>` names the active persisted responsibility to
-inherit. Otherwise Tent uses the exact open Role Session when available and
-keeps its persisted chain, including a terminal last Task.
+## Inputs and host actions
 
-`task dispatch` is only for assigning work to another durable Role or a machine
-Agent Connection:
-
-```text
-tent task dispatch \
-  --target role:<roleId>|connection:<connectionId> \
-  --work-node <nodeId> [--work-node <nodeId> ...] \
-  [--context-node <nodeId> ...] \
-  --prompt <text>|-
-```
-
-- `--work-node` is required and repeatable; `--context-node` is shared read-only
-  context. Context Card v2 keeps these sets distinct.
-- `role:*` creates a queued durable Role handoff and never starts managed ACP at
-  dispatch.
-- `connection:*` snapshots machine Settings into the exact temporary managed
-  Session and binds the formal Task to that `sessionId`.
-- Tent persists one `parentActor`; the executor cannot select or elevate its
-  derived reviewer authority.
-- prompt is explicit through `--prompt`; there is no positional dispatch form.
-
-Connection dispatch does not register a worker, mutate a Role, or create a
-reusable bookmark. Missing Connection configuration fails before Task mutation.
-
-## Role and managed flows
-
-### Durable Role handoff
-
-```text
-task dispatch --target role:planning ... -> queued
-tent task claim <taskPath>                -> running
-tent task deliver <taskPath> --summary ...
-reviewer accept | reject
-```
-
-The Role claim captures its execution lane base once. A pure Tent Task may have
-no Git lane and may deliver with zero commits.
-
-### Temporary managed ACP
-
-```text
-task dispatch --target connection:grok-core ...
-  -> Service creates and claims Task
-  -> snapshots Agent Connection into exact Session
-  -> starts/binds managed Session
-  -> preserves every non-empty final report before outcome handling
-  -> publishes Delivery after settle gates
-```
-
-The managed executor does not run `claim` or `deliver` itself. A valid optional
-`blocked` or `needs-input` control outcome parks; ordinary final prose defaults
-to Delivery.
-
-### Durable Role executor
-
-A Role claims its own queued work and explicitly calls `tent task deliver`.
-Host integration may supply the verified Role execution context, but it cannot
-deliver, accept, or rewrite Task responsibility on the Role's behalf.
-
-## Interaction commands
-
-```text
-tent task send-input <taskPath> ...
-tent task task-input list|get|ack ...
-tent task request-decision <taskPath> --question <text>|- [--options id=label,...]
-tent task decision list|get|respond|escalate ...
-```
-
-TaskInput is exact-Task scoped. `uncertain` input is visible attention state,
-blocks Delivery, and is never automatically reinjected. Decision response
-authority is derived from authenticated transport rather than caller-provided text.
-
-## Review and Git
-
-`task deliver` creates a Delivery; it never accepts it. The reviewer authority
-derived from persisted `parentActor` acts on the exact ready Delivery shown for the Task:
-
-```text
-tent task accept <deliveryId> --actor <user|role> ...
-tent task reject <deliveryId> --actor <user|role> [--note ...] [--resume|--no-resume] ...
-```
-
-The positional Delivery id is required; Service resolves the exact canonical
-Task and never accepts a Task path/id on the review wire. This prevents a stale
-review card from accepting or rejecting a newer Delivery. `DELIVERY_CHANGED` requires the
-client to refresh before retrying. Commit-bearing Delivery validates every
-reported SHA against the Task lane and snapshots the target head.
-`TARGET_MOVED` requires reject/resume and a new Delivery; clients never rewrite
-the snapshot.
-
-The CLI never pushes a remote, deletes a worktree, prunes Git registrations, or
-edits Task envelopes to simulate lifecycle.
-
-## Errors and output
-
-Human output is concise; `--json` returns the typed Service projection. A
-non-zero exit is required for attach failure, invalid grammar, authority
-mismatch, stale etag/path, Node occupation conflict, Task lifecycle conflict,
-provider failure, dirty lane, or Git integration conflict.
-
-Tests and automation must check process exit code and the authoritative runner
-summary. Truncated, tailed, or grepped output is not success evidence.
+TaskInput stays exact-Task scoped and at-most-once. DecisionRequest is the only
+needs-input authority. `session status` inspects the exact binding and incomplete
+Tasks. `session leave` ends the exact Tent host binding, reports incomplete Tasks,
+and never submits or reviews a TaskResult.

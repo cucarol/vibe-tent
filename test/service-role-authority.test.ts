@@ -1,5 +1,5 @@
 /**
- * Role authority: registry.role.create/update/delete + Settings route launch.
+ * Role authority: registry.role.create/update/delete + Agent Connection launch.
  * Layer: CLIENT_METHODS + user-only MutationBus + registry.roles.updated + route availability.
  */
 import assert from "node:assert/strict";

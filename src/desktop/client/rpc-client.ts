@@ -1,5 +1,5 @@
 // Typed JSON-RPC client for Local Tent Service (loopback HTTP).
-// B5: endpoint token required on /rpc and /events; /health is liveness-only.
+// Endpoint token is required on /rpc and /events; /health is liveness-only.
 
 import type { EventEnvelope } from "../../service/types.js";
 import { AUTH_TOKEN_HEADER } from "../../service/auth.js";

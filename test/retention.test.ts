@@ -112,7 +112,7 @@ test("normalizeKeepTerminalTasksDays: default 30, 0 allowed, rejects invalid", (
   );
 });
 
-test("preview: never selects active tasks or ready deliveries", async () => {
+test("preview: never selects active tasks or ready results", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
 
@@ -274,7 +274,7 @@ test("preview/purge: keepTerminalTasksDays=0 makes terminal immediately eligible
   assert.ok(purged.deletedCount >= 1);
 });
 
-test("purge: deletes task + deliveries as a group; leaves active work", async () => {
+test("purge: deletes task + results as a group; leaves active work", async () => {
   const dir = await makeTent();
   const fs = new NodeFs(dir);
 
@@ -317,7 +317,7 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   assert.equal((await loadTaskRecord(fs, activePath)).state, "running");
 });
 
-test("purge: task removal failure preserves all related deliveries", async () => {
+test("purge: task removal failure preserves all related results", async () => {
   const dir = await makeTent();
   const seedFs = new NodeFs(dir);
   const task = await writeTerminalTask(seedFs, { state: "accepted", id: "tk-failrm1" });

@@ -85,7 +85,7 @@ async function waitForProcessExit(pid: number, timeoutMs = 5_000): Promise<void>
 }
 
 async function makeWorkspace(): Promise<string> {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "desk",
@@ -126,7 +126,7 @@ test("ContextCardStore + drag text/plain payload is stable pointer prompt", () =
 
 test("ServiceDocsClient over real Local Service: list/open/write/search", async () => {
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-data-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-data-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
@@ -190,7 +190,7 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
 test("DesktopShellModel mount makes the mounted workspace authoritative foreground", async () => {
   const workspaceA = await makeWorkspace();
   const workspaceB = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-switch-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-switch-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
@@ -212,7 +212,7 @@ test("DesktopShellModel mount makes the mounted workspace authoritative foregrou
 });
 
 test("tryAttach finds healthy endpoint; attach leaves service alive after client drop", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-attach-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-attach-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     const attached = await tryAttach(dataDir);
@@ -234,7 +234,7 @@ test("tryAttach finds healthy endpoint; attach leaves service alive after client
 
 test("desktop attach propagates endpoint token for RPC/SSE; health stays open", async () => {
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-token-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-token-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     // Discovery probe: /health without token
@@ -287,7 +287,7 @@ test("desktop attach propagates endpoint token for RPC/SSE; health stays open", 
 });
 
 test("tryAttach rejects endpoint without token even if health is open", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-notoken-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-notoken-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     // Corrupt endpoint: strip token while service still healthy
@@ -318,7 +318,7 @@ test("tryAttach rejects endpoint without token even if health is open", async ()
 });
 
 test("attachOrStartService can bootstrap via spawn of service entry", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-boot-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-boot-"));
   const serviceEntry = path.resolve("service.mjs");
   let childPid: number | undefined;
   try {
@@ -363,7 +363,7 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
 });
 
 test("desktop concurrent bootstraps attach to the same Local Service", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-boot-race-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-boot-race-"));
   const serviceEntry = path.resolve("service.mjs");
   try {
     const [first, second] = await Promise.all([
@@ -434,7 +434,7 @@ test("packaged service spawn forces Electron into Node mode", () => {
 });
 
 test("desktop prefs remember workspaces", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-prefs-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-attach-prefs-"));
   const prefs = rememberWorkspace(await loadDesktopPrefs(dataDir), "C:\\ws\\a");
   const next = rememberWorkspace(prefs, "C:\\ws\\b");
   await saveDesktopPrefs(next, dataDir);

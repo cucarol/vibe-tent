@@ -236,15 +236,15 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
   );
   const task = await loadTaskRecord(e.fs, result.taskPath);
   assert.equal(task.state, "submitted");
-  const deliveries = await loadTaskResults(e.fs);
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0]!.status, "ready");
+  const results = await loadTaskResults(e.fs);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.status, "ready");
   const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
 });
 
-test("lifecycle: accept integrate runs outside mutation.lock; failure keeps delivered", async () => {
+test("lifecycle: accept integrate runs outside mutation.lock; failure keeps submitted", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);

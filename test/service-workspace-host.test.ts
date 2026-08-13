@@ -84,7 +84,7 @@ function createControllableWatchFn(): {
 }
 
 async function makeWorkspace(name = "demo"): Promise<string> {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-ws-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
@@ -101,7 +101,7 @@ async function makeWorkspace(name = "demo"): Promise<string> {
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>
 ): Promise<T> {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-data-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
@@ -183,7 +183,7 @@ test("Local Service accepts literal loopback only and formats IPv6 endpoints", a
   assert.equal(isLoopbackServiceHost("192.168.1.10"), false);
   assert.equal(serviceBaseUrl("::1", 7788), "http://[::1]:7788");
 
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-non-loopback-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-non-loopback-"));
   await assert.rejects(
     () => startLocalTentService({ dataDir, host: "0.0.0.0" }),
     /literal loopback address/
@@ -291,7 +291,7 @@ test("WorkspaceHost mount multi-workspace + setForeground emits workspace.switch
 
 test("WorkspaceHost: junction/symlink alias remount reuses workspaceId, list, and watcher", async (t) => {
   const realWs = await makeWorkspace("alias-target");
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-alias-"));
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-alias-"));
   const aliasPath = path.join(parent, "alias-ws");
 
   try {
@@ -338,7 +338,7 @@ test("WorkspaceHost: junction/symlink alias remount reuses workspaceId, list, an
 test("WorkspaceHost: same basename + long shared path prefix still gets distinct workspaceIds", async () => {
   // Two real workspaces: identical leaf name, long common prefix, different mid segment.
   // Old base64url-prefix ids collided; sha256 digest of full identity must not.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-id-prefix-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-id-prefix-"));
   const shared = path.join(root, "very", "long", "shared", "prefix", "segment");
   const leaf = "same-leaf-name";
   const pathA = path.join(shared, "branch-alpha-side", leaf);
@@ -387,10 +387,10 @@ test("WorkspaceHost: missing path and missing Tent errors stay clear", async () 
     watchFn: createStubWatchFn(),
   });
   try {
-    const missing = path.join(os.tmpdir(), `tent-b2-missing-${Date.now()}-${Math.random()}`);
+    const missing = path.join(os.tmpdir(), `tent-workspace-missing-${Date.now()}-${Math.random()}`);
     await assert.rejects(() => host.mount(missing), /Workspace path does not exist/);
 
-    const empty = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-empty-"));
+    const empty = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-empty-"));
     await assert.rejects(() => host.mount(empty), /No in-workspace Tent/);
   } finally {
     await host.dispose();
@@ -411,14 +411,14 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     assert.ok(!defaulted.error, JSON.stringify(defaulted.error));
     assert.equal((defaulted.result as { type?: string }).type, "prompt");
 
-    // Explicit type: note is not a permanent alias — createNode rejects unknown types
-    const badNote = await rpc(svc, "docs.createNote", {
+    // Node type is one optional arbitrary marker; unknown values stay exact.
+    const customType = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "legacy-note",
       type: "note",
     });
-    assert.ok(badNote.error);
-    assert.match(badNote.error!.message, /Invalid node type/i);
+    assert.ok(!customType.error, JSON.stringify(customType.error));
+    assert.equal((customType.result as { type?: string }).type, "note");
 
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
@@ -745,7 +745,7 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
       workspaceId,
       workNodeIds: [nodeId],
       contextNodeIds: [],
-      roleId: "rl-executor",
+      assigneeRoleId: "rl-executor",
       prompt: "implement the thing",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -769,17 +769,22 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     const node = (got.result as {
       node: { status?: string; assignee?: string; invalid?: boolean; archived?: boolean };
     }).node;
-    // NodeProjection never exposes collaboration state; node.collaboration is authoritative.
+    // NodeProjection never exposes collaboration state; workspace.collaboration is authoritative.
     assert.equal("status" in node ? node.status : undefined, undefined);
     assert.equal("assignee" in node ? node.assignee : undefined, undefined);
     assert.equal(node.invalid, false);
     assert.equal(node.archived, false);
-    const collaboration = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
+    const collaboration = await rpc(svc, "workspace.collaboration", { workspaceId, nodeId });
     assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
     const projection = collaboration.result as {
-      activeTask: null | { task: { assigneeRoleId?: string; executionSessionId?: string } };
+      selectedNode: null | {
+        activeTask: null | {
+          execution: null | { kind: string; roleId?: string };
+        };
+      };
     };
-    assert.equal(projection.activeTask?.task.assigneeRoleId, "rl-executor");
+    assert.equal(projection.selectedNode?.activeTask?.execution?.kind, "role");
+    assert.equal(projection.selectedNode?.activeTask?.execution?.roleId, "rl-executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
@@ -1153,10 +1158,10 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const dispatchedResult = dispatched.result as {
       taskPath: string;
-      sessionId: string;
+      executionSessionId: string;
     };
     const taskPath = dispatchedResult.taskPath;
-    const sessionId = dispatchedResult.sessionId;
+    const sessionId = dispatchedResult.executionSessionId;
     const sessionRecord = await svc.runtime.registry.read(sessionId);
     assert.equal(sessionRecord?.connectionId, "fake-default");
     await svc.runtime.stopSession(sessionId, "interrupt");
@@ -1254,7 +1259,7 @@ test("service continues after client disconnect (process independent of UI)", as
 });
 
 test("service stop terminates active SSE and releases discovery ownership", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-sse-stop-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-sse-stop-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   const baselineListeners = svc.events.listenerCount();
 
@@ -1311,7 +1316,7 @@ test("service stop terminates active SSE and releases discovery ownership", asyn
 });
 
 test("service stop drains an accepted finite RPC before releasing its lease", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-rpc-drain-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-rpc-drain-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   const payload = JSON.stringify({
     jsonrpc: "2.0",

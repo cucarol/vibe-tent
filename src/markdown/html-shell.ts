@@ -19,7 +19,7 @@ export function renderWorkspacePage(controller: WorkspaceController): string {
 <body>
   <header class="topbar">
     <strong>Tent Markdown Workspace</strong>
-    <span class="muted">B3 node tree · docs.* client · no workspace source tree</span>
+    <span class="muted">Node tree · docs.* client · no workspace source tree</span>
     ${snap.statusMessage ? `<span class="status">${escapeHtml(snap.statusMessage)}</span>` : ""}
   </header>
   <div class="layout">

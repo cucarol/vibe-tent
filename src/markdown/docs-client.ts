@@ -1,5 +1,5 @@
 // DocsClient — Query/Command surface for Markdown workspace (node-model §8).
-// Transport (in-process core vs B2 JSON-RPC) is an implementation detail.
+// Transport (in-process Core vs Local Service JSON-RPC) is an implementation detail.
 
 import type {
   BacklinkHit,

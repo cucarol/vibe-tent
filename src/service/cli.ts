@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     process.stdout.write(
       [
-        "tent-service — Local Tent Service (B5)",
+        "tent-service — Local Tent Service",
         "",
         "Usage:",
         "  tent-service start [--port <n>] [--data-dir <path>] [--mount <workspace>]",

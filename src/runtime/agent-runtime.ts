@@ -1,4 +1,4 @@
-// AgentRuntimePort implementation — service-internal only (B0 §4).
+// AgentRuntimePort implementation — service-internal only.
 // Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no Task/Node writes.
 
 import * as path from "node:path";
@@ -1213,7 +1213,7 @@ export class AgentRuntime implements AgentRuntimePort {
     }
 
     // Record intentional stop *before* killing so a racing session.exited
-    // projection (seal-before-deliver) does not task.fail a still-running task.
+    // projection (seal-before-submit) does not task.fail a still-running task.
     if (SessionRegistry.isNonTerminal(record.state) || record.state === "starting") {
       await this.registry.update(sessionId, { stopReason: reason });
     }

@@ -1,4 +1,4 @@
 interface:
   display_name: "Tent Role"
-  short_description: "Maintain a durable Role and coordinate Tent work"
+  short_description: "Maintain a durable Role and review TaskResults"
   default_prompt: "Use $tent-role to resume this durable Tent Role. Also apply $tent-task when executing a Task."

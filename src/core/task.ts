@@ -631,7 +631,7 @@ function formatExternalPathBlock(task: TaskRecord, roots: TaskPromptRoots): stri
 }
 
 /**
- * External / manual wake relay: task is still queued — agent must claim + deliver via CLI.
+ * External / manual wake relay: Task is still queued — executor must claim + submit via CLI.
  * Used for clipboard relay and dispatch.relayPrompt, NOT for service startSession bootstrap.
  */
 export function relayPromptForTask(

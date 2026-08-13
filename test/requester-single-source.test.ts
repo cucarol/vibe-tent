@@ -25,8 +25,7 @@ test("requester is the sole persisted and public Task review-authority field", a
 
   assert.doesNotMatch(task, /reviewer\?:\s*TaskActorRef/);
   assert.doesNotMatch(task, /reviewer:\s*serializeTaskActorRef/);
-  assert.match(task, /hasOwnProperty\.call\(data, "reviewer"\)/);
-  assert.match(task, /hasOwnProperty\.call\(data, "dispatchedBy"\)/);
+  assert.match(task, /for \(const field of \["reviewer", "dispatchedBy"\] as const\)/);
   assert.doesNotMatch(model, /resolveParentReviewerPair|assertParentReviewerEqual/);
   assert.doesNotMatch(model, /reviewer\?:\s*TaskActorRef/);
   assert.doesNotMatch(serviceTypes, /^\s*reviewer\?:\s*TaskActorRefWire/m);
@@ -55,7 +54,7 @@ test("requester is the sole persisted and public Task review-authority field", a
     /callerKind/
   );
   assert.doesNotMatch(handlers, /reviewerAuthority:/);
-  assert.match(handlers, /TASK_PARENT_ACTOR_MISSING/);
+  assert.match(handlers, /TASK_REQUESTER_MISSING/);
 });
 
 test("canonical docs and Skills describe requester as the sole reviewer authority", async () => {
@@ -74,5 +73,5 @@ test("canonical docs and Skills describe requester as the sole reviewer authorit
     assert.doesNotMatch(text, /persisted parent\/reviewer/i);
     assert.doesNotMatch(text, /exact persisted reviewer/i);
   }
-  assert.doesNotMatch(await source("test/reviewer-parent-actor-single-source.test.ts"), /["']Skills\//);
+  assert.doesNotMatch(await source("test/requester-single-source.test.ts"), /["']Skills\//);
 });

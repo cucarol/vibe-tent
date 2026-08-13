@@ -1,7 +1,7 @@
-// Tent 系统目录路径合同（B1）：协作事实落在 workspace 内固定名 `.tent/`。
+// Tent 系统目录路径合同：协作事实落在 workspace 内固定名 `.tent/`。
 // FsAdapter 的根是 tent system root（即 `<workspace>/.tent`），其内路径不再嵌套一层 `.tent/`。
 
-/** 工作区内固定的 tent 系统目录名；合同冻结，B1 不重开命名。 */
+/** 工作区内固定的 Tent 系统目录名。 */
 export const TENT_SYSTEM_DIR = ".tent";
 
 /** 相对 system root 的注册表与锁（adapter 已指向 system root 时无前缀）。 */

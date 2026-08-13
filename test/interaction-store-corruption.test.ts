@@ -229,7 +229,7 @@ for (const fixture of cases) {
 
       if (fixture.kind === "task-input") {
         firstError = await captureError(() =>
-          activeService.ctx.taskInputs.listBlockingForDeliver(workspaceId, taskPath)
+          activeService.ctx.taskInputs.listBlockingForSubmit(workspaceId, taskPath)
         );
         const mutationError = await captureError(() =>
           activeService.ctx.taskInputs.add(pendingInput(workspaceId, taskPath))
@@ -277,7 +277,7 @@ for (const fixture of cases) {
           },
         });
         const readError = await captureError(() =>
-          restarted.listBlockingForDeliver(workspaceId, taskPath)
+          restarted.listBlockingForSubmit(workspaceId, taskPath)
         );
         assert.equal(readError.code, fixture.code);
         assert.equal(readError.message, firstError?.message);
@@ -333,7 +333,7 @@ for (const fixture of [
       if (fixture.kind === "task-input") {
         const store = new TaskInputStore(dataDir);
         const first = await captureError(() =>
-          store.listBlockingForDeliver("ws-retry", "temp/retry.md")
+          store.listBlockingForSubmit("ws-retry", "temp/retry.md")
         );
         assert.doesNotMatch(first.message, /TASK_INPUT_STORE_CORRUPT/);
         await assert.rejects(fs.stat(latch), { code: "ENOENT" });
@@ -342,7 +342,7 @@ for (const fixture of [
         await fs.rmdir(primary);
         await fs.writeFile(primary, JSON.stringify({ items: [] }) + "\n", "utf8");
         assert.deepEqual(
-          await store.listBlockingForDeliver("ws-retry", "temp/retry.md"),
+          await store.listBlockingForSubmit("ws-retry", "temp/retry.md"),
           []
         );
         await store.shutdown();

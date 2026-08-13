@@ -1,4 +1,4 @@
-// CLI-side Local Service attach / bootstrap (architecture §1 / §8 B4).
+// CLI-side Local Service attach / bootstrap.
 // No Electron dependency. Token stays in machine-local endpoint generations; never workspace.
 
 import * as fs from "node:fs/promises";

@@ -307,7 +307,7 @@ async function dispatchUnlocked(
 // ---- task ack / cancel ----
 
 export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
-  // Alias of task.claim (B0 / B4 lifecycle).
+  // Alias of task.claim lifecycle.
   await taskClaim(env, taskPath);
 }
 
@@ -583,13 +583,13 @@ async function patchNodeUnlocked(
   if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
-  const boxFile = nodeNotePath(nodePath);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
+  const nodeFile = nodeNotePath(nodePath);
+  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(nodeFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) delete data[k];
     else data[k] = v;
   }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
+  await env.fs.writeFile(nodeFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? (patch.tags as string[]) : [];
     await syncTagRegistryAfterNodeTagsChangeUnlocked(env.fs, previousTags, nextTags);
@@ -617,9 +617,9 @@ async function patchBodyUnlocked(
   if (!node) throw new Error(`Node not found: ${nodePath}.`);
   if (!isUsableNode(node)) throw new Error("Invalid or archived nodes cannot have their body edited.");
   assertContentMutable(node, "body-edited");
-  const boxFile = nodeNotePath(nodePath);
-  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
+  const nodeFile = nodeNotePath(nodePath);
+  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(nodeFile));
+  await env.fs.writeFile(nodeFile, serializeFrontmatter(data, newBody, keyOrder));
 }
 
 /**
@@ -725,13 +725,13 @@ export async function deleteArchivedNode(env: OpsEnv, nodeId: string): Promise<v
 // ---- 内部工具 ----
 
 async function patchFrontmatter(fs: FsAdapter, node: Node, patch: Record<string, unknown>): Promise<void> {
-  const boxFile = nodeNotePath(node.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(boxFile));
+  const nodeFile = nodeNotePath(node.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(nodeFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) delete data[k];
     else data[k] = v;
   }
-  await fs.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
+  await fs.writeFile(nodeFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
 
 async function ensureDir(fs: FsAdapter, path: string): Promise<void> {

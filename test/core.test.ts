@@ -193,11 +193,11 @@ test("active Task occupation projects only its exact Node refs", async () => {
     requester: { kind: "user", id: "user" },
   });
   const tasks = await loadTaskRecords(fsa);
-  const anyBox = findAnyActiveTask(tasks);
-  assert.ok(anyBox);
-  assert.equal(anyBox!.assigneeRoleId, "rl-reviewer");
-  assert.equal(anyBox!.executionSessionId, undefined);
-  assert.ok(anyBox!.contextCard?.workNodeIds.includes("cx-p1"));
+  const anyTask = findAnyActiveTask(tasks);
+  assert.ok(anyTask);
+  assert.equal(anyTask!.assigneeRoleId, "rl-reviewer");
+  assert.equal(anyTask!.executionSessionId, undefined);
+  assert.ok(anyTask!.contextCard?.workNodeIds.includes("cx-p1"));
   assert.equal(occupiedNodesFromTasks(tent, tasks).map((node) => node.id).join(","), "cx-p1");
 });
 

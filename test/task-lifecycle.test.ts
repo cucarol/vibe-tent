@@ -64,7 +64,7 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
   });
 }
 
-async function dispatchOnFreeBox(dir: string, role = "executor") {
+async function dispatchOnFreeNode(dir: string, role = "executor") {
   const e = env(dir);
   // cx-p1 is free (no owner) in makeTent fixture
   const result = await dispatchToRole(e as any, "cx-p1", role, {
@@ -76,7 +76,7 @@ async function dispatchOnFreeBox(dir: string, role = "executor") {
 
 test("lifecycle: first Role claim atomically binds the exact caller Session", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath, {
     claimWrite: { executionSessionId: "ss-caller" },
   });
@@ -112,9 +112,9 @@ test("lifecycle: queued Task cannot replace an already-bound Session during clai
   assert.equal(task.executionSessionId, "ss-bounda");
 });
 
-test("lifecycle: dispatch → claim → wait → resume → deliver → accept", async () => {
+test("lifecycle: dispatch → claim → wait → resume → submit → accept", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   let task = await loadTaskRecord(e.fs, result.taskPath);
   assert.equal(task.state, "queued");
   assert.ok(task.id?.startsWith("tk-"));
@@ -168,7 +168,7 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
 test("task.wait formal return requires its exact authoritative Session binding", async () => {
   for (const binding of [undefined, "ss-current"] as const) {
     const dir = await makeTent();
-    const { e, result } = await dispatchOnFreeBox(dir);
+    const { e, result } = await dispatchOnFreeNode(dir);
     await taskClaim(e as any, result.taskPath, binding
       ? { claimWrite: { executionSessionId: binding } }
       : undefined);
@@ -189,7 +189,7 @@ test("task.wait formal return requires its exact authoritative Session binding",
   }
 
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath, { claimWrite: { executionSessionId: "ss-current" } });
   const waited = await taskWait(e as any, result.taskPath, {
     reason: "external",
@@ -206,7 +206,7 @@ test("task.wait formal return requires its exact authoritative Session binding",
 
 test("lifecycle: finalize rejects a ready TaskResult commit-list drift without mutation", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "ready",
@@ -241,7 +241,7 @@ test("lifecycle: finalize rejects a ready TaskResult commit-list drift without m
 
 test("lifecycle: zero-commit ready TaskResult remains legal to accept", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "non-code result",
@@ -259,7 +259,7 @@ test("lifecycle: zero-commit ready TaskResult remains legal to accept", async ()
 
 test("lifecycle: self-accept is hard-forbidden", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, { report: "ship it", commits: [] });
 
@@ -325,10 +325,10 @@ test("lifecycle: auto-accept persists ready TaskResult before integration and pr
   );
   const task = await loadTaskRecord(e.fs, result.taskPath);
   assert.equal(task.state, "submitted");
-  const deliveries = await loadTaskResults(e.fs);
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0]!.status, "ready");
-  assert.equal(deliveries[0]!.integrationMode, "auto-accept");
+  const results = await loadTaskResults(e.fs);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.status, "ready");
+  assert.equal(results[0]!.integrationMode, "auto-accept");
   assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
@@ -384,7 +384,7 @@ test("lifecycle: acceptMode is frozen at Task creation", async () => {
 
 test("lifecycle: manual accept integrate failure keeps submitted + occupation", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "ready",
@@ -441,9 +441,9 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
   );
 });
 
-test("lifecycle: reject(resume) returns to running; re-deliver works", async () => {
+test("lifecycle: reject(resume) returns to running; resubmit works", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, { report: "first try" });
   const rejected = await taskReject(e as any, result.taskPath, {
@@ -467,7 +467,7 @@ test("lifecycle: reject(resume) returns to running; re-deliver works", async () 
 
 test("lifecycle: cancel queued; interrupt running clears occupation", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskCancel(e as any, result.taskPath);
   assert.equal(await e.fs.exists(result.taskPath), false);
 
@@ -485,7 +485,7 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
 
 test("lifecycle: published TaskResult wins over interrupt and remains reviewable", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   await taskWait(e as any, result.taskPath, {
     reason: "external",
@@ -508,15 +508,15 @@ test("lifecycle: published TaskResult wins over interrupt and remains reviewable
   assert.equal(task.state, "submitted");
   assert.equal(task.statusDetail, undefined, "published TaskResult clears the prior return slot");
   assert.equal(task.currentResultId, delivered.result.id);
-  const deliveries = await loadTaskResults(e.fs, { taskId: task.id });
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0]!.id, delivered.result.id);
-  assert.equal(deliveries[0]!.status, "ready");
+  const results = await loadTaskResults(e.fs, { taskId: task.id });
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.id, delivered.result.id);
+  assert.equal(results[0]!.status, "ready");
 });
 
 test("lifecycle: repeated interrupt preserves a corrupt Result pointer for explicit diagnosis", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   await taskInterrupt(e as any, result.taskPath);
 
@@ -545,7 +545,7 @@ test("lifecycle: repeated interrupt preserves a corrupt Result pointer for expli
 
 test("lifecycle: persisted uppercase Task identity fails the canonical read boundary", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   const task = await loadTaskRecord(e.fs, result.taskPath);
   const raw = await e.fs.readFile(result.taskPath);
   await e.fs.writeFile(result.taskPath, raw.replace(`id: ${task.id}`, `id: ${task.id!.toUpperCase()}`));
@@ -554,7 +554,7 @@ test("lifecycle: persisted uppercase Task identity fails the canonical read boun
 
 test("lifecycle: persisted Task requires a non-empty prompt body", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   const raw = await e.fs.readFile(result.taskPath);
   await e.fs.writeFile(result.taskPath, raw.replace(/(\n---\n)[\s\S]*$/, "$1"));
   await assert.rejects(() => loadTaskRecord(e.fs, result.taskPath), /non-empty prompt is required/);
@@ -562,7 +562,7 @@ test("lifecycle: persisted Task requires a non-empty prompt body", async () => {
 
 test("lifecycle: Task owner namespace is exact for Role Tasks and stable for replaceable Session execution", async () => {
   const roleRoot = await makeTent();
-  const roleFixture = await dispatchOnFreeBox(roleRoot);
+  const roleFixture = await dispatchOnFreeNode(roleRoot);
   const roleRaw = await roleFixture.e.fs.readFile(roleFixture.result.taskPath);
   await roleFixture.e.fs.writeFile(
     roleFixture.result.taskPath,
@@ -641,7 +641,7 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
   const dir = await makeTent();
   const e = env(dir);
 
-  const rejected = await dispatchOnFreeBox(dir);
+  const rejected = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, rejected.result.taskPath);
   const rejectedTaskResult = await taskSubmit(e as any, rejected.result.taskPath, { report: "reject me" });
   const rejectedResult = await taskReject(e as any, rejected.result.taskPath, {
@@ -653,19 +653,19 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
   assert.equal(rejectedResult.task.state, "rejected");
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
 
-  const interrupted = await dispatchOnFreeBox(dir);
+  const interrupted = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, interrupted.result.taskPath);
   const interruptedTask = await taskInterrupt(e as any, interrupted.result.taskPath);
   assert.equal(interruptedTask.state, "interrupted");
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
 
-  const failed = await dispatchOnFreeBox(dir);
+  const failed = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, failed.result.taskPath);
   const failedTask = await taskFail(e as any, failed.result.taskPath, { summary: "provider failed" });
   assert.equal(failedTask.state, "failed");
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
 
-  const accepted = await dispatchOnFreeBox(dir);
+  const accepted = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, accepted.result.taskPath);
   const acceptedTaskResult = await taskSubmit(e as any, accepted.result.taskPath, { report: "accept me", commits: [] });
   const acceptedResult = await taskAccept(e as any, accepted.result.taskPath, {
@@ -678,7 +678,7 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
 
 test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
@@ -706,7 +706,7 @@ test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch
 
 test("lifecycle: taskFail from waiting also clears occupation", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeBox(dir);
+  const { e, result } = await dispatchOnFreeNode(dir);
   await taskClaim(e as any, result.taskPath);
   await taskWait(e as any, result.taskPath, {
     reason: "user-input",

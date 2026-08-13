@@ -1,5 +1,5 @@
 /**
- * B5: Service Task / Route / Runtime unified wiring + loopback token.
+ * Managed Service Task / Connection / Runtime lifecycle + loopback token.
  * End-to-end via Local Service RPC (fake adapter only — no paid networks).
  */
 import assert from "node:assert/strict";
@@ -26,13 +26,13 @@ import {
 } from "../src/adapters/grok-acp/index.js";
 import {
   enableManagedTaskInputBackgroundAccept,
-  invokeDeliverManagedTaskInputForTests,
-  invokeManagedAutoDeliverForTests,
+  invokeInjectManagedTaskInputForTests,
+  invokeManagedAutoSubmitForTests,
   mapRuntimeEventToService,
   reconcileTaskSessionsOnMount,
   REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY,
   isTaskStartSessionInFlightForTests,
-  resetManagedAutoDeliverDedupForTests,
+  resetManagedAutoSubmitFlightsForTests,
   resetManagedTaskInputBackgroundForTests,
   resetRuntimeProjectionForTests,
   setAfterTargetHeadSnapshotForTests,
@@ -92,7 +92,7 @@ function mockAcpRoute(
     dieExitCode?: number;
     /**
      * After session/prompt result is written, schedule a late worktree write.
-     * Seal-before-deliver must kill the process so this marker never appears
+     * Seal-before-submit must kill the process so this marker never appears
      * once the task is delivered (no sleep-based "stability").
      */
     postResponseTailMs?: number;
@@ -180,7 +180,7 @@ async function ensureManagedDelivered(
   sessionId: string,
   assistantText: string
 ): Promise<void> {
-  await invokeManagedAutoDeliverForTests(svc.ctx, {
+  await invokeManagedAutoSubmitForTests(svc.ctx, {
     workspaceId,
     taskPath,
     sessionId,
@@ -209,11 +209,11 @@ async function resetExactBoundSessionToReserved(
 }
 
 async function makeWorkspace(
-  name = "b5",
+  name = "managed",
   _rolePolicies?: Record<string, "allow" | "ask" | "deny">,
   _roleProfiles?: Record<string, string[]>
 ): Promise<string> {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
@@ -252,7 +252,7 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>,
   opts?: { connections?: import("../src/runtime/types.js").AgentConnectionConfig[] }
 ): Promise<T> {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-data-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
@@ -348,7 +348,7 @@ async function mountWorkItem(svc: Awaited<ReturnType<typeof startLocalTentServic
 
 // ---- token auth ----
 
-test("B5: unauthenticated RPC and SSE rejected; health open; token not in workspace", async () => {
+test("unauthenticated RPC and SSE rejected; health open; token not in workspace", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc, dataDir) => {
     // health open
@@ -394,7 +394,7 @@ test("B5: unauthenticated RPC and SSE rejected; health open; token not in worksp
 
 // ---- full lifecycle manual review ----
 
-test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient", async () => {
+test("Connection dispatch → submit → accept (manual) via ServiceClient", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -403,7 +403,7 @@ test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient"
     const dispatched = (await client.taskDispatch(workspaceId, {
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
-      prompt: "Ship B5 wiring",
+      prompt: "Ship managed lifecycle wiring",
       requester: { kind: "user", id: "user" },
       acceptMode: "review-required",
     })) as { taskPath: string; state: string; executionSessionId: string };
@@ -493,7 +493,7 @@ test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient"
 
 // ---- auto-accept integration ----
 
-test("B5: acceptMode=auto-accept integrates without reviewer action", async () => {
+test("acceptMode=auto-accept integrates without reviewer action", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -520,8 +520,8 @@ test("B5: acceptMode=auto-accept integrates without reviewer action", async () =
 
 // ---- agent-decide ----
 
-test("B5: agent-decide integrate vs request-review", async () => {
-  const ws = await makeWorkspace("b5-ad");
+test("agent-decide integrate vs request-review", async () => {
+  const ws = await makeWorkspace("managed-ad");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d1 = await rpc(svc, "task.dispatch", {
@@ -553,7 +553,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
   });
 
   // request-review path on a fresh box
-  const ws2 = await makeWorkspace("b5-ad2");
+  const ws2 = await makeWorkspace("managed-ad2");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws2);
     const d1 = await rpc(svc, "task.dispatch", {
@@ -587,9 +587,9 @@ test("B5: agent-decide integrate vs request-review", async () => {
   });
 });
 
-// ---- Machine Settings route availability (no start/replace roster authorization) ----
+// ---- Agent Connection availability (no start/replace allowlist) ----
 
-test("B5: explicit fake-default route runs its assigned Task", async () => {
+test("explicit fake-default route runs its assigned Task", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -615,8 +615,8 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
   });
 });
 
-test("B5: available Connection permits role startSession for an exact reserved binding", async () => {
-  const ws = await makeWorkspace("b5-route", { executor: "deny" });
+test("available Connection permits role startSession for an exact reserved binding", async () => {
+  const ws = await makeWorkspace("managed-route", { executor: "deny" });
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -643,8 +643,8 @@ test("B5: available Connection permits role startSession for an exact reserved b
   });
 });
 
-test("B5: user callerKind starts an available exact reserved Connection binding", async () => {
-  const ws = await makeWorkspace("b5-user", { executor: "deny" });
+test("user callerKind starts an available exact reserved Connection binding", async () => {
+  const ws = await makeWorkspace("managed-user", { executor: "deny" });
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -671,7 +671,7 @@ test("B5: user callerKind starts an available exact reserved Connection binding"
   });
 });
 
-test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async () => {
+test("dispatch relayPrompt uses Task claim/submit (not task-ack)", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -693,7 +693,7 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
   });
 });
 
-test("B5: startSession bootstrap is managed (Context Card + user prompt); relay still has claim", async () => {
+test("startSession bootstrap is managed (Context Card + user prompt); relay still has claim", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -729,7 +729,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
       normalized.includes(`${wsNorm}/.tent`),
       `bootstrap should include systemRoot ${wsNorm}/.tent`
     );
-    assert.match(bootstrap!, /\.tent\/temp\//);
+    assert.match(normalized, /\.tent\/temp\b/);
     // Stable project context is the sole path tutorial; Task Context Card is dynamic delta.
     // Do not require legacy drag-style "Tent contextCard v1" prelude.
     assert.match(bootstrap!, /Tent stable project context v1|Tent Task Context Card v1|contextCard/i);
@@ -754,7 +754,8 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     // exact managed Connection Task must never be told to claim itself again.
     assert.doesNotMatch(bootstrap!, new RegExp(`tent task claim ${escapeRegExp(taskPath)}`));
     assert.doesNotMatch(bootstrap!, /task-ack|tent report\b/);
-    assert.doesNotMatch(bootstrap!, /tent task get |tent task submit /);
+    assert.doesNotMatch(bootstrap!, /tent task get /);
+    assert.match(bootstrap!, /tent task submit <taskPath>/);
     assert.doesNotMatch(bootstrap!, /docs API|CLI aliases/i);
   });
 });
@@ -765,10 +766,10 @@ function escapeRegExp(s: string): string {
 
 // ---- managed ACP auto-result (mock ACP only; never real CPA) ----
 
-test("B5 managed ACP: user prompt enters ACP; final response → one manual result", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("managed ACP: user prompt enters ACP; final response → one manual result", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-macp-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-macp-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   const reportBody = "MANAGED_FINAL_REPORT_OK";
   const reportText = `${reportBody}`;
@@ -789,7 +790,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual resu
       const taskPath = (d.result as { taskPath: string }).taskPath;
       const sessionId = (d.result as { executionSessionId: string }).executionSessionId;
 
-      // Wait for managed auto-submit → delivered + one ready result.
+      // Wait for managed auto-submit → submitted + one ready result.
       const delivered = await pollUntil(async () => {
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
         const task = (g.result as { task: { state: string } }).task;
@@ -800,11 +801,11 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual resu
 
       const list = await rpc(svc, "taskResult.list", { workspaceId });
       assert.ok(!list.error, JSON.stringify(list.error));
-      const deliveries = (list.result as { results: Array<{ report: string; status: string }> })
+      const results = (list.result as { results: Array<{ report: string; status: string }> })
         .results;
-      assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].report, reportBody);
-      assert.equal(deliveries[0].status, "ready");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].report, reportBody);
+      assert.equal(results[0].status, "ready");
 
       // User prompt must have entered ACP session/prompt text.
       const logRaw = await fs.readFile(logPath, "utf8");
@@ -826,8 +827,8 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual resu
         )
       );
       assert.ok(
-        log.prompts.every((p) => !/tent task submit /.test(p)),
-        "managed bootstrap must not instruct tent task submit"
+        log.prompts.some((p) => /tent task submit /.test(p)),
+        "managed bootstrap should carry the current TaskResult submission contract"
       );
       assert.ok(
         log.prompts.every((p) => !/docs API|CLI aliases/i.test(p)),
@@ -843,11 +844,11 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual resu
       });
       await new Promise((r) => setTimeout(r, 200));
       const list2 = await rpc(svc, "taskResult.list", { workspaceId });
-      const deliveries2 = (
+      const results2 = (
         list2.result as { results: Array<{ report: string }> }
       ).results;
-      assert.equal(deliveries2.length, 1);
-      assert.equal(deliveries2[0].report, reportBody);
+      assert.equal(results2.length, 1);
+      assert.equal(results2[0].report, reportBody);
 
       // Still pending user review — not auto-accepted.
       const g2 = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -864,10 +865,10 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual resu
   );
 });
 
-test("P0: TaskResult only after turn seal — post-response tail write cannot land after delivered", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("seal-before-deliver");
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-seal-"));
+test("P0: TaskResult only after turn seal — post-response tail write cannot land after submit", async () => {
+  resetManagedAutoSubmitFlightsForTests();
+  const ws = await makeWorkspace("seal-before-submit");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-seal-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   const tailMarker = path.join(ws, "POST_RESPONSE_TAIL_MARKER.txt");
   const reportBody = "SEAL_BEFORE_DELIVER_REPORT";
@@ -932,12 +933,12 @@ test("P0: TaskResult only after turn seal — post-response tail write cannot la
       );
 
       const list = await rpc(svc, "taskResult.list", { workspaceId });
-      const deliveries = (
+      const results = (
         list.result as { results: Array<{ report: string; status: string }> }
       ).results;
-      assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].report, reportBody);
-      assert.equal(deliveries[0].status, "ready");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].report, reportBody);
+      assert.equal(results[0].status, "ready");
     },
     {
       connections: [
@@ -945,7 +946,7 @@ test("P0: TaskResult only after turn seal — post-response tail write cannot la
           logPath,
           promptText: reportText,
           keepAlive: true,
-          // Tail is long enough that without seal-before-deliver it would
+          // Tail is long enough that without seal-before-submit it would
           // clearly write after prompt_complete. Seal kills the process first.
           postResponseTailMs: 2_500,
           postResponseTailPath: tailMarker,
@@ -956,9 +957,9 @@ test("P0: TaskResult only after turn seal — post-response tail write cannot la
 });
 
 test("P0: public task.submit/requestReview refuse while managed isTurnActive; idle still allows", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("manual-deliver-turn-busy");
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-busy-deliver-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-busy-deliver-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   const tailMarker = path.join(ws, "BUSY_TURN_TAIL_MARKER.txt");
   // Long enough that manual deliver probes run while bootstrap turn is open;
@@ -1035,16 +1036,16 @@ test("P0: public task.submit/requestReview refuse while managed isTurnActive; id
         "task must remain running after refused public deliver"
       );
       const midList = await rpc(svc, "taskResult.list", { workspaceId });
-      const midDeliveries = (
+      const midTaskResults = (
         midList.result as { results: Array<{ status: string; report: string }> }
       ).results;
       assert.equal(
-        midDeliveries.filter((x) => x.status === "ready").length,
+        midTaskResults.filter((x) => x.status === "ready").length,
         0,
         "no ready TaskResult before turn settles"
       );
       assert.equal(
-        midDeliveries.some((x) =>
+        midTaskResults.some((x) =>
           /PREMATURE_MANUAL_DELIVER|PREMATURE_REQUEST_REVIEW/.test(x.report)
         ),
         false,
@@ -1102,12 +1103,12 @@ test("P0: public task.submit/requestReview refuse while managed isTurnActive; id
       );
 
       const list = await rpc(svc, "taskResult.list", { workspaceId });
-      const deliveries = (
+      const results = (
         list.result as { results: Array<{ report: string; status: string }> }
       ).results;
-      assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].status, "ready");
-      assert.equal(deliveries[0].report, reportBody);
+      assert.equal(results.length, 1);
+      assert.equal(results[0].status, "ready");
+      assert.equal(results[0].report, reportBody);
     },
     {
       connections: [
@@ -1157,26 +1158,26 @@ test("P0: public task.submit/requestReview refuse while managed isTurnActive; id
     const delivered = await rpc(svc, "task.submit", {
       workspaceId,
       taskPath,
-      report: "IDLE_MANUAL_DELIVER_OK",
+      report: "IDLE_MANUAL_SUBMIT_OK",
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     assert.equal((delivered.result as { state: string }).state, "submitted");
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ report: string; status: string }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].report, "IDLE_MANUAL_DELIVER_OK");
-    assert.equal(deliveries[0].status, "ready");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].report, "IDLE_MANUAL_SUBMIT_OK");
+    assert.equal(results[0].status, "ready");
   });
 });
 
-test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("managed ACP: empty / error / non-end_turn do not submit", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   for (const mode of ["empty", "error"] as const) {
     const ws = await makeWorkspace();
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-b5-${mode}-`));
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-managed-${mode}-`));
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
@@ -1207,8 +1208,8 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
         assert.equal(parked.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
 
         const list = await rpc(svc, "taskResult.list", { workspaceId });
-        const deliveries = (list.result as { results: unknown[] }).results;
-        assert.equal(deliveries.length, 0, `mode=${mode} must not create result`);
+        const results = (list.result as { results: unknown[] }).results;
+        assert.equal(results.length, 0, `mode=${mode} must not create result`);
       },
       {
         connections: [
@@ -1223,9 +1224,9 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
 });
 
 test("P0: ACP assistant output limit parks Task, stops child, and keeps Service healthy", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-output-limit-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-output-limit-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -1313,12 +1314,12 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
         "limit must never publish a result event"
       );
 
-      const deliveries = (
+      const results = (
         (await rpc(svc, "taskResult.list", { workspaceId })).result as {
           results: unknown[];
         }
       ).results;
-      assert.equal(deliveries.length, 0, "limit failure must not publish TaskResult");
+      assert.equal(results.length, 0, "limit failure must not publish TaskResult");
 
       const health = await rpc(svc, "service.health");
       assert.ok(!health.error, JSON.stringify(health.error));
@@ -1385,10 +1386,10 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
   );
 });
 
-test("B5 managed ACP: interrupt / stop does not deliver", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("managed ACP: interrupt / stop does not submit", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-int-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-int-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -1416,8 +1417,8 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
 
       await new Promise((r) => setTimeout(r, 300));
       const list = await rpc(svc, "taskResult.list", { workspaceId });
-      const deliveries = (list.result as { results: unknown[] }).results;
-      assert.equal(deliveries.length, 0);
+      const results = (list.result as { results: unknown[] }).results;
+      assert.equal(results.length, 0);
     },
     {
       connections: [
@@ -1430,13 +1431,13 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
   );
 });
 
-test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("managed ACP: auto-accept integrates; agent-decide stays pending review", async () => {
+  resetManagedAutoSubmitFlightsForTests();
 
   // auto-accept → accepted without review.by
   {
     const ws = await makeWorkspace();
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-autoaccept-"));
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-autoaccept-"));
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
@@ -1478,13 +1479,13 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
         }
         assert.equal(accepted.state, "accepted");
         const list = await rpc(svc, "taskResult.list", { workspaceId });
-        const deliveries = (
+        const results = (
           list.result as { results: Array<{ status: string; review?: unknown }> }
         ).results;
-        assert.equal(deliveries.length, 1);
-        assert.equal(deliveries[0].status, "accepted");
+        assert.equal(results.length, 1);
+        assert.equal(results[0].status, "accepted");
         assert.equal(
-          (deliveries[0].review as { reviewer?: string } | undefined)?.reviewer,
+          (results[0].review as { reviewer?: string } | undefined)?.reviewer,
           "user"
         );
       },
@@ -1494,11 +1495,11 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
     );
   }
 
-  // agent-decide without integrate decision → request-review → delivered (not accepted)
+  // agent-decide without integrate decision → request-review → submitted (not accepted)
   {
-    resetManagedAutoDeliverDedupForTests();
+    resetManagedAutoSubmitFlightsForTests();
     const ws = await makeWorkspace();
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ad-"));
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-ad-"));
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
@@ -1540,11 +1541,11 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
         }
         assert.equal(delivered.state, "submitted");
         const list = await rpc(svc, "taskResult.list", { workspaceId });
-        const deliveries = (
+        const results = (
           list.result as { results: Array<{ status: string }> }
         ).results;
-        assert.equal(deliveries.length, 1);
-        assert.equal(deliveries[0].status, "ready");
+        assert.equal(results.length, 1);
+        assert.equal(results[0].status, "ready");
       },
       {
         connections: [mockAcpRoute("mock-acp-ad", { logPath, promptText: "AD_OK" })],
@@ -1582,7 +1583,7 @@ async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null
 
 // ---- interrupt stops runtime ----
 
-test("B5: task.interrupt stops bound session", async () => {
+test("task.interrupt stops bound session", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -1612,7 +1613,7 @@ test("B5: task.interrupt stops bound session", async () => {
   });
 });
 
-test("B5: repeated interrupt repairs a late-bound Session projection", async () => {
+test("repeated interrupt repairs a late-bound Session projection", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -1662,7 +1663,7 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
 
 // ---- cancel queued ----
 
-test("B5: task.cancel removes queued envelope", async () => {
+test("task.cancel removes queued envelope", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -1684,7 +1685,7 @@ test("B5: task.cancel removes queued envelope", async () => {
 
 // ---- client method surface ----
 
-test("B5: client method table covers task lifecycle and excludes runtime port", () => {
+test("client method table covers task lifecycle and excludes runtime port", () => {
   for (const m of [
     "task.wait",
     "task.resume",
@@ -1716,8 +1717,8 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
   assert.equal(FAKE_ADAPTER_ID, "fake-cli");
 });
 
-test("B5 tool approval: service restart expires orphaned pending request", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-restart-"));
+test("tool approval: service restart expires orphaned pending request", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-tool-restart-"));
   const approvalId = makeToolApprovalId(() => 0.44);
   const seeded = new ToolApprovalStore(dataDir);
   await seeded.add({
@@ -1759,8 +1760,8 @@ test("B5 tool approval: service restart expires orphaned pending request", async
   }
 });
 
-test("B5 tool approval: service stop denies and releases store waiter", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-stop-"));
+test("tool approval: service stop denies and releases store waiter", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-tool-stop-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   const approvalId = makeToolApprovalId(() => 0.46);
   await svc.ctx.toolApprovals.add({
@@ -1783,10 +1784,10 @@ test("B5 tool approval: service stop denies and releases store waiter", async ()
   assert.equal(item?.resolvedBy, "service-shutdown");
 });
 
-test("B5 tool approval: ask → pending → approve once → running → deliver", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("tool approval: ask → pending → approve once → running → submit", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-appr-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-tool-appr-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -1894,7 +1895,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
   );
 });
 
-test("B5 tool approval: concurrent asks keep task waiting until the final decision", async () => {
+test("tool approval: concurrent asks keep task waiting until the final decision", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -1973,10 +1974,10 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
   });
 });
 
-test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("tool approval: user deny cancels tool (ACP cancelled)", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-deny-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-tool-deny-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -2034,10 +2035,10 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
   );
 });
 
-test("B5 tool approval: ask timeout expires pending; late approve fails", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("tool approval: ask timeout expires pending; late approve fails", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-timeout-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-tool-timeout-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   // Short store-authoritative timeout (sole expiry; client has no permission timer).
   const permissionTimeoutMs = 400;
@@ -2112,10 +2113,10 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
   );
 });
 
-test("B5 failure cleanup: prompt error stops process, parks waiting(external), keeps occupation", async () => {
-  resetManagedAutoDeliverDedupForTests();
+test("failure cleanup: prompt error stops process, parks waiting(external), keeps occupation", async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-fail-clean-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-fail-clean-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -2213,10 +2214,10 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
   );
 });
 
-for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${exitCode} parks waiting(external)`, async () => {
-  resetManagedAutoDeliverDedupForTests();
+for (const exitCode of [7, 0]) test(`spontaneous managed child exit code=${exitCode} parks waiting(external)`, async () => {
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-spontaneous-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-spontaneous-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   await withService(
     async (svc) => {
@@ -2306,8 +2307,8 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
  * remount after restart — mount reconcile must correct the stale disk-live registry row,
  * park waiting(external), and keep occupation.
  */
-test("B5: crash restart + mount parks running task bound to dead session (task-side)", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-crash-mount-"));
+test("crash restart + mount parks running task bound to dead session (task-side)", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-crash-mount-"));
   const ws = await makeWorkspace("crash-mount");
   let sessionId = "";
   let taskPath = "";
@@ -2600,7 +2601,7 @@ async function assertTaskCommitFirstParent(
   );
 }
 
-test("P0-2: manual accept integrates real commits into main; re-deliver of integrated SHA refuses lane membership", async () => {
+test("P0-2: manual accept integrates real commits into main; resubmit of integrated SHA refuses lane membership", async () => {
   const ws = await makeWorkspace("p0-accept");
   await initGitOnWorkspace(ws);
 
@@ -2679,7 +2680,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       report: "same commit again",
       commits: [sourceRef],
     });
-    assert.ok(reDeliver.error, "re-deliver of SHA outside base..branch must refuse");
+    assert.ok(reDeliver.error, "resubmit of SHA outside base..branch must refuse");
     assert.equal(reDeliver.error?.code, RPC_LIFECYCLE);
     const reData = reDeliver.error?.data as { code?: string; laneCode?: string } | undefined;
     assert.equal(reData?.code, "RESULT_COMMIT_LANE");
@@ -2693,9 +2694,9 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
     assert.equal(
       (got2.result as { task: { state: string } }).task.state,
       "running",
-      "refused re-deliver must leave task running with no ready TaskResult"
+      "refused resubmit must leave task running with no ready TaskResult"
     );
-    // First integration still on main; Git unchanged by the refused re-deliver.
+    // First integration still on main; Git unchanged by the refused resubmit.
     assert.equal(
       normalizeLf(await fs.readFile(path.join(ws, "feature.txt"), "utf8")),
       "ship\n"
@@ -2750,10 +2751,10 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
       "done"
     );
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const acceptedDeliveries = (
+    const acceptedTaskResults = (
       list.result as { results: Array<{ status: string }> }
     ).results.filter((d) => d.status === "accepted");
-    assert.ok(acceptedDeliveries.length >= 1, "auto-accept must leave an accepted TaskResult");
+    assert.ok(acceptedTaskResults.length >= 1, "auto-accept must leave an accepted TaskResult");
   });
 });
 
@@ -2807,7 +2808,7 @@ async function withBlockedIntegrate(
     release: () => void;
   }) => Promise<void>
 ): Promise<void> {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-b5-${label}-`));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-managed-${label}-`));
   let release!: () => void;
   const hold = new Promise<void>((r) => {
     release = r;
@@ -2914,7 +2915,7 @@ test("P0-2: task.accept releases MutationBus during blocked Git integrate", asyn
 });
 
 /** Commit-bearing auto-integrate deliver also releases MutationBus during Git. */
-test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrate", async () => {
+test("P0-2: auto-accept submit releases MutationBus during blocked Git integrate", async () => {
   const ws = await makeWorkspace("p0-bus-autoaccept");
   await initGitOnWorkspace(ws);
   await withBlockedIntegrate("bus-autoaccept", async ({ svc, order, waitIntegrate, release }) => {
@@ -3107,7 +3108,7 @@ test("P0-2: same-Task sendInput waits for auto-submit Git then refuses accepted"
   });
 });
 
-test("P0-2: accept integration conflict keeps delivered + occupation; no done", async () => {
+test("P0-2: accept integration conflict keeps submitted + occupation; no done", async () => {
   const ws = await makeWorkspace("p0-conflict-accept");
   await initGitOnWorkspace(ws);
 
@@ -3225,19 +3226,19 @@ test("P0-2: auto-accept integrate failure preserves ready TaskResult and occupat
     });
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ status: string; commits: string[] }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0]!.status, "ready");
-    assert.deepEqual(deliveries[0]!.commits, [sourceRef]);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.status, "ready");
+    assert.deepEqual(results[0]!.commits, [sourceRef]);
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
   });
 });
 
 test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits diagnostics", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-macp-integrate-fail");
   await initGitOnWorkspace(ws);
 
@@ -3285,7 +3286,7 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
     });
 
     // Explicit commits override auto-collect (conflict fixtures need a known ref).
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3312,12 +3313,12 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
     });
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ status: string; commits: string[] }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0]!.status, "ready");
-    assert.deepEqual(deliveries[0]!.commits, [sourceRef]);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.status, "ready");
+    assert.deepEqual(results[0]!.commits, [sourceRef]);
 
     const failEv = diag.find((p) => p.runtimeEvent === "session.prompt_complete.failed");
     assert.ok(failEv, "must emit session diagnostics for integrate failure");
@@ -3327,7 +3328,7 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
     const rec = await svc.runtime.registry.read(sessionId);
     assert.ok(rec?.lastError, "session registry lastError surfaces the failure");
     assert.match(rec!.lastError!, /managed auto-submit failed/);
-    // Seal-before-deliver stops the process before publishing TaskResult. On
+    // Seal-before-submit stops the process before publishing TaskResult. On
     // integrate failure the task stays running (retryable) but the managed
     // process is already sealed — no post-failure worktree mutation from that turn.
     assert.ok(
@@ -3342,7 +3343,7 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
 });
 
 test("terminal consistency: managed finalization and interrupt have one winner", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("terminal-finalize-interrupt");
   await initGitOnWorkspace(ws);
 
@@ -3389,7 +3390,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
     });
 
     try {
-      const deliverPromise = invokeManagedAutoDeliverForTests(svc.ctx, {
+      const deliverPromise = invokeManagedAutoSubmitForTests(svc.ctx, {
         workspaceId,
         taskPath,
         sessionId,
@@ -3419,17 +3420,17 @@ test("terminal consistency: managed finalization and interrupt have one winner",
     assert.equal(task.statusDetail, undefined);
     assert.ok(task.currentResultId);
     const listed = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (listed.result as {
+    const results = (listed.result as {
       results: Array<{ id: string; taskId: string; status: string }>;
     }).results.filter((result) => result.taskId === task.id);
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0]!.id, task.currentResultId);
-    assert.equal(deliveries[0]!.status, "ready");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.id, task.currentResultId);
+    assert.equal(results[0]!.status, "ready");
   });
 });
 
 test("terminal consistency: interrupt first suppresses managed finalization", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("terminal-interrupt-first");
 
   await withService(async (svc) => {
@@ -3449,7 +3450,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
 
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
     assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3465,15 +3466,15 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
     assert.equal(task.currentResultId, undefined);
     assert.equal(task.statusDetail, undefined);
     const listed = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (listed.result as {
+    const results = (listed.result as {
       results: Array<{ taskId: string }>;
     }).results.filter((result) => result.taskId === task.id);
-    assert.equal(deliveries.length, 0);
+    assert.equal(results.length, 0);
   });
 });
 
 test("P0 fix: managed auto-submit collects exact Task-lane commit; manual accept integrates", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-macp-collect-manual");
   await initGitOnWorkspace(ws);
 
@@ -3505,7 +3506,7 @@ test("P0 fix: managed auto-submit collects exact Task-lane commit; manual accept
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
     // Production path: omit commits → collect from the exact Task lane.
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3516,13 +3517,13 @@ test("P0 fix: managed auto-submit collects exact Task-lane commit; manual accept
     assert.equal((got.result as { task: { state: string } }).task.state, "submitted");
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ report: string; commits: string[]; status: string }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].report, "COLLECTED_MANUAL_REPORT");
-    assert.equal(deliveries[0].status, "ready");
-    assert.deepEqual(deliveries[0].commits, [sourceRef]);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].report, "COLLECTED_MANUAL_REPORT");
+    assert.equal(results[0].status, "ready");
+    assert.deepEqual(results[0].commits, [sourceRef]);
 
     // Session stopped after successful result.
     const rec = await svc.runtime.registry.read(sessionId);
@@ -3545,7 +3546,7 @@ test("P0 fix: managed auto-submit collects exact Task-lane commit; manual accept
 });
 
 test("P0 fix: managed auto-accept integrates auto-collected commit", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-macp-collect-autoaccept");
   await initGitOnWorkspace(ws);
 
@@ -3575,7 +3576,7 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
     );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3586,12 +3587,12 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
     assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ commits: string[]; status: string }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].status, "accepted");
-    assert.deepEqual(deliveries[0].commits, [sourceRef]);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].status, "accepted");
+    assert.deepEqual(results[0].commits, [sourceRef]);
     assert.equal(
       normalizeLf(await fs.readFile(path.join(ws, "collect-autoaccept.txt"), "utf8")),
       "auto\n"
@@ -3604,7 +3605,7 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
 });
 
 test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   // Non-Git workspace: no lane, zero commits is a valid result.
   const ws = await makeWorkspace("p0-macp-zero-nongit");
   await withService(async (svc) => {
@@ -3643,7 +3644,7 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3653,16 +3654,16 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "submitted");
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ commits: string[]; report: string }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].report, "ZERO_COMMIT_REPORT");
-    assert.deepEqual(deliveries[0].commits, []);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].report, "ZERO_COMMIT_REPORT");
+    assert.deepEqual(results[0].commits, []);
   });
 
   // Git workspace with no role commits: also legal zero-commit result.
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const wsGit = await makeWorkspace("p0-macp-zero-git");
   await initGitOnWorkspace(wsGit);
   await withService(async (svc) => {
@@ -3685,7 +3686,7 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3695,14 +3696,14 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (list.result as { results: Array<{ commits: string[] }> }).results;
-    assert.equal(deliveries.length, 1);
-    assert.deepEqual(deliveries[0].commits, []);
+    const results = (list.result as { results: Array<{ commits: string[] }> }).results;
+    assert.equal(results.length, 1);
+    assert.deepEqual(results[0].commits, []);
   });
 });
 
 test("P0: dirty task worktree refuses managed auto-submit and public task.submit (tracked + untracked)", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-dirty-worktree-refuse");
   await initGitOnWorkspace(ws);
 
@@ -3753,11 +3754,11 @@ test("P0: dirty task worktree refuses managed auto-submit and public task.submit
       if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
     });
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "DIRTY_SHOULD_NOT_DELIVER",
+      assistantText: "DIRTY_SHOULD_NOT_SUBMIT",
     });
     unsub();
 
@@ -3768,12 +3769,12 @@ test("P0: dirty task worktree refuses managed auto-submit and public task.submit
       "dirty auto-submit must keep task running (retryable)"
     );
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ status: string; report: string; commits?: string[] }> }
     ).results;
-    assert.equal(deliveries.length, 0, "dirty worktree must not publish any TaskResult");
+    assert.equal(results.length, 0, "dirty worktree must not publish any TaskResult");
     assert.equal(
-      deliveries.some((x) => /DIRTY_SHOULD_NOT_DELIVER/.test(x.report)),
+      results.some((x) => /DIRTY_SHOULD_NOT_SUBMIT/.test(x.report)),
       false
     );
 
@@ -3819,8 +3820,8 @@ test("P0: dirty task worktree refuses managed auto-submit and public task.submit
     const cleanRef = (await git(task.worktree!, "rev-parse", "HEAD")).trim();
     assert.equal((await git(task.worktree!, "status", "--porcelain")).trim(), "");
 
-    resetManagedAutoDeliverDedupForTests();
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    resetManagedAutoSubmitFlightsForTests();
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3832,21 +3833,21 @@ test("P0: dirty task worktree refuses managed auto-submit and public task.submit
     const after = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((after.result as { task: { state: string } }).task.state, "submitted");
     const afterList = await rpc(svc, "taskResult.list", { workspaceId });
-    const afterDeliveries = (
+    const afterTaskResults = (
       afterList.result as {
         results: Array<{ report: string; status: string; commits: string[] }>;
       }
     ).results;
-    assert.equal(afterDeliveries.length, 1);
-    assert.equal(afterDeliveries[0].report, "DIRTY_SHOULD_NOT_DELIVER");
-    assert.equal(afterDeliveries[0].status, "ready");
-    assert.ok(afterDeliveries[0].commits.includes(sourceRef));
-    assert.ok(afterDeliveries[0].commits.includes(cleanRef));
+    assert.equal(afterTaskResults.length, 1);
+    assert.equal(afterTaskResults[0].report, "DIRTY_SHOULD_NOT_SUBMIT");
+    assert.equal(afterTaskResults[0].status, "ready");
+    assert.ok(afterTaskResults[0].commits.includes(sourceRef));
+    assert.ok(afterTaskResults[0].commits.includes(cleanRef));
   });
 });
 
 test("reject-resume fail-closes a non-resumable Connection Task without false-running", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("reject-resume-role-live");
 
   await withService(async (svc) => {
@@ -3864,7 +3865,7 @@ test("reject-resume fail-closes a non-resumable Connection Task without false-ru
     const taskPath = direct.taskPath;
     const sessionId = direct.executionSessionId;
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3896,8 +3897,8 @@ test("reject-resume fail-closes a non-resumable Connection Task without false-ru
 });
 
 test("Connection Task paths bind the exact Session and failed resume preserves feedback", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("reject-resume-profile-live");
+  resetManagedAutoSubmitFlightsForTests();
+  const ws = await makeWorkspace("reject-resume-connection-live");
 
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -3906,7 +3907,7 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
-      prompt: "profile reject resume",
+      prompt: "connection reject resume",
       acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -3915,7 +3916,7 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
     const sessionId = direct.executionSessionId;
     assert.match(taskPath, new RegExp(`^temp/sessions/${sessionId}/tasks/`));
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -3949,13 +3950,13 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
       resultId: await readyTaskResultId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
-      note: "profile rework",
+      note: "connection rework",
     });
     assert.ok(rejected.error);
-    const inputs = await svc.ctx.taskInputs.listBlockingForDeliver(workspaceId, taskPath);
+    const inputs = await svc.ctx.taskInputs.listBlockingForSubmit(workspaceId, taskPath);
     assert.equal(inputs.length, 1);
     assert.equal(inputs[0]!.kind, "review-feedback");
-    assert.equal(inputs[0]!.text, "profile rework");
+    assert.equal(inputs[0]!.text, "connection rework");
     assert.equal(inputs[0]!.sessionId, sessionId);
 
     const parked = await loadTaskRecord(svc.ctx.host.require(workspaceId).env.fs, taskPath);
@@ -3966,15 +3967,15 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
 });
 
 test("reject-resume native load reuses same sessionId + provider token (mock ACP)", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("reject-resume-native-same-ss", {
     executor: "allow",
   }, { executor: ["mock-reject-resume"] });
   const logPath = path.join(
-    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-rr-native-")),
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-rr-native-")),
     "mock-acp.json"
   );
-  const profile = mockAcpRoute("mock-reject-resume", {
+  const connection = mockAcpRoute("mock-reject-resume", {
     logPath,
     promptText: "NATIVE_REJECT_FIRST",
     keepAlive: true,
@@ -4106,7 +4107,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       );
       assert.ok(reviewPrompts[0]!.includes("text:   keep provider context  "));
     },
-    { connections: [profile] }
+    { connections: [connection] }
   );
 });
 
@@ -4191,7 +4192,7 @@ test("late session.failed on a replaced prior Session keeps the exact Task runni
   });
 });
 test("late session.failed after managed TaskResult is diagnostic only", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("late-failed-after-deliver", {
     executor: "allow",
   });
@@ -4217,7 +4218,7 @@ test("late session.failed after managed TaskResult is diagnostic only", async ()
     const sessionId = (started.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -4265,7 +4266,7 @@ test("late session.failed after managed TaskResult is diagnostic only", async ()
 });
 
 test("P0 pre-TaskResult session.failed parks waiting(external) and preserves TaskInput", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("legit-session-failed");
 
   await withService(async (svc) => {
@@ -4349,7 +4350,7 @@ test("P0 pre-TaskResult session.failed parks waiting(external) and preserves Tas
 });
 
 test("P0 pre-TaskResult session.exited parks waiting(external) with stable summary", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("legit-session-exited");
 
   await withService(async (svc) => {
@@ -4399,7 +4400,7 @@ test("P0 pre-TaskResult session.exited parks waiting(external) with stable summa
 });
 
 test("P0 duplicate session.failed/exited on same session is idempotent park", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("dup-session-terminal");
 
   await withService(async (svc) => {
@@ -4452,7 +4453,7 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
 });
 
 test("P0 late terminal from old session after rebind does not affect new occupation", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("late-old-session-rebind");
 
   await withService(async (svc) => {
@@ -4536,7 +4537,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
 });
 
 test("P0 three independent same-tick session terminals each park only their own Task", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("same-tick-three-terminals", {
     executor: "allow",
     orchestrator: "allow",
@@ -4620,7 +4621,7 @@ test("P0 three independent same-tick session terminals each park only their own 
 });
 
 test("P0 explicit interrupt remains terminal and releases occupation after park", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("interrupt-after-park");
 
   await withService(async (svc) => {
@@ -4678,7 +4679,7 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
 });
 
 test("P0 explicit replacement session resume after recoverable park", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("replace-session-resume");
 
   await withService(async (svc) => {
@@ -4876,7 +4877,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
   });
 });
 test("reject-resume fails loud and parks waiting when session cannot be restored", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("reject-resume-fail-loud");
 
   await withService(async (svc) => {
@@ -4900,14 +4901,14 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
     const sessionId = (started.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
       assistantText: "WILL_REJECT",
     });
 
-    // Destroy registry identity so restore cannot resume or re-bind profile.
+    // Destroy registry identity so restore cannot resume or re-bind Connection.
     await svc.runtime.registry.remove(sessionId);
 
     const rejected = await rpc(svc, "task.reject", {
@@ -4946,7 +4947,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
 });
 
 test("P0 fix: recorded workspace lane collection errors stay retryable", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-macp-lane-error");
 
   await withService(async (svc) => {
@@ -4976,7 +4977,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       updatedAt: mount.env.clock.now(),
     });
 
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,
@@ -4985,9 +4986,9 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "running");
-    const deliveries = await rpc(svc, "taskResult.list", { workspaceId });
+    const results = await rpc(svc, "taskResult.list", { workspaceId });
     assert.deepEqual(
-      (deliveries.result as { results: unknown[] }).results,
+      (results.result as { results: unknown[] }).results,
       [],
       "a recorded lane error must not become a zero-commit result"
     );
@@ -5005,7 +5006,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
  * exact-bound reserved Session before provider launch. Fake adapter only.
  */
 test("P0: concurrent task.startSession same tick coalesces to one Session", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-start-single-flight");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5057,7 +5058,7 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
 });
 
 test("P0: repeated task.startSession after success reuses bound Session", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-start-idempotent-reuse");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5107,7 +5108,7 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
 });
 
 test("P0: failed launch clears same-task flight slot (lifecycle failed)", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace(
     "p0-start-fail-same-key",
     { executor: "allow" },
@@ -5173,7 +5174,7 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
 });
 
 test("P0: user and role concurrent starts share one machine-route launch", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("p0-start-auth-before-flight");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5376,7 +5377,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     const remA = await rpc(svc, "workspace.mount", { workspaceRoot: wsA });
     const remB = await rpc(svc, "workspace.mount", { workspaceRoot: wsB });
     const idA2 = (remA.result as { workspaceId: string }).workspaceId;
-    const idB2 = (remB.result as { workspaceId: string }).workspaceId;
+    const workspaceIdB = (remB.result as { workspaceId: string }).workspaceId;
 
     const get = async (workspaceId: string, taskPath: string) => {
       const r = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -5436,7 +5437,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     const terminalTask = await get(idA2, terminal.taskPath);
     assert.equal(terminalTask.state, "interrupted");
 
-    const deadBTask = await get(idB2, deadB.taskPath);
+    const deadBTask = await get(workspaceIdB, deadB.taskPath);
     assert.equal(deadBTask.state, "waiting");
     assert.equal(deadBTask.wait?.reason, "external");
 
@@ -5514,7 +5515,7 @@ test("task.startSession clears a recoverable external wait before provider launc
   });
 });
 
-test("task.startSession leaves session_unavailable waiting when a deliverable draft requires public resume", async () => {
+test("task.startSession leaves session_unavailable waiting when a pending result draft requires public resume", async () => {
   const ws = await makeWorkspace("start-draft-requires-resume");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5806,10 +5807,10 @@ test("task.startSession and replaceSession fail closed on a stale missing bindin
 test("task.startSession and replaceSession fail closed on a foreign binding", async () => {
   const ws = await makeWorkspace("resume-workspace-boundary");
   const logPath = path.join(
-    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-resume-boundary-")),
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-resume-boundary-")),
     "mock-acp-log.json"
   );
-  const profile = mockAcpRoute("mock-acp-boundary", {
+  const connection = mockAcpRoute("mock-acp-boundary", {
     logPath,
     promptText: "NEW_SESSION_OK",
     keepAlive: true,
@@ -5898,7 +5899,7 @@ test("task.startSession and replaceSession fail closed on a foreign binding", as
       );
       assert.equal((await svc.runtime.registry.list()).length, sessionsBeforeForeignStart);
     },
-    { connections: [profile] }
+    { connections: [connection] }
   );
 });async function tentFsFor(ws: string): Promise<NodeFs> {
   return new NodeFs(path.join(ws, ".tent"));
@@ -6342,7 +6343,7 @@ test("runtime projection: different sessions are not process-wide serialized", a
 });
 
 test("service stop waits for terminal runtime projections before disposing", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-stop-drain-"));
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-stop-drain-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,

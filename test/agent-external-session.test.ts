@@ -172,7 +172,7 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
   }
 });
 
-test("service RPC session.enter/status/leave: idempotent, no deliver", async () => {
+test("service RPC session.enter/status/leave: idempotent, no submit", async () => {
   await withService(async (svc, dataDir) => {
     const ws = await makeWorkspace();
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });

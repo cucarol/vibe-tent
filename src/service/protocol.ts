@@ -1,5 +1,5 @@
 // CLI ↔ Local Service wire protocol contract.
-// Independent of package version (package remains 0.1.0); bump only on breaking RPC/health shape.
+// Independent of package version (currently 0.2.0); bump only on breaking RPC/health shape.
 
 /**
  * Monotonic integer protocol version advertised on GET /health and service.health.
@@ -48,12 +48,12 @@ export class ServiceProtocolIncompatibleError extends Error {
       (kind === "missing"
         ? `Local Tent Service protocol is missing (legacy endpoint). ` +
           `This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} ` +
-          `(package version stays 0.1.0; protocol is a separate contract). ` +
+          `(package version is 0.2.0; protocol is a separate contract). ` +
           `Service package version=${servicePackageVersion}. ` +
           `Restart or upgrade tent-service, then retry. ` +
           `Refusing to attach or spawn a competing service against an incompatible process.`
         : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, ` +
-          `client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). ` +
+          `client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.2.0; protocol is separate). ` +
           `Service package version=${servicePackageVersion}. ` +
           `Restart or upgrade tent-service to a compatible build before any business RPC. ` +
           `Refusing attach success and refusing to spawn a competing service.`);

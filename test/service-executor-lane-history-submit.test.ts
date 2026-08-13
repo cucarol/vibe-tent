@@ -14,8 +14,8 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import {
-  invokeManagedAutoDeliverForTests,
-  resetManagedAutoDeliverDedupForTests,
+  invokeManagedAutoSubmitForTests,
+  resetManagedAutoSubmitFlightsForTests,
 } from "../src/service/handlers.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -227,11 +227,11 @@ test("Service: exact base + linear Task commit → public task.submit succeeds",
     assert.equal(result.task.workspaceLane?.baseCommit, baseCommit);
 
     const list = await rpc(svc, "taskResult.list", { workspaceId });
-    const deliveries = (
+    const results = (
       list.result as { results: Array<{ status: string; report: string }> }
     ).results;
-    assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0]!.status, "ready");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.status, "ready");
   });
 });
 
@@ -271,7 +271,7 @@ test("Service: executor merge commit → task.submit EXECUTOR_LANE_HISTORY/MERGE
 });
 
 test("Service: managed auto-submit second gate refuses merge; preserves Task + report draft", async () => {
-  resetManagedAutoDeliverDedupForTests();
+  resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("managed-merge");
   await initGitOnWorkspace(ws);
 
@@ -286,7 +286,7 @@ test("Service: managed auto-submit second gate refuses merge; preserves Task + r
 
     // Production auto-collects lane tip; omit explicit commits so the second gate
     // sees real rev-list parents under managed auto-submit (same as public path).
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
+    await invokeManagedAutoSubmitForTests(svc.ctx, {
       workspaceId,
       taskPath,
       sessionId,

@@ -117,12 +117,12 @@ function sortChildren(node: Node, order: OrderMap): void {
 
 async function loadNode(fs: FsAdapter, path: string, parent: Node | null): Promise<Node | null> {
   if (isOperationalPath(path)) return null;
-  const boxFile = nodeNotePath(path);
-  if (!(await fs.exists(boxFile))) {
+  const nodeFile = nodeNotePath(path);
+  if (!(await fs.exists(nodeFile))) {
     // 没有同名 .md 的文件夹不是 Node（普通分组）。但其子孙里可能有 —— 透传扫描。
     return null;
   }
-  const raw = await fs.readFile(boxFile);
+  const raw = await fs.readFile(nodeFile);
   let parsed: ReturnType<typeof parseFrontmatter>;
   let parseError: string | undefined;
   try {

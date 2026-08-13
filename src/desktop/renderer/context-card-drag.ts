@@ -1,5 +1,5 @@
 /**
- * Context Card drag helpers (Desktop B6).
+ * Context Card drag helpers.
  *
  * Windows MVP uses Chromium/Electron HTML5 drag with `text/plain` only.
  * Electron `webContents.startDrag` is file-path only and is intentionally

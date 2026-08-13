@@ -105,7 +105,7 @@ export interface LocalTentService {
   stop: () => Promise<void>;
 }
 
-const SERVICE_VERSION = "0.1.0-b5";
+const SERVICE_VERSION = "0.2.0";
 
 export async function startLocalTentService(options: LocalTentServiceOptions = {}): Promise<LocalTentService> {
   const dataDir = options.dataDir ?? defaultServiceDataDir();
@@ -452,7 +452,7 @@ async function startOwnedLocalTentService(
         );
         await attempt(() => taskInputs.shutdown(), true);
         // Report drafts are durable operational state (not process-bound); close
-        // after runtime projections so a late clear() from deliver can still land.
+        // after runtime projections so a late clear() from submit can still land.
         await attempt(() => managedTaskResultReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();

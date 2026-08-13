@@ -1,5 +1,5 @@
 // Loopback HTTP + JSON-RPC 2.0 attach transport for Local Tent Service.
-// B5: loopback token required for /rpc and /events; /health is liveness-only.
+// Loopback token is required for /rpc and /events; /health is liveness-only.
 
 import * as http from "node:http";
 import type { EventEnvelope } from "./types.js";

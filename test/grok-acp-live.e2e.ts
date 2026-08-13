@@ -132,9 +132,9 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     });
     assert.equal(delivered.state, "submitted");
 
-    const deliveries = await rpc("taskResult.list", { workspaceId });
-    assert.ok(!deliveries.error, JSON.stringify(deliveries.error));
-    const rows = (deliveries.result as { deliveries: Array<{ id: string; summary: string }> }).deliveries;
+    const results = await rpc("taskResult.list", { workspaceId });
+    assert.ok(!results.error, JSON.stringify(results.error));
+    const rows = (results.result as { results: Array<{ id: string; summary: string }> }).results;
     assert.equal(rows.length, 1);
     assert.match(rows[0]!.summary, /TENT_GROK_E2E_OK/i);
 

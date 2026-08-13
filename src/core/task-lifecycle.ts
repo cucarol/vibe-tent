@@ -1,4 +1,4 @@
-// Task lifecycle API (B4) — claim / wait / submit / accept / reject / interrupt.
+// Task lifecycle API — claim / wait / submit / accept / reject / interrupt.
 // Uses Task records under temp/<owner>/tasks and Result records under results.
 // Runtime occupation oracle = active Task record only.
 // Node frontmatter is not dual-written for owner/status; collaboration truth is Task/TaskResult.

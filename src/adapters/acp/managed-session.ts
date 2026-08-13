@@ -316,7 +316,7 @@ export async function startManagedAcpSession(
  * selects `resume` so managed continuity does not replay transcript history.
  * Fail-loud when the chosen capability is unsupported or the RPC fails; always
  * cleans up the process. History notifications from load are isolated by AcpClient
- * and never auto-deliver.
+ * and never auto-submit.
  */
 export async function resumeManagedAcpSession(
   input: ResumeManagedAcpSessionInput

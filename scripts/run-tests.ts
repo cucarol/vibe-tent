@@ -15,7 +15,7 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "test/open-source.test.ts",
   "test/package.test.ts",
   "test/service-connection-dispatch.test.ts",
-  "test/service-b5.test.ts",
+  "test/service-managed-lifecycle.test.ts",
   "test/service-sub-dispatch.test.ts",
   "test/task-lifecycle.test.ts",
 ] as const);

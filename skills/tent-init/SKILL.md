@@ -32,8 +32,7 @@ Before creating Nodes for an existing project, present a compact proposed tree. 
 For each proposed Node show:
 
 - name and parent;
-- primary type: `goal`, `prompt`, or `output`;
-- optional secondary type only when its symbol or behavior matters;
+- optional single type marker such as `goal`, `prompt`, or `output` when useful;
 - a small reused tag vocabulary;
 - source pointers to relevant workspace files, Git facts, deliverables, or confirmed working context;
 - one short reason the Node belongs in the initial map.
@@ -59,7 +58,7 @@ After approval, create parents before children with `tent node create`, pass sub
 ## Verify and hand off
 
 1. Mount or attach the workspace through Local Service and re-query it.
-2. Verify the persisted Node tree, types, tags, pointers, and workspace root against the approved draft.
+2. Verify the persisted Node tree, optional type markers, tags, pointers, and workspace root against the approved draft.
 3. Show the resulting structure to the user and correct only requested differences through official mutations.
 4. Offer, but do not force, creation of the first durable Role. If the current executor will remain accountable, enter that Role and load `tent-role`.
 5. Load `tent-task` only when concrete work is dispatched or claimed.

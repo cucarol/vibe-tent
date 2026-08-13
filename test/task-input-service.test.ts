@@ -56,7 +56,7 @@ function mockAcpRoute(
     /** Never complete U2A follow-ups (hang until SIGTERM). */
     hangFollowup?: boolean;
     keepAlive?: boolean;
-    /** Hang bootstrap (no auto-deliver); U2A follow-ups still complete. */
+    /** Hang bootstrap (no auto-submit); U2A follow-ups still complete. */
     hangBootstrap?: boolean;
     /** Advertise agentCapabilities.loadSession (native resume). */
     loadSession?: boolean;
@@ -947,7 +947,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Tas
       );
     }, 15_000, "session alive");
 
-    // Keep task running long enough to inject before bootstrap auto-delivers.
+    // Keep task running long enough to inject before bootstrap auto-submits.
     await client.taskWait(
       workspaceId,
       taskPath,
@@ -1811,10 +1811,10 @@ test("reject-resume: background completion projects processing → delivered", a
       return t.task.state === "submitted" ? t : null;
     }, 20_000, "rework result after bg review-feedback");
 
-    const deliveries = (await client.taskResultList(workspaceId)) as {
+    const results = (await client.taskResultList(workspaceId)) as {
       results: Array<{ report: string; status: string }>;
     };
-    const readyRework = deliveries.results.filter(
+    const readyRework = results.results.filter(
       (result) =>
         result.status === "ready" &&
         result.report === "outcome: delivered\n\nBG_REWORK_OK"
@@ -1920,11 +1920,11 @@ test("reject-resume: background completion projects processing → delivered", a
     assert.ok(uncertainAttention?.uncertainAt);
     assert.match(uncertainAttention?.lastError ?? "", /markDelivered/);
 
-    const beforeAckDeliveries = (await client.taskResultList(workspaceId)) as {
+    const beforeAckTaskResults = (await client.taskResultList(workspaceId)) as {
       results: Array<{ report: string; status: string }>;
     };
     assert.equal(
-      beforeAckDeliveries.results.filter(
+      beforeAckTaskResults.results.filter(
         (result) =>
           result.status === "ready" && result.report === "BG_REWORK_OK"
       ).length,
@@ -2682,7 +2682,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
           return null;
         }
       }, 15_000, `${name} bootstrap finished while waiting`);
-      // Stay waiting so peer setup cannot race auto-deliver.
+      // Stay waiting so peer setup cannot race auto-submit.
       return taskPath;
     }
 

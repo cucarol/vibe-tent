@@ -1,4 +1,4 @@
-// Electron main entry — Tent Desktop Shell (B5).
+// Electron main entry — Tent Desktop Shell.
 // Security: contextIsolation on, nodeIntegration off; service outlives windows.
 
 import * as path from "node:path";

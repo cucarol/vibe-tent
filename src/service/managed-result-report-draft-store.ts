@@ -117,7 +117,7 @@ function invalidDraftState(): Error {
 }
 
 /**
- * Single-process store for managed auto-deliver report drafts.
+ * Single-process store for managed auto-submit report drafts.
  * One open draft per workspaceId+taskPath. Mutations + disk are serialized.
  */
 export class ManagedTaskResultReportDraftStore {

@@ -30,7 +30,7 @@ function generatedCall(text: string, marker: string): string {
   return text.slice(index, end + 3);
 }
 
-test("generated release artifacts require protocol 8 id-only review and Decision mutation", async () => {
+test("generated release artifacts require Protocol 9 TaskResult review and Decision mutation", async () => {
   const [cli, service, desktopMain, desktopRenderer] = await Promise.all([
     generated("cli.mjs"),
     generated("service.mjs"),
@@ -38,22 +38,23 @@ test("generated release artifacts require protocol 8 id-only review and Decision
     generated("desktop/dist/renderer-next/main.js"),
   ]);
 
-  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
-  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
-  assert.match(cli, /tent task accept <deliveryId> --actor <user\|role>/);
-  assert.match(cli, /tent task reject <deliveryId> --actor <user\|role>/);
+  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
+  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
+  assert.match(cli, /tent task submit <taskPath> --report <text>\|-/);
+  assert.match(cli, /tent task accept <resultId> --actor <user\|role>/);
+  assert.match(cli, /tent task reject <resultId> --actor <user\|role>/);
   assert.match(cli, /tent task decision respond <requestId>/);
   assert.doesNotMatch(cli, /task accept <taskPath>/);
   assert.doesNotMatch(cli, /task reject <taskPath>/);
-  assert.doesNotMatch(cli, /--delivery-id/);
+  assert.doesNotMatch(cli, /--delivery-id|task deliver/);
 
   assert.match(
     service,
-    /new Set\(\["workspaceId", "deliveryId", "actor", "outputNodeIds"\]\)/
+    /new Set\(\["workspaceId", "resultId", "actor"\]\)/
   );
   assert.match(
     service,
-    /new Set\(\["workspaceId", "deliveryId", "actor", "note", "resume"\]\)/
+    /new Set\(\["workspaceId", "resultId", "actor", "note", "resume"\]\)/
   );
   assert.match(
     service,
@@ -68,13 +69,13 @@ test("generated release artifacts require protocol 8 id-only review and Decision
     /new Set\(\["workspaceId", "taskPath", "requestId", "response"\]\)/
   );
 
-  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 8/);
+  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
   assert.match(desktopMain, /task\.accept/);
   assert.match(desktopMain, /task\.reject/);
   assert.match(desktopMain, /decisionRequest\.respond/);
-  assert.match(desktopMain, /deliveryId/);
+  assert.match(desktopMain, /resultId/);
   assert.match(desktopMain, /requestId/);
-  assert.doesNotMatch(desktopMain, /expectedDeliveryId/);
+  assert.doesNotMatch(desktopMain, /deliveryId|expectedDeliveryId/);
   for (const marker of [
     'client.call("task.accept"',
     'client.call("task.reject"',
@@ -84,15 +85,15 @@ test("generated release artifacts require protocol 8 id-only review and Decision
     assert.doesNotMatch(mutation, /taskPath|taskId/);
   }
 
-  assert.match(desktopRenderer, /protocolVersion!==8/);
-  assert.match(desktopRenderer, /acceptDelivery/);
-  assert.match(desktopRenderer, /rejectDelivery/);
+  assert.match(desktopRenderer, /protocolVersion!==9/);
+  assert.match(desktopRenderer, /acceptTaskResult/);
+  assert.match(desktopRenderer, /rejectTaskResult/);
   assert.match(desktopRenderer, /respondDecision/);
-  assert.match(desktopRenderer, /deliveryId/);
+  assert.match(desktopRenderer, /resultId/);
   assert.match(desktopRenderer, /requestId/);
-  assert.doesNotMatch(desktopRenderer, /expectedDeliveryId/);
-  assert.doesNotMatch(generatedWindow(desktopRenderer, "acceptDelivery", 240), /taskPath|taskId/);
-  assert.doesNotMatch(generatedWindow(desktopRenderer, "rejectDelivery", 240), /taskPath|taskId/);
+  assert.doesNotMatch(desktopRenderer, /deliveryId|expectedDeliveryId/);
+  assert.doesNotMatch(generatedWindow(desktopRenderer, "acceptTaskResult", 240), /taskPath|taskId/);
+  assert.doesNotMatch(generatedWindow(desktopRenderer, "rejectTaskResult", 240), /taskPath|taskId/);
   assert.doesNotMatch(generatedWindow(desktopRenderer, "respondDecision", 240), /taskPath|taskId/);
 
   for (const artifact of [cli, service, desktopMain, desktopRenderer]) {

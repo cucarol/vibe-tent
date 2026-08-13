@@ -670,7 +670,7 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
     const headB = (deliveredB.result as { result: { targetHead?: string } }).result
       .targetHead;
     assert.equal(headB, mainAtDeliver);
-    assert.equal(headA, headB, "both Deliveries snapshot the same targetHead");
+    assert.equal(headA, headB, "both TaskResults snapshot the same targetHead");
 
     // Fire concurrent accepts on different taskPaths sharing the same
     // git-common-dir + refs/heads/main lock (not workspaceId/taskPath).

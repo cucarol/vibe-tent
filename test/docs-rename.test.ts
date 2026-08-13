@@ -404,7 +404,7 @@ test("renameNode: refuses collision and occupied range", async () => {
       "    nodes:",
       `      - { id: ${occupied} }`,
       "    tasks: []",
-      "    deliveries: []",
+      "    results: []",
       "    git: []",
       "  requester: { kind: user, id: user }",
       "  assignee: { kind: role, id: executor }",

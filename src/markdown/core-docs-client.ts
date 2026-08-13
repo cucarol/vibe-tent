@@ -1,4 +1,4 @@
-// In-process DocsClient over tent-core (B3 interim until B2 service attach lands).
+// In-process DocsClient over tent-core.
 
 import type { OpsEnv } from "../core/ops-context.js";
 import { createNode, forkNode } from "../core/ops.js";

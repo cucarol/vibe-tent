@@ -1,4 +1,4 @@
-// ProviderAdapter surface (B0 agent-runtime.md §5).
+// ProviderAdapter surface.
 // Adapters depend on runtime types only — never core lifecycle modules.
 
 import type { RuntimeEvent, StopReason } from "../runtime/types.js";

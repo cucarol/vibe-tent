@@ -1,4 +1,4 @@
-// Machine-local SessionRegistry (B0 agent-runtime.md §6).
+// Machine-local SessionRegistry.
 // Workspace copy must not carry these files.
 
 import * as fs from "node:fs/promises";
