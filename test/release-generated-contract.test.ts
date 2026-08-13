@@ -41,8 +41,8 @@ test("generated release artifacts require Protocol 9 TaskResult review and Decis
   assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
   assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
   assert.match(cli, /tent task submit <taskPath> --report <text>\|-/);
-  assert.match(cli, /tent task accept <resultId> --actor <user\|role>/);
-  assert.match(cli, /tent task reject <resultId> --actor <user\|role>/);
+  assert.match(cli, /tent task accept <resultId> --actor <user\|roleId>/);
+  assert.match(cli, /tent task reject <resultId> --actor <user\|roleId>/);
   assert.match(cli, /tent task decision respond <requestId>/);
   assert.doesNotMatch(cli, /task accept <taskPath>/);
   assert.doesNotMatch(cli, /task reject <taskPath>/);

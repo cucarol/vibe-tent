@@ -63,7 +63,7 @@ export async function runTaskCommand(
       if (unknown) return failUsage(`Unknown option --${unknown} for task ${sub}`);
       if (positionals.length !== 1 || !isTaskResultId(positionals[0]!)) {
         return failUsage(
-          `Usage: tent task ${sub} <resultId> --actor <user|role> [--workspace <path>] [--json]`
+          `Usage: tent task ${sub} <resultId> --actor <user|roleId> [--workspace <path>] [--json]`
         );
       }
     }
@@ -347,11 +347,11 @@ export async function runTaskCommand(
         const resultId = positionals[0];
         if (!resultId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <resultId> --actor <user|role> [--workspace <path>] [--json]"
+            "Usage: tent task accept <resultId> --actor <user|roleId> [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
-        if (!actor) return failUsage("tent task accept requires --actor <user|role>");
+        if (!actor) return failUsage("tent task accept requires --actor <user|roleId>");
         const result = await client.taskAccept(workspaceId, resultId, actor);
         return okPrint(result, json, (r) => {
           const row = r as {
@@ -374,11 +374,11 @@ export async function runTaskCommand(
         const resultId = positionals[0];
         if (!resultId || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task reject <resultId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
+            "Usage: tent task reject <resultId> --actor <user|roleId> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
-        if (!actor) return failUsage("tent task reject requires --actor <user|role>");
+        if (!actor) return failUsage("tent task reject requires --actor <user|roleId>");
         const resume =
           flags.resume === "true" ? true : flags["no-resume"] === "true" ? false : undefined;
         const result = await client.taskReject(workspaceId, resultId, actor, {
@@ -1157,8 +1157,8 @@ Commands:
       # --context-node   repeatable shared read-only context Nodes
       # requester derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <resultId> --actor <user|role> [--workspace <path>] [--json]
-  tent task reject <resultId> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
+  tent task accept <resultId> --actor <user|roleId> [--workspace <path>] [--json]
+  tent task reject <resultId> --actor <user|roleId> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]

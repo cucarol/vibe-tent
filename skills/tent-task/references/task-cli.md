@@ -10,8 +10,8 @@ tent task claim <taskPath> [--json]
 tent task claim --work-node <nodeId> ... --prompt <text>|-
 tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> ... --prompt <text>|-
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review] [--json]
-tent task accept <resultId> --actor <user|role> [--json]
-tent task reject <resultId> --actor <user|role> [--note ...] [--resume|--no-resume] [--json]
+tent task accept <resultId> --actor <user|roleId> [--json]
+tent task reject <resultId> --actor <user|roleId> [--note ...] [--resume|--no-resume] [--json]
 tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label]
 tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny)
 tent task send-input <taskPath> --text <text>|-

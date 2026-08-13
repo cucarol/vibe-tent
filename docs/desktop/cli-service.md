@@ -12,8 +12,8 @@ tent task claim <taskPath>
 tent task claim --work-node <nodeId> ... --prompt <text>|-
 tent task dispatch --target role:<roleId>|connection:<connectionId> ...
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review]
-tent task accept <resultId> --actor <user|role>
-tent task reject <resultId> --actor <user|role> [--note ...] [--resume|--no-resume]
+tent task accept <resultId> --actor <user|roleId>
+tent task reject <resultId> --actor <user|roleId> [--note ...] [--resume|--no-resume]
 tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label]
 tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny)
 ```
