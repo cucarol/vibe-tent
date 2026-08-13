@@ -63,7 +63,7 @@ var hintResetTimer = null;
 var cardKindLabels = {
   node: "\u8282\u70B9",
   task: "\u4EFB\u52A1",
-  delivery: "\u4EA4\u4ED8",
+  result: "\u4EA4\u4ED8",
   handoff: "\u4EA4\u63A5",
   selection: "\u9009\u533A",
   role: "\u89D2\u8272"

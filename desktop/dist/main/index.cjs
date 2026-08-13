@@ -168,12 +168,12 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 8;
+var TENT_SERVICE_PROTOCOL_VERSION = 9;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
     const serviceProtocolVersion = options.serviceProtocolVersion;
-    const message = options.message ?? (kind === "missing" ? `Local Tent Service protocol is missing (legacy endpoint). This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} (package version stays 0.1.0; protocol is a separate contract). Service package version=${servicePackageVersion}. Restart or upgrade tent-service, then retry. Refusing to attach or spawn a competing service against an incompatible process.` : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). Service package version=${servicePackageVersion}. Restart or upgrade tent-service to a compatible build before any business RPC. Refusing attach success and refusing to spawn a competing service.`);
+    const message = options.message ?? (kind === "missing" ? `Local Tent Service protocol is missing (legacy endpoint). This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} (package version is 0.2.0; protocol is a separate contract). Service package version=${servicePackageVersion}. Restart or upgrade tent-service, then retry. Refusing to attach or spawn a competing service against an incompatible process.` : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.2.0; protocol is separate). Service package version=${servicePackageVersion}. Restart or upgrade tent-service to a compatible build before any business RPC. Refusing attach success and refusing to spawn a competing service.`);
     super(message);
     this.code = "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
     this.name = "ServiceProtocolIncompatibleError";
@@ -527,7 +527,7 @@ function sleep(ms) {
 
 // src/desktop/main/service-host.ts
 function isDesktopProjectionEventType(type) {
-  return type === "node.changed" || type === "workspace.switched" || type === "service.health" || type === "registry.roles.updated" || type === "connection.changed" || type === "task.state" || type === "delivery.updated" || type === "decisionRequest.pending" || type === "decisionRequest.resolved";
+  return type === "node.changed" || type === "workspace.switched" || type === "service.health" || type === "registry.roles.updated" || type === "connection.changed" || type === "task.state" || type === "taskResult.updated" || type === "decisionRequest.pending" || type === "decisionRequest.resolved";
 }
 var DesktopServiceHost = class {
   constructor(attachService = attachOrStartService) {
@@ -1072,8 +1072,8 @@ function normalizeRequest(raw) {
     "target",
     "acceptMode"
   ]) && uniqueStrings(raw.workNodeIds, false) && uniqueStrings(raw.contextNodeIds, true) && raw.workNodeIds.every((id) => !raw.contextNodeIds.includes(id)) && nonEmpty(raw.prompt) && isRecord2(raw.target) && exactKeys(raw.target, ["kind", "id"]) && (raw.target.kind === "role" || raw.target.kind === "connection") && nonEmpty(raw.target.id) && (raw.acceptMode === "review-required" || raw.acceptMode === "auto-accept" || raw.acceptMode === "agent-decide")) return raw;
-  if (raw.operation === "acceptDelivery" && exactKeys(raw, ["operation", "workspaceId", "deliveryId", "outputNodeIds"]) && nonEmpty(raw.deliveryId) && uniqueStrings(raw.outputNodeIds, true)) return raw;
-  if (raw.operation === "rejectDelivery" && exactKeys(raw, ["operation", "workspaceId", "deliveryId", "note", "resume"]) && nonEmpty(raw.deliveryId) && nonEmpty(raw.note) && raw.resume === true) return raw;
+  if (raw.operation === "acceptTaskResult" && exactKeys(raw, ["operation", "workspaceId", "resultId"]) && nonEmpty(raw.resultId)) return raw;
+  if (raw.operation === "rejectTaskResult" && exactKeys(raw, ["operation", "workspaceId", "resultId", "note", "resume"]) && nonEmpty(raw.resultId) && nonEmpty(raw.note) && raw.resume === true) return raw;
   if (raw.operation === "respondDecision" && exactKeys(raw, ["operation", "workspaceId", "requestId", "response"]) && nonEmpty(raw.requestId) && isRecord2(raw.response)) {
     const response = raw.response;
     if (response.kind === "option" && exactKeys(response, ["kind", "optionId"]) && nonEmpty(response.optionId) || response.kind === "custom" && exactKeys(response, ["kind", "text"]) && nonEmpty(response.text) || response.kind === "deny" && exactKeys(response, ["kind"])) return raw;
@@ -1119,27 +1119,25 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
       return { ok: true, value: dispatchTargets(roles, connections, request.workspaceId) };
     }
     if (request.operation === "dispatch") {
-      const target = request.target.kind === "role" ? { roleId: request.target.id } : { connectionId: request.target.id };
+      const target = request.target.kind === "role" ? { assigneeRoleId: request.target.id } : { connectionId: request.target.id };
       const result = await client.call("task.dispatch", {
         workspaceId: request.workspaceId,
         workNodeIds: request.workNodeIds,
         contextNodeIds: request.contextNodeIds,
         prompt: request.prompt,
-        parentActor: { kind: "user", id: "user" },
-        asSub: false,
+        requester: { kind: "user", id: "user" },
         acceptMode: request.acceptMode,
         ...target
       });
-      if (!isRecord2(result) || result.workspaceId !== request.workspaceId || !nonEmpty(result.taskPath)) {
+      if (!isRecord2(result) || result.workspaceId !== request.workspaceId) {
         throw new InvalidCollaborationResponseError("task.dispatch response is corrupt");
       }
       return { ok: true, value: { workspaceId: request.workspaceId } };
     }
-    if (request.operation === "acceptDelivery") {
+    if (request.operation === "acceptTaskResult") {
       const result = await client.call("task.accept", {
         workspaceId: request.workspaceId,
-        deliveryId: request.deliveryId,
-        outputNodeIds: request.outputNodeIds,
+        resultId: request.resultId,
         actor: "user"
       });
       if (!isRecord2(result) || result.workspaceId !== request.workspaceId) {
@@ -1147,10 +1145,10 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
       }
       return { ok: true, value: { workspaceId: request.workspaceId } };
     }
-    if (request.operation === "rejectDelivery") {
+    if (request.operation === "rejectTaskResult") {
       const result = await client.call("task.reject", {
         workspaceId: request.workspaceId,
-        deliveryId: request.deliveryId,
+        resultId: request.resultId,
         actor: "user",
         note: request.note,
         resume: request.resume
@@ -1509,7 +1507,7 @@ var DesktopShellModel = class {
       health: this.health,
       pendingTasks: this.floatingTasks.filter((task) => task.state === "queued").length,
       takenTasks: this.floatingTasks.filter(
-        (task) => task.state === "running" || task.state === "waiting" || task.state === "delivered"
+        (task) => task.state === "running" || task.state === "waiting" || task.state === "submitted"
       ).length,
       recentCards: this.cards.list(),
       foregroundRoot: foreground?.workspaceRoot ?? null
