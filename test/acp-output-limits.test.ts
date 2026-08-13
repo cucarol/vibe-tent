@@ -384,6 +384,41 @@ test("AcpClient retries an explicit stop after an unconfirmed child exit", async
   assert.equal(client.isAlive(), false);
 });
 
+test("AcpClient waits for the exit event after ChildProcess.exitCode is populated", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({ sessionId: "ss-exit-event-boundary", events });
+  await client.connect();
+  const internals = client as unknown as {
+    proc: import("node:child_process").ChildProcess | null;
+    childExited: boolean;
+    waitExit(): Promise<void>;
+  };
+  const proc = internals.proc;
+  assert.ok(proc);
+
+  try {
+    Object.defineProperty(proc, "exitCode", {
+      configurable: true,
+      value: 0,
+      writable: true,
+    });
+    let resolved = false;
+    const exitPromise = internals.waitExit().then(() => {
+      resolved = true;
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const resolvedBeforeExit = resolved;
+    proc.kill("SIGTERM");
+    await exitPromise;
+
+    assert.equal(resolvedBeforeExit, false);
+    assert.equal(internals.childExited, true);
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
 test("AcpClient accepts an exact UTF-8 assistant budget across sustained small chunks", async () => {
   const events: RuntimeEvent[] = [];
   const client = await makeClient({

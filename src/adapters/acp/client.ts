@@ -1648,11 +1648,7 @@ export class AcpClient {
     const proc = this.proc;
     if (
       !proc ||
-      this.childExited ||
-      this.exitCode !== null ||
-      this.exitSignal !== null ||
-      proc.exitCode !== null ||
-      proc.signalCode !== null
+      this.childExited
     ) {
       return Promise.resolve();
     }
