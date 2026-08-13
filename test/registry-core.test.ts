@@ -144,67 +144,7 @@ test("frontmatter round-trip: nested multiline and control strings are always qu
   assert.deepEqual(card.acceptance, [objective]);
 });
 
-test("frontmatter parse: recovers historical multiline flow collections", () => {
-  const fixtures = [
-    {
-      raw: `---
-type: task
-contextCard: {schemaVersion: v1, objective: 第一行
-
-第二行
-第三行, frozenDecisions: [], scope: {include: [], exclude: []}, acceptance: [第一行
-
-第二行
-第三行], refs: {nodes: [{id: cx-one, path: 节点一}], tasks: [], results: [], git: []}}
-state: queued
----
-# Task
-`,
-      objective: "第一行\n\n第二行\n第三行",
-      nodeId: "cx-one",
-    },
-    {
-      raw: `---
-type: task
-contextCard: {schemaVersion: v1, objective: 先读取项目说明
-
-文件边界只允许核心解析器
-
-目标
-1. 保留已有事实
-2. 使用正式生命周期, frozenDecisions: [], scope: {include: [], exclude: []}, acceptance: [先读取项目说明
-
-文件边界只允许核心解析器
-
-目标
-1. 保留已有事实
-2. 使用正式生命周期], refs: {nodes: [{id: cx-a, path: 节点甲}, {id: cx-b, path: 节点乙}], tasks: [], results: [], git: []}}
-state: queued
----
-# Task
-`,
-      objective:
-        "先读取项目说明\n\n文件边界只允许核心解析器\n\n目标\n1. 保留已有事实\n2. 使用正式生命周期",
-      nodeId: "cx-b",
-    },
-  ];
-
-  for (const fixture of fixtures) {
-    const parsed = parseFrontmatter(fixture.raw);
-    const card = parsed.data.contextCard as {
-      objective: string;
-      acceptance: string[];
-      refs: { nodes: Array<{ id: string }> };
-    };
-    assert.equal(card.objective, fixture.objective);
-    assert.deepEqual(card.acceptance, [fixture.objective]);
-    assert.ok(card.refs.nodes.some((node) => node.id === fixture.nodeId));
-    assert.equal(parsed.data.state, "queued");
-    assert.equal(parsed.body, "# Task\n");
-  }
-});
-
-test("frontmatter parse: malformed multiline flow recovery cannot consume the next top-level key", () => {
+test("frontmatter parse: incomplete flow mapping fails loud on the first line", () => {
   assert.throws(
     () =>
       parseFrontmatter(`---
@@ -214,7 +154,21 @@ state: queued
 ---
 # Task
 `),
-    /unterminated multiline flow collection/
+    /unterminated flow mapping/
+  );
+});
+
+test("frontmatter parse: incomplete flow array fails loud on the first line", () => {
+  assert.throws(
+    () =>
+      parseFrontmatter(`---
+type: task
+commits: [abc123
+state: queued
+---
+# Task
+`),
+    /unterminated flow array/
   );
 });
 
