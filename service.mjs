@@ -1953,6 +1953,32 @@ function serializeTaskContextCardForFrontmatter(card) {
 function formatTaskContextCardPrompt(card) {
   return formatTaskContextCardV2Prompt(card);
 }
+function formatTaskPackage(input) {
+  const card = parseTaskContextCard(input.contextCard);
+  const packageCard = { ...card };
+  delete packageCard.contextGeneration;
+  const prompt = input.prompt?.trim() || "";
+  if (!prompt) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Task Package requires a non-empty prompt."
+    );
+  }
+  const parts = [
+    "--- Tent Task Package ---",
+    formatTaskContextCardPrompt(packageCard)
+  ];
+  if (input.taskPointers?.trim()) {
+    parts.push("", input.taskPointers.trim());
+  }
+  parts.push(
+    "",
+    "## Prompt",
+    "",
+    prompt
+  );
+  return parts.join("\n");
+}
 function formatStableProjectContext(input) {
   return [
     "Tent stable project context v1",
@@ -1964,24 +1990,23 @@ function formatStableProjectContext(input) {
   ].join("\n");
 }
 function formatDynamicDelta(input) {
-  const parts = [
-    "--- Tent Task dynamic context ---",
-    formatTaskContextCardPrompt(input.contextCard)
-  ];
-  if (input.taskPointers?.trim()) {
-    parts.push("", input.taskPointers.trim());
+  const taskPackage = input.taskPackage ?? "";
+  if (!taskPackage.trim()) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Managed prompt assembly requires a non-empty canonical Task Package."
+    );
   }
-  const prompt = input.prompt?.trim();
-  parts.push(
-    "",
-    "## User Prompt",
-    "",
-    prompt || "(no user prompt on envelope)"
-  );
-  if (input.taskInputDelta?.trim()) {
-    parts.push("", input.taskInputDelta.trim());
+  const wrapper = input.dynamicWrapper?.trim();
+  if (!wrapper) {
+    return { taskPackage, dynamicDelta: taskPackage };
   }
-  return parts.join("\n");
+  return {
+    taskPackage,
+    dynamicDelta: `${taskPackage}
+
+${wrapper}`
+  };
 }
 function assembleManagedPrompt(input) {
   if (!isContextGenerationId(input.contextGeneration)) {
@@ -1990,15 +2015,15 @@ function assembleManagedPrompt(input) {
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
     );
   }
-  const card = parseTaskContextCard(input.contextCard);
   const includeStablePrefix = input.includeStablePrefix !== false;
-  const dynamicDelta = formatDynamicDelta({ ...input, contextCard: card });
+  const { taskPackage, dynamicDelta } = formatDynamicDelta(input);
   if (!includeStablePrefix) {
     return {
       text: dynamicDelta + "\n",
       contextGeneration: input.contextGeneration,
       includedStablePrefix: false,
       stablePrefix: "",
+      taskPackage,
       dynamicDelta
     };
   }
@@ -2025,6 +2050,7 @@ ${dynamicDelta}
     contextGeneration: input.contextGeneration,
     includedStablePrefix: true,
     stablePrefix,
+    taskPackage,
     dynamicDelta
   };
 }
@@ -2603,11 +2629,14 @@ function resolveTaskPromptRoots(roots) {
   const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
   return { workspaceRoot, systemRoot };
 }
-function formatTaskPointers(task) {
+function formatTaskPackagePointers(task) {
   const lines = [
     `Task record: ${task.path}`,
     `Manifest: ${task.manifest}`
   ];
+  if (task.id) {
+    lines.push(`Task id: ${task.id}`);
+  }
   if (task.contextCard) {
     lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
     lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
@@ -2619,14 +2648,29 @@ function formatTaskPointers(task) {
   }
   lines.push(`acceptMode: ${task.acceptMode}`);
   if (task.assigneeRoleId) {
-    const initCli = join("temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md");
-    const initFile = join(".tent", initCli);
     lines.push(`assigneeRoleId: ${task.assigneeRoleId}`);
-    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   }
-  if (task.executionSessionId) lines.push(`executionSessionId: ${task.executionSessionId}`);
   if (!task.assigneeRoleId) lines.push(`Session-only execution (no durable Role responsibility).`);
   return lines.join("\n");
+}
+function taskPackageForTask(task) {
+  const prompt = extractTaskPrompt(task);
+  if (!prompt) throw new Error(`Task Package requires a non-empty prompt: ${task.path}.`);
+  const pointerSections = [formatTaskPackagePointers(task)];
+  const executionLane = formatExecutionLanePrompt(projectExecutionLaneFromTask(task));
+  if (executionLane) {
+    pointerSections.push(executionLane);
+  }
+  pointerSections.push(
+    "TaskResult contract: a non-empty final report is the normal success path.",
+    "When applicable, include commits, checks, and artifact refs in the same TaskResult.",
+    "Never self-accept."
+  );
+  return formatTaskPackage({
+    contextCard: task.contextCard,
+    taskPointers: pointerSections.join("\n"),
+    prompt
+  });
 }
 function formatExternalPathBlock(task, roots) {
   const taskFile = join(".tent", task.path);
@@ -2644,17 +2688,20 @@ function relayPromptForTask(task, roots) {
 ` : `A Tent task is bound to Session ${task.executionSessionId}.
 `;
   const initStep = task.assigneeRoleId ? `4. If this is a new session for this Role, complete Role init first (read the init file above).` : `4. Read the Task record and task-scoped manifest pointers above; no Role init applies.`;
+  const roleInitBlock = task.assigneeRoleId ? `${join(".tent", "temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md")}
+` : "";
   return assigneeLine + `${formatExternalPathBlock(task, resolved)}
-${formatTaskPointers(task)}
-1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
+` + roleInitBlock + `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the Task record). Resolve current Node state by id only when comparing drift.
 3. When finished, run \`tent task submit ${task.path} --report <text>\` (optional: --commits sha,sha).
-` + initStep;
+${initStep}
+
+` + taskPackageForTask(task);
 }
 function extractTaskPrompt(task) {
   const body = task.prompt?.trim() || "";
   if (!body) return "";
-  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  const match = body.match(/##\s*Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
   if (match) return match[1].trim();
   return body;
 }
@@ -34451,7 +34498,7 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     roleId: task.assigneeRoleId,
     role: roleDef
   });
-  const base = buildContextCardManagedBootstrap(task, task.contextCard, {
+  const base = buildContextCardManagedBootstrap(task, {
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
     sessionContextGeneration: roots.sessionContextGeneration,
@@ -34461,7 +34508,7 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
   });
   return base;
 }
-function buildContextCardManagedBootstrap(task, contextCard, roots) {
+function buildContextCardManagedBootstrap(task, roots) {
   const includeStablePrefix = shouldInjectStablePrefix({
     sessionContextGeneration: roots.sessionContextGeneration,
     currentContextGeneration: roots.currentContextGeneration
@@ -34470,22 +34517,16 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     sessionContextGeneration: roots.sessionContextGeneration,
     currentContextGeneration: roots.currentContextGeneration
   });
-  const executionLane = projectExecutionLaneFromTask(task);
-  const executionLaneText = formatExecutionLanePrompt(executionLane);
-  const bootstrapNodeIds = taskReferencedNodeIds(task);
-  const pointers = [
-    `Task envelope: ${task.path}`,
-    `Manifest: ${task.manifest}`,
-    ...task.id ? [`Task id: ${task.id}`] : [],
-    ...bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : [],
-    `acceptMode: ${task.acceptMode}`,
-    ...task.requester ? [`requester: ${task.requester.kind}:${task.requester.id}`] : [],
-    ...task.assigneeRoleId ? [`roleId: ${task.assigneeRoleId}`] : [],
-    ...task.executionSessionId ? [`sessionId: ${task.executionSessionId}`] : [],
+  const taskPackage = taskPackageForTask(task);
+  const dynamicWrapperParts = [
+    "--- Tent managed session execution ---",
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
-    "Managed path: Local Service already claimed this Task; a non-empty final assistant reply is submitted as a Result automatically.",
-    ...executionLaneText ? [executionLaneText] : []
-  ].join("\n");
+    "Managed path: Local Service already claimed this Task; a non-empty final assistant reply is submitted as a Result automatically."
+  ];
+  if (roots.taskInputDelta?.trim()) {
+    dynamicWrapperParts.push(roots.taskInputDelta.trim());
+  }
+  const dynamicWrapper = dynamicWrapperParts.join("\n");
   const assembly = assembleManagedPrompt({
     workspaceRoot: roots.workspaceRoot,
     systemRoot: roots.systemRoot,
@@ -34493,11 +34534,9 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     tentRoleSection: roots.tentRoleSection,
     rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
-    contextCard,
     contextGeneration: roots.currentContextGeneration,
-    taskPointers: pointers,
-    prompt: extractTaskPrompt(task),
-    taskInputDelta: roots.taskInputDelta,
+    taskPackage,
+    dynamicWrapper,
     includeStablePrefix
   });
   if (includeStablePrefix) {
