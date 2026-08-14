@@ -433,6 +433,8 @@ button, input, select, textarea { font: inherit; }
 .tn-inbox-item-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .tn-inbox-item-heading strong { color: var(--tn-color-text-primary); font-size: 12px; }
 .tn-inbox-item > p { margin: 0; color: var(--tn-color-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.tn-result-report { min-width: 0; color: var(--tn-color-text-secondary); }
+.tn-result-report .tn-markdown-reader { padding: 0; font-size: 12px; line-height: 1.6; }
 .tn-inbox-actions, .tn-inline-form > div { display: flex; justify-content: flex-end; gap: 6px; }
 .tn-inbox-view { min-height: 0; overflow: auto; padding: 0 10px 18px; }
 .tn-inbox-status { padding: 10px 2px 4px; }

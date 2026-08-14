@@ -151,6 +151,78 @@ test("Role-responsible return stays readable without exposing user review mutati
   assert.doesNotMatch(html, />接纳<|>退回<|退回修改/);
 });
 
+test("selected exact Task Result renders its complete multiline Markdown report", () => {
+  const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
+  const report = "## 完成内容\n\n第一段保留换行。\n\n- 修改界面\n- 补齐回归\n\n`npm test` 通过。";
+  const resultSnapshot: WorkspaceCollaborationView = {
+    ...snapshot("cx-a"),
+    selectedNode: { nodeId: "cx-a", activeTask: {
+      taskId: "tk-current",
+      state: "submitted",
+      responsibility: { kind: "user" },
+      execution: { kind: "role", roleId: "rl-ui", label: "界面" },
+      readyResult: { resultId: "rs-current", summary: report, createdAt: "now" },
+      pendingDecision: null,
+    }, statusDetail: null },
+  };
+  const html = renderToStaticMarkup(createElement(CollaborationPanel, {
+    node,
+    allNodes: [node],
+    view: { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: resultSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /data-result-id="rs-current"/);
+  assert.match(html, /<h2>完成内容<\/h2>/);
+  assert.match(html, /<li>修改界面<\/li>/);
+  assert.match(html, /<li>补齐回归<\/li>/);
+  assert.match(html, /<code>npm test<\/code> 通过/);
+});
+
+test("stale Result keeps only the exact last-known report visible and disables review mutations", () => {
+  const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
+  const staleSnapshot: WorkspaceCollaborationView = {
+    ...snapshot("cx-a"),
+    selectedNode: { nodeId: "cx-a", activeTask: {
+      taskId: "tk-current",
+      state: "submitted",
+      responsibility: { kind: "user" },
+      execution: null,
+      readyResult: { resultId: "rs-current", summary: "# 上次确认的正文\n\n保留为已知内容。", createdAt: "now" },
+      pendingDecision: null,
+    }, statusDetail: null },
+    inbox: { items: [{ kind: "result", resultId: "rs-foreign", summary: "不得串入的另一条正文", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } },
+  };
+  const html = renderToStaticMarkup(createElement(CollaborationPanel, {
+    node,
+    allNodes: [node],
+    view: { workspaceId: "ws-a", nodeId: "cx-a", status: "stale", snapshot: staleSnapshot, targets: [], targetsReady: false, busyKey: null, canMutate: false, issue: { kind: "transport", message: "连接中断" } },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /data-result-id="rs-current"/);
+  assert.match(html, /上次确认的正文/);
+  assert.doesNotMatch(html, /不得串入的另一条正文|data-result-id="rs-foreign"/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>退回<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>接纳<\/button>/);
+});
+
+test("missing selected current Result renders no report body even when Inbox has another Result", () => {
+  const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
+  const missingSnapshot: WorkspaceCollaborationView = {
+    ...snapshot("cx-a"),
+    selectedNode: { nodeId: "cx-a", activeTask: {
+      taskId: "tk-current", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null,
+    }, statusDetail: null },
+    inbox: { items: [{ kind: "result", resultId: "rs-foreign", summary: "不得作为当前结果展示", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } },
+  };
+  const html = renderToStaticMarkup(createElement(CollaborationPanel, {
+    node,
+    allNodes: [node],
+    view: { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: missingSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true },
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
+  }));
+  assert.doesNotMatch(html, /tn-result-report|data-result-id|不得作为当前结果展示/);
+});
+
 test("selected pending Decision remains actionable because workspace projection admits only user targets", () => {
   const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const decisionSnapshot: WorkspaceCollaborationView = {

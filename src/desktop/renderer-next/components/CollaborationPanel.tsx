@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button, Checkbox, Radio, Select, StatusBadge, TextField } from "../ui/index.js";
+import { MarkdownReader } from "../integrations/markdown/MarkdownReader.js";
 import { nodeTitle, type WorkbenchNodeView } from "../shell/workbench-types.js";
 import type {
   AcceptMode,
@@ -124,16 +125,16 @@ function DispatchSection({ node, allNodes, view, actions }: CollaborationPanelPr
 function TaskResultItem({ result, view, actions }: { result: CollaborationTaskResult; view: CollaborationSurfaceView; actions: CollaborationSurfaceActions }) {
   const [rejecting, setRejecting] = useState(false); const [note, setNote] = useState(""); const [error, setError] = useState<string | null>(null);
   const busy = view.busyKey === `result:${result.resultId}`;
-  return <article className="tn-inbox-item" data-kind="result"><div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="warning">待接纳</StatusBadge></div><p>{result.summary || "对方没有提供摘要。"}</p>
+  return <article className="tn-inbox-item" data-kind="result" data-result-id={result.resultId}><div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="warning">待接纳</StatusBadge></div><div className="tn-result-report"><MarkdownReader body={result.summary} /></div>
     {rejecting ? <div className="tn-inline-form"><TextField multiline label="退回说明" rows={3} value={note} disabled={busy} onChange={(event) => setNote(event.target.value)} /><div><Button size="compact" variant="quiet" onClick={() => setRejecting(false)}>取消</Button><Button size="compact" variant="danger" disabled={!note.trim()} loading={busy} onClick={() => void actions.rejectTaskResult(result.resultId, note.trim()).then((ok) => { if (!ok) setError("退回未完成。"); })}>退回修改</Button></div></div>
     : <div className="tn-inbox-actions"><Button size="compact" variant="quiet" disabled={!view.canMutate} onClick={() => setRejecting(true)}>退回</Button><Button size="compact" variant="primary" loading={busy} disabled={!view.canMutate} onClick={() => void actions.acceptTaskResult(result.resultId).then((ok) => { if (!ok) setError("接纳未完成。"); })}>接纳</Button></div>}
     {error ? <p className="tn-action-error" role="alert">{error}</p> : null}</article>;
 }
 
 function RoleTaskResultNotice({ result, owner }: { result: CollaborationTaskResult; owner: string }) {
-  return <article className="tn-inbox-item" data-kind="result" data-actionable="false">
+  return <article className="tn-inbox-item" data-kind="result" data-result-id={result.resultId} data-actionable="false">
     <div className="tn-inbox-item-heading"><strong>返回内容</strong><StatusBadge tone="neutral">等待负责角色</StatusBadge></div>
-    <p>{result.summary || "对方没有提供摘要。"}</p>
+    <div className="tn-result-report"><MarkdownReader body={result.summary} /></div>
     <p>由 {owner} 继续审阅；这里仅展示结果。</p>
   </article>;
 }
