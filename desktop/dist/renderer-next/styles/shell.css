@@ -338,18 +338,22 @@ button, input, select, textarea { font: inherit; }
 .tn-outline-presence {
   display: inline-grid;
   place-items: center;
-  min-width: 14px;
-  height: 14px;
-  padding-inline: 3px;
+  justify-self: end;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 999px;
   color: var(--tn-color-text-faint);
   font-size: 9px;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 .tn-outline-presence[data-pending-sync="true"] {
   border-style: dashed;
   border-color: var(--tn-color-border-strong);
+  background: color-mix(in srgb, var(--tn-color-selected) 46%, transparent);
   color: var(--tn-color-text-secondary);
 }
 
