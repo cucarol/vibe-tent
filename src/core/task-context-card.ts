@@ -370,16 +370,12 @@ export type ManagedPromptAssemblyInput = {
    * Supplied by tk-3s598jtn compose; optional here.
    */
   tentTaskSection?: string;
-  /** Authoritative Context Card v2. */
-  contextCard: TaskContextCard;
   /** Live Session generation used to assemble this prompt. */
   contextGeneration: string;
-  /** Task envelope path / id pointers for the dynamic section. */
-  taskPointers?: string;
-  /** Near-field user prompt. */
-  prompt?: string;
-  /** TaskInput / review-feedback delta text. */
-  taskInputDelta?: string;
+  /** Canonical Task-specific package (single source for relay + managed bootstrap). */
+  taskPackage: string;
+  /** Optional managed/native wrapper that sits outside the canonical Task Package. */
+  dynamicWrapper?: string;
   /**
    * When false, omit stable prefix (invariant → tent-task) and emit only
    * dynamic Context Card + deltas. Use when the Session already received
@@ -396,6 +392,8 @@ export type ManagedPromptAssembly = {
   includedStablePrefix: boolean;
   /** Stable prefix bytes only (empty when includeStablePrefix=false). */
   stablePrefix: string;
+  /** Canonical Task-specific package bytes (relay + managed share this exactly). */
+  taskPackage: string;
   /** Dynamic tail only. */
   dynamicDelta: string;
 };
@@ -403,6 +401,37 @@ export type ManagedPromptAssembly = {
 /** Format the v2 Node snapshot card as a stable, cache-friendly markdown block. */
 export function formatTaskContextCardPrompt(card: TaskContextCard): string {
   return formatTaskContextCardV2Prompt(card);
+}
+
+export function formatTaskPackage(input: {
+  contextCard: TaskContextCard;
+  taskPointers?: string;
+  prompt: string;
+}): string {
+  const card = parseTaskContextCard(input.contextCard);
+  const packageCard: TaskContextCard = { ...card };
+  delete packageCard.contextGeneration;
+  const prompt = input.prompt?.trim() || "";
+  if (!prompt) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Task Package requires a non-empty prompt."
+    );
+  }
+  const parts: string[] = [
+    "--- Tent Task Package ---",
+    formatTaskContextCardPrompt(packageCard),
+  ];
+  if (input.taskPointers?.trim()) {
+    parts.push("", input.taskPointers.trim());
+  }
+  parts.push(
+    "",
+    "## Prompt",
+    "",
+    prompt
+  );
+  return parts.join("\n");
 }
 
 function formatStableProjectContext(input: ManagedPromptAssemblyInput): string {
@@ -416,25 +445,25 @@ function formatStableProjectContext(input: ManagedPromptAssemblyInput): string {
   ].join("\n");
 }
 
-function formatDynamicDelta(input: ManagedPromptAssemblyInput): string {
-  const parts: string[] = [
-    "--- Tent Task dynamic context ---",
-    formatTaskContextCardPrompt(input.contextCard),
-  ];
-  if (input.taskPointers?.trim()) {
-    parts.push("", input.taskPointers.trim());
+function formatDynamicDelta(input: ManagedPromptAssemblyInput): {
+  taskPackage: string;
+  dynamicDelta: string;
+} {
+  const taskPackage = input.taskPackage ?? "";
+  if (!taskPackage.trim()) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Managed prompt assembly requires a non-empty canonical Task Package."
+    );
   }
-  const prompt = input.prompt?.trim();
-  parts.push(
-    "",
-    "## User Prompt",
-    "",
-    prompt || "(no user prompt on envelope)"
-  );
-  if (input.taskInputDelta?.trim()) {
-    parts.push("", input.taskInputDelta.trim());
+  const wrapper = input.dynamicWrapper?.trim();
+  if (!wrapper) {
+    return { taskPackage, dynamicDelta: taskPackage };
   }
-  return parts.join("\n");
+  return {
+    taskPackage,
+    dynamicDelta: `${taskPackage}\n\n${wrapper}`,
+  };
 }
 
 /**
@@ -454,11 +483,8 @@ export function assembleManagedPrompt(
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
     );
   }
-  // Re-validate the frozen Node snapshot card without rebuilding its digest.
-  const card = parseTaskContextCard(input.contextCard);
-
   const includeStablePrefix = input.includeStablePrefix !== false;
-  const dynamicDelta = formatDynamicDelta({ ...input, contextCard: card });
+  const { taskPackage, dynamicDelta } = formatDynamicDelta(input);
 
   if (!includeStablePrefix) {
     return {
@@ -466,6 +492,7 @@ export function assembleManagedPrompt(
       contextGeneration: input.contextGeneration,
       includedStablePrefix: false,
       stablePrefix: "",
+      taskPackage,
       dynamicDelta,
     };
   }
@@ -490,6 +517,7 @@ export function assembleManagedPrompt(
     contextGeneration: input.contextGeneration,
     includedStablePrefix: true,
     stablePrefix,
+    taskPackage,
     dynamicDelta,
   };
 }

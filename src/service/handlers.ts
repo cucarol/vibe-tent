@@ -45,6 +45,7 @@ import {
   TASK_STATUS_DETAIL_ERROR_MAX_BYTES,
   TASK_STATUS_DETAIL_REPORT_MAX_BYTES,
   taskParentRoleId,
+  taskPackageForTask,
   type RoleWorkspaceContract,
   type TaskRecord,
   type TaskRecordPatch,
@@ -63,10 +64,7 @@ import {
   deriveIntegrationAuthority,
   decideStablePrefixInjection,
   ExecutorLaneHistoryError,
-  formatExecutionLanePrompt,
-  projectExecutionLaneFromTask,
   shouldInjectStablePrefix,
-  type TaskContextCard,
 } from "../core/task-context-card.js";
 import {
   collectStableContextGeneration,
@@ -13246,7 +13244,7 @@ async function buildSessionBootstrapPrompt(
     role: roleDef,
   });
 
-  const base = buildContextCardManagedBootstrap(task, task.contextCard, {
+  const base = buildContextCardManagedBootstrap(task, {
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
     sessionContextGeneration: roots.sessionContextGeneration,
@@ -13263,7 +13261,6 @@ async function buildSessionBootstrapPrompt(
  */
 function buildContextCardManagedBootstrap(
   task: TaskRecord,
-  contextCard: TaskContextCard,
   roots: {
     workspaceRoot: string;
     systemRoot: string;
@@ -13285,25 +13282,16 @@ function buildContextCardManagedBootstrap(
     currentContextGeneration: roots.currentContextGeneration,
   });
 
-  const executionLane = projectExecutionLaneFromTask(task);
-  const executionLaneText = formatExecutionLanePrompt(executionLane);
-  const bootstrapNodeIds =
-    taskReferencedNodeIds(task);
-  const pointers = [
-    `Task envelope: ${task.path}`,
-    `Manifest: ${task.manifest}`,
-    ...(task.id ? [`Task id: ${task.id}`] : []),
-    ...(bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : []),
-    `acceptMode: ${task.acceptMode}`,
-    ...(task.requester
-      ? [`requester: ${task.requester.kind}:${task.requester.id}`]
-      : []),
-    ...(task.assigneeRoleId ? [`roleId: ${task.assigneeRoleId}`] : []),
-    ...(task.executionSessionId ? [`sessionId: ${task.executionSessionId}`] : []),
+  const taskPackage = taskPackageForTask(task);
+  const dynamicWrapperParts = [
+    "--- Tent managed session execution ---",
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this Task; a non-empty final assistant reply is submitted as a Result automatically.",
-    ...(executionLaneText ? [executionLaneText] : []),
-  ].join("\n");
+  ];
+  if (roots.taskInputDelta?.trim()) {
+    dynamicWrapperParts.push(roots.taskInputDelta.trim());
+  }
+  const dynamicWrapper = dynamicWrapperParts.join("\n");
 
   const assembly = assembleManagedPrompt({
     workspaceRoot: roots.workspaceRoot,
@@ -13312,11 +13300,9 @@ function buildContextCardManagedBootstrap(
     tentRoleSection: roots.tentRoleSection,
     rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
-    contextCard,
     contextGeneration: roots.currentContextGeneration,
-    taskPointers: pointers,
-    prompt: extractTaskPrompt(task),
-    taskInputDelta: roots.taskInputDelta,
+    taskPackage,
+    dynamicWrapper,
     includeStablePrefix,
   });
 

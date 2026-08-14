@@ -466,9 +466,11 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   // Agent-facing relay must not use box vocabulary (Node/nodeId only).
   assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b/i);
 
-  const { sessionBootstrapPromptForTask, extractTaskPrompt } = await import(
+  const { sessionBootstrapPromptForTask, extractTaskPrompt, taskPackageForTask } = await import(
     "../src/core/task.js"
   );
+  const taskPackage = taskPackageForTask(tasks[1]);
+  assert.match(relay, new RegExp(taskPackage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   const bootstrap = sessionBootstrapPromptForTask(
     { ...tasks[1], state: "running" },
     { workspaceRoot: path.join(dir, ".."), systemRoot: dir }
@@ -476,7 +478,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(bootstrap, /already claimed/i);
   assert.match(bootstrap, /A Tent Session is executing a Task for Role rl-reviewer/i);
   assert.match(bootstrap, /non-empty final report is submitted by default/i);
-  assert.match(bootstrap, /outcome:\s*blocked|outcome:\s*needs-input/i);
+  assert.match(bootstrap, /outcome:\s*blocked/i);
   assert.doesNotMatch(bootstrap, /explicit outcome wire|outcome:\s*delivered\|/i);
   assert.match(bootstrap, /Task record:/);
   assert.match(bootstrap, /Manifest:/);
@@ -485,15 +487,24 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.doesNotMatch(bootstrap, /reviewer(?:Authority)?:/);
   assert.match(bootstrap, /acceptMode:/);
   assert.match(bootstrap, /## Prompt/);
+  assert.match(bootstrap, new RegExp(taskPackage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(bootstrap, /executionSessionId:/);
+  assert.doesNotMatch(taskPackage, /## Context Pointers/);
   // Path tutorial is owned by Context Card, not repeated in session body.
   assert.doesNotMatch(bootstrap, /workspaceRoot:|systemRoot:/);
   assert.doesNotMatch(bootstrap, /File reads:|run tent from workspaceRoot/);
   // Near-field user prompt must be present; no CLI get/deliver command instructions.
   const prompt = extractTaskPrompt(tasks[1]);
+  assert.equal(prompt, "审阅产出");
   if (prompt) assert.match(bootstrap, new RegExp(prompt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
   assert.doesNotMatch(bootstrap, /tent task get |tent task submit /);
   assert.doesNotMatch(bootstrap, /docs API|CLI aliases/i);
+  assert.equal(
+    taskPackageForTask({ ...tasks[1], executionSessionId: "ss-changed" }),
+    taskPackage,
+    "runtime Session binding must not affect canonical Task Package bytes"
+  );
 
   await fs.mkdir(path.join(dir, "temp", "sessions", "ss-broken", "tasks"), { recursive: true });
   await fs.writeFile(

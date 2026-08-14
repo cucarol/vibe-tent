@@ -13,6 +13,7 @@ import {
   canonicalJson,
   computeContextGeneration,
   formatContextGeneration,
+  formatTaskPackage,
   formatTaskContextCardPrompt,
   isContextGenerationId,
   loadTaskContextCardFromFrontmatter,
@@ -31,6 +32,7 @@ import {
   assertIntegrationAuthorityMatchesParent,
   type TaskContextCard,
 } from "../src/core/task-context-card.js";
+import { taskPackageForTask } from "../src/core/task.js";
 import { assertOrdinaryExecutorLaneHistoryInGit } from "../src/core/workspace.js";
 import { spawnSync } from "node:child_process";
 
@@ -240,6 +242,11 @@ test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () =>
 
 test("assembleManagedPrompt order: invariant → project → role → task → card → delta", () => {
   const card = sampleCard();
+  const taskPackage = formatTaskPackage({
+    contextCard: card,
+    taskPointers: "Task record: temp/x.md",
+    prompt: "Implement the seam",
+  });
   const assembled = assembleManagedPrompt({
     workspaceRoot: "C:/ws",
     systemRoot: "C:/ws/.tent",
@@ -247,11 +254,9 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
     tentRoleSection: "## Built-in skill: tent-role\n\nrole contract body",
     rolePromptSection: "## Role prompt\n\nStay sharp.",
     tentTaskSection: "## Built-in skill: tent-task\n\ntask contract body",
-    contextCard: card,
     contextGeneration: sampleGeneration(),
-    taskPointers: "Task envelope: temp/x.md",
-    prompt: "Implement the seam",
-    taskInputDelta: "## Review Feedback\ntext: tighten tests",
+    taskPackage,
+    dynamicWrapper: "## Review Feedback\ntext: tighten tests",
     includeStablePrefix: true,
   });
 
@@ -268,7 +273,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   const iRolePrompt = idx("## Role prompt");
   const iTaskSkill = idx("## Built-in skill: tent-task");
   const iCard = idx("Tent Task Context Card v2");
-  const iUser = idx("## User Prompt");
+  const iUser = idx("## Prompt");
   const iReview = idx("## Review Feedback");
   assert.ok(iInv < iProj);
   assert.ok(iProj < iRoleSkill);
@@ -277,7 +282,8 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   assert.ok(iTaskSkill < iCard);
   assert.ok(iCard < iUser);
   assert.ok(iUser < iReview);
-  assert.match(text, /contextGeneration: cg-v1-/);
+  assert.equal(assembled.taskPackage, taskPackage);
+  assert.doesNotMatch(text, /contextGeneration: cg-v1-/);
   assert.match(formatTaskContextCardPrompt(card), /Work Node cx-5q6za6/);
 });
 
@@ -311,9 +317,11 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     systemRoot: "/w/.tent",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
-    contextCard: card,
     contextGeneration: gen,
-    prompt: "first",
+    taskPackage: formatTaskPackage({
+      contextCard: card,
+      prompt: "first",
+    }),
     includeStablePrefix: true,
   });
   const delta = assembleManagedPrompt({
@@ -321,9 +329,11 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     systemRoot: "/w/.tent",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
-    contextCard: card,
     contextGeneration: gen,
-    prompt: "second task",
+    taskPackage: formatTaskPackage({
+      contextCard: card,
+      prompt: "second task",
+    }),
     includeStablePrefix: false,
   });
   assert.ok(full.text.includes(MANAGED_BOOTSTRAP_INVARIANT));
@@ -340,9 +350,11 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     systemRoot: "/w/.tent",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
-    contextCard: card,
     contextGeneration: gen,
-    prompt: "other user text",
+    taskPackage: formatTaskPackage({
+      contextCard: card,
+      prompt: "other user text",
+    }),
     includeStablePrefix: true,
   });
   assert.equal(full.stablePrefix, full2.stablePrefix);
@@ -355,14 +367,128 @@ test("prompt-only managed context emits the immutable user prompt once", () => {
     workspaceRoot: "/w",
     systemRoot: "/w/.tent",
     agentsPointer: "AGENTS.md",
-    contextCard: card,
     contextGeneration: sampleGeneration(),
-    prompt: marker,
+    taskPackage: formatTaskPackage({
+      contextCard: card,
+      prompt: marker,
+    }),
   });
   assert.equal(assembled.text.split(marker).length - 1, 1);
   assert.match(assembled.dynamicDelta, /workNodeIds: cx-5q6za6/);
   assert.doesNotMatch(assembled.dynamicDelta, /^objective:/m);
   assert.doesNotMatch(assembled.dynamicDelta, /^acceptance:/m);
+});
+
+test("canonical Task Package bytes are deterministic and preserve work-then-context snapshot order", () => {
+  const workA = {
+    id: "cx-worka",
+    path: "Work/A",
+    type: "prompt",
+    tags: ["work"],
+    body: "WORK_A",
+    etag: "1".repeat(24),
+  };
+  const workB = {
+    id: "cx-workb",
+    path: "Work/B",
+    type: "prompt",
+    tags: ["work"],
+    body: "WORK_B",
+    etag: "2".repeat(24),
+  };
+  const ctxA = {
+    id: "cx-contexta",
+    path: "Context/A",
+    type: "reference",
+    tags: ["context"],
+    body: "CTX_A",
+    etag: "3".repeat(24),
+  };
+  const ctxB = {
+    id: "cx-contextb",
+    path: "Context/B",
+    type: "reference",
+    tags: ["context"],
+    body: "CTX_B",
+    etag: "4".repeat(24),
+  };
+  const prompt = "Ship the exact package";
+  const orderedCard = buildTaskContextCard({
+    workNodeIds: [workB.id, workA.id],
+    contextNodeIds: [ctxB.id, ctxA.id],
+    nodeSnapshots: [workB, workA, ctxB, ctxA],
+    contextGeneration: sampleGeneration("ordered"),
+  });
+  const taskBase = {
+    path: "temp/roles/rl-reviewer/tasks/task.md",
+    manifest: "temp/roles/rl-reviewer/manifests/tk-demo.yml",
+    acceptMode: "review-required" as const,
+    requester: { kind: "user" as const, id: "user" },
+    state: "queued" as const,
+    assigneeRoleId: "rl-reviewer",
+    workNodeIds: [workB.id, workA.id],
+    contextNodeIds: [ctxB.id, ctxA.id],
+    nodeSnapshots: [workB, workA, ctxB, ctxA],
+    contextCard: orderedCard,
+    prompt,
+  };
+  const sameBytesA = taskPackageForTask(taskBase);
+  const sameBytesB = taskPackageForTask({ ...taskBase });
+  assert.equal(sameBytesA, sameBytesB);
+  const workBIndex = sameBytesA.indexOf("Work/B");
+  const workAIndex = sameBytesA.indexOf("Work/A");
+  const ctxBIndex = sameBytesA.indexOf("Context/B");
+  const ctxAIndex = sameBytesA.indexOf("Context/A");
+  assert.ok(workBIndex >= 0 && workAIndex >= 0 && ctxBIndex >= 0 && ctxAIndex >= 0);
+  assert.ok(workBIndex < workAIndex, "work snapshots must keep supplied work order");
+  assert.ok(workAIndex < ctxBIndex, "all work snapshots must precede context snapshots");
+  assert.ok(ctxBIndex < ctxAIndex, "context snapshots must keep supplied context order");
+
+  const swappedOrderCard = buildTaskContextCard({
+    workNodeIds: [workA.id, workB.id],
+    contextNodeIds: [ctxA.id, ctxB.id],
+    nodeSnapshots: [workA, workB, ctxA, ctxB],
+    contextGeneration: sampleGeneration("ordered"),
+  });
+  const swapped = taskPackageForTask({
+    ...taskBase,
+    workNodeIds: [workA.id, workB.id],
+    contextNodeIds: [ctxA.id, ctxB.id],
+    nodeSnapshots: [workA, workB, ctxA, ctxB],
+    contextCard: swappedOrderCard,
+  });
+  assert.notEqual(swapped, sameBytesA);
+
+  const differentGeneration = taskPackageForTask({
+    ...taskBase,
+    contextCard: buildTaskContextCard({
+      workNodeIds: [workB.id, workA.id],
+      contextNodeIds: [ctxB.id, ctxA.id],
+      nodeSnapshots: [workB, workA, ctxB, ctxA],
+      contextGeneration: sampleGeneration("different-generation-only"),
+    }),
+  });
+  assert.equal(
+    differentGeneration,
+    sameBytesA,
+    "contextGeneration is host compatibility metadata and must not affect canonical package bytes"
+  );
+});
+
+test("managed assembly preserves exact canonical Task Package bytes and keeps delta outside it", () => {
+  const taskPackage = "--- Tent Task Package ---\nTask record: temp/x.md\n\n## Prompt\n\nship exact bytes\n";
+  const assembled = assembleManagedPrompt({
+    workspaceRoot: "/w",
+    systemRoot: "/w/.tent",
+    agentsPointer: "AGENTS.md",
+    contextGeneration: sampleGeneration(),
+    taskPackage,
+    dynamicWrapper: "## Review Feedback\ntext: keep outside package",
+    includeStablePrefix: false,
+  });
+  assert.equal(assembled.taskPackage, taskPackage);
+  assert.ok(assembled.dynamicDelta.startsWith(taskPackage));
+  assert.ok(assembled.dynamicDelta.includes("## Review Feedback"));
 });
 
 // ---- envelope persistence ----

@@ -735,12 +735,12 @@ test("startSession bootstrap is managed (Context Card + user prompt); relay stil
     assert.match(bootstrap!, /Tent stable project context v1|Tent Task Context Card v1|contextCard/i);
     assert.match(bootstrap!, /already claimed/i);
     assert.match(bootstrap!, /managed ACP session|managed session bootstrap/i);
-    assert.match(bootstrap!, /## User Prompt/);
+    assert.match(bootstrap!, /## Prompt/);
     assert.match(bootstrap!, /bootstrap path semantics/);
     assert.match(bootstrap!, /non-empty final assistant reply is submitted as a Result/i);
-    assert.match(bootstrap!, /Task envelope:/);
+    assert.match(bootstrap!, /Task record:/);
     assert.match(bootstrap!, /Manifest:/);
-    assert.match(bootstrap!, /nodes:/);
+    assert.match(bootstrap!, /workNodeIds:/);
     assert.match(bootstrap!, /acceptMode:/);
     // Path tutorial once (stable project context), not repeated by legacy Context Card prelude.
     const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];

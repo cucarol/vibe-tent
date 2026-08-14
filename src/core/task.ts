@@ -29,8 +29,11 @@ import {
 import {
   assertIntegrationAuthorityMatchesParent,
   buildTaskContextCard,
+  formatTaskPackage,
+  formatExecutionLanePrompt,
   deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
+  projectExecutionLaneFromTask,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
   type TaskContextCard,
@@ -586,15 +589,15 @@ export function resolveTaskPromptRoots(
   return { workspaceRoot, systemRoot };
 }
 
-/**
- * Dynamic task pointers only — no workspaceRoot/CLI/file-read tutorial.
- * Path contract lives once on Context Card (managed) or in external relay path block.
- */
-function formatTaskPointers(task: TaskRecord): string {
+/** Canonical Task-specific pointer block reused by relay and managed bootstrap. */
+function formatTaskPackagePointers(task: TaskRecord): string {
   const lines = [
     `Task record: ${task.path}`,
     `Manifest: ${task.manifest}`,
   ];
+  if (task.id) {
+    lines.push(`Task id: ${task.id}`);
+  }
   if (task.contextCard) {
     lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
     lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
@@ -606,14 +609,32 @@ function formatTaskPointers(task: TaskRecord): string {
   }
   lines.push(`acceptMode: ${task.acceptMode}`);
   if (task.assigneeRoleId) {
-    const initCli = join("temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md");
-    const initFile = join(".tent", initCli);
     lines.push(`assigneeRoleId: ${task.assigneeRoleId}`);
-    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   }
-  if (task.executionSessionId) lines.push(`executionSessionId: ${task.executionSessionId}`);
   if (!task.assigneeRoleId) lines.push(`Session-only execution (no durable Role responsibility).`);
   return lines.join("\n");
+}
+
+export function taskPackageForTask(
+  task: TaskRecord
+): string {
+  const prompt = extractTaskPrompt(task);
+  if (!prompt) throw new Error(`Task Package requires a non-empty prompt: ${task.path}.`);
+  const pointerSections = [formatTaskPackagePointers(task)];
+  const executionLane = formatExecutionLanePrompt(projectExecutionLaneFromTask(task));
+  if (executionLane) {
+    pointerSections.push(executionLane);
+  }
+  pointerSections.push(
+    "TaskResult contract: a non-empty final report is the normal success path.",
+    "When applicable, include commits, checks, and artifact refs in the same TaskResult.",
+    "Never self-accept."
+  );
+  return formatTaskPackage({
+    contextCard: task.contextCard,
+    taskPointers: pointerSections.join("\n"),
+    prompt,
+  });
 }
 
 /**
@@ -647,25 +668,31 @@ export function relayPromptForTask(
     task.assigneeRoleId
       ? `4. If this is a new session for this Role, complete Role init first (read the init file above).`
       : `4. Read the Task record and task-scoped manifest pointers above; no Role init applies.`;
+  const roleInitBlock =
+    task.assigneeRoleId
+      ? `${join(".tent", "temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md")}\n`
+      : "";
   return (
     assigneeLine +
     `${formatExternalPathBlock(task, resolved)}\n` +
-    `${formatTaskPointers(task)}\n` +
+    roleInitBlock +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
     `2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the Task record). Resolve current Node state by id only when comparing drift.\n` +
     `3. When finished, run \`tent task submit ${task.path} --report <text>\` (optional: --commits sha,sha).\n` +
-    initStep
+    `${initStep}\n\n` +
+    taskPackageForTask(task)
   );
 }
 
 /**
  * Extract the near-field prompt from a Task record body.
- * Envelope layout: Context Pointers + `## User Prompt` — never the node/manifest body.
+ * Canonical envelope layout is Context Pointers + `## Prompt` — never the
+ * node/manifest body. Unsectioned synthetic bodies are treated as prompt text.
  */
 export function extractTaskPrompt(task: TaskRecord): string {
   const body = task.prompt?.trim() || "";
   if (!body) return "";
-  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  const match = body.match(/##\s*Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
   if (match) return match[1].trim();
   // Bodies without the section header are themselves the prompt.
   return body;
@@ -684,22 +711,19 @@ export function sessionBootstrapPromptForTask(
   task: TaskRecord,
   _roots?: string | TaskPromptRoots
 ): string {
-  const prompt = extractTaskPrompt(task);
-  if (!prompt) throw new Error(`Task bootstrap requires a non-empty prompt: ${task.path}.`);
   const readyLine =
     task.assigneeRoleId
       ? `A Tent Session is executing a Task for Role ${task.assigneeRoleId}.\n`
       : `A Tent managed ACP Session is executing this Task.\n`;
   return (
     readyLine +
-    `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
     `Managed path: Local Service already claimed this task. A non-empty final report is submitted by default after turn settle. ` +
     `Use \`outcome: blocked\` only as an explicit control signal; request user input through a Decision Request. Never self-accept.\n` +
     (!task.assigneeRoleId
       ? `Session-only Task: rely on Task/Node pointers only — no Role init or Role identity.\n`
       : "") +
-    `\n## Prompt\n\n${prompt}\n`
+    `\n${taskPackageForTask(task)}\n`
   );
 }
 
