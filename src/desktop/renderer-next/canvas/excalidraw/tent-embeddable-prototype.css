@@ -218,7 +218,7 @@
   width: 100%;
   height: 100%;
   display: grid;
-  place-items: center;
+  place-items: center stretch;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--tn-color-border) 84%, transparent);
   border-radius: 7px;
@@ -228,11 +228,6 @@
   transition:
     border-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
     background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
-}
-
-.tn-excal-node[data-title-lines="1"] {
-  height: 40px;
-  margin-block: 8px;
 }
 
 .tn-excal-node[data-selected="true"] {
@@ -277,14 +272,18 @@
 .tn-excal-node h3 {
   display: -webkit-box;
   margin: 0;
-  padding: 0 12px;
+  padding: 0 14px;
   overflow: hidden;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.35;
-  text-align: center;
+  text-align: left;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.tn-excal-node[data-title-lines="1"] h3 {
+  -webkit-line-clamp: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {

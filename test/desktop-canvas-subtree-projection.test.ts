@@ -226,6 +226,32 @@ test("structure paths reroute from current geometry and stay orthogonal", () => 
   assert.ok(branches.some((branch) => branch.direction === "left" || branch.direction === "down"));
 });
 
+test("moving an already-materialized multi-child root updates every live card-side attachment", () => {
+  const created = createInstance();
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const projection = deriveCanvasSubtreeProjection(expanded, TREE);
+  const before = deriveCanvasSubtreeStructureBranches(expanded, projection);
+  const movedRoot = { placementId: "placement-a-0", x: 420, y: 330 };
+  const after = deriveCanvasSubtreeStructureBranches(expanded, projection, movedRoot);
+
+  assert.equal(after.length, 2, "both direct children retain a live relationship");
+  assert.notDeepEqual(
+    after.map((branch) => branch.path),
+    before.map((branch) => branch.path),
+    "the already-materialized branches reroute in the imperative drag frame"
+  );
+  for (const branch of after) {
+    const attachment = branch.routePoints[0];
+    const onHorizontalSide =
+      (attachment.x === movedRoot.x || attachment.x === movedRoot.x + NODE_CARD.width) &&
+      attachment.y === movedRoot.y + NODE_CARD.height / 2;
+    const onVerticalSide =
+      (attachment.y === movedRoot.y || attachment.y === movedRoot.y + NODE_CARD.height) &&
+      attachment.x === movedRoot.x + NODE_CARD.width / 2;
+    assert.equal(onHorizontalSide || onVerticalSide, true, "route begins on the moved card edge");
+  }
+});
+
 test("structure routing deterministically avoids visible Node obstacles and reroutes when geometry moves", () => {
   const document: CanvasDocument = {
     ...emptyDocument(),

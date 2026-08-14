@@ -43,14 +43,22 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: none;
-  opacity: .54;
+}
+
+/* Composite the complete base tree once so sibling paths can share their
+   short trunk without darkening it where identical segments overlap. */
+.tn-canvas-subtree-lines__base {
+  opacity: .5;
+}
+
+.tn-canvas-subtree-lines__highlights {
+  opacity: .78;
 }
 
 .tn-canvas-subtree-lines__path--highlight {
   stroke: var(--tn-color-text-secondary);
   stroke-width: 1.35;
   stroke-dasharray: none;
-  opacity: .76;
 }
 
 .tn-canvas-subtree-controls,

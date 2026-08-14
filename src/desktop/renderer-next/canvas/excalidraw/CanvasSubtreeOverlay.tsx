@@ -163,9 +163,10 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
           data-testid="canvas-subtree-lines"
         >
           <g ref={groupRef}>
-            {branches.map((branch) => (
-              <g key={branch.id} data-branch-id={branch.id}>
+            <g className="tn-canvas-subtree-lines__base" data-line-layer="base">
+              {branches.map((branch) => (
                 <path
+                  key={`base:${branch.id}`}
                   ref={(element) => {
                     const current = pathRefs.current.get(branch.id) ?? { base: null, highlight: null };
                     current.base = element;
@@ -173,10 +174,15 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
                   }}
                   className="tn-canvas-subtree-lines__path"
                   d={branch.path}
+                  data-branch-id={branch.id}
                   vectorEffect="non-scaling-stroke"
                 />
-                {branch.highlightPath ? (
+              ))}
+            </g>
+            <g className="tn-canvas-subtree-lines__highlights" data-line-layer="highlight">
+              {branches.flatMap((branch) => branch.highlightPath ? [
                   <path
+                    key={`highlight:${branch.id}`}
                     ref={(element) => {
                       const current = pathRefs.current.get(branch.id) ?? { base: null, highlight: null };
                       current.highlight = element;
@@ -184,11 +190,11 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
                     }}
                     className="tn-canvas-subtree-lines__path tn-canvas-subtree-lines__path--highlight"
                     d={branch.highlightPath}
+                    data-branch-id={branch.id}
                     vectorEffect="non-scaling-stroke"
                   />
-                ) : null}
-              </g>
-            ))}
+                ] : [])}
+            </g>
           </g>
         </svg>
         {projection.controls.map((control) => {

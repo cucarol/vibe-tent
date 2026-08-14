@@ -18,7 +18,9 @@ import type { WorkbenchNodeView } from "./workbench-types.js";
 import {
   canCreateNodePlacement,
   canDropNodeIntoPresentation,
+  canvasSnapshotSourceFromWorkbenchNode as snapshotSource,
   canvasPlacementSourceAuthority,
+  collectReadyPresentationSubtreeSources,
   dropPresentationSubtreeOrLeaf,
   placePresentationNode,
   selectPresentationNode,
@@ -30,7 +32,6 @@ import {
   captureCanvasNodeSnapshot,
   deriveCanvasPlacementSourceState,
   readCanvasNodeSnapshot,
-  type CanvasSnapshotSource,
 } from "../model/canvas-node-snapshot.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
@@ -84,24 +85,6 @@ export type AppShellProps = {
     authorityDigest: string
   ) => CanvasDocument | null | Promise<CanvasDocument | null>;
 };
-
-function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
-  if (!node) return null;
-  return {
-    nodeId: node.nodeId,
-    etag: node.etag,
-    name: node.name,
-    ...(node.title?.trim() ? { title: node.title } : {}),
-    path: node.path,
-    // Canvas snapshots use an empty local display fallback; the graph keeps
-    // the canonical Node.type omission intact.
-    type: node.type ?? "",
-    tags: node.tags,
-    mode: node.mode,
-    archived: node.archived,
-    invalid: node.invalid,
-  };
-}
 
 /**
  * Production desktop composition. Canvas is the only stage; Outline and Focus
@@ -300,35 +283,8 @@ export function AppShell({
         node.projectionState
       )
     ) return false;
-    const byParent = new Map<string, WorkbenchNodeView[]>();
-    for (const candidate of nodes) {
-      if (!candidate.parentNodeId) continue;
-      const siblings = byParent.get(candidate.parentNodeId) ?? [];
-      siblings.push(candidate);
-      byParent.set(candidate.parentNodeId, siblings);
-    }
-    const subtreeSources: CanvasSubtreeNodeSource[] = [];
-    const queue = [node];
-    const seen = new Set<string>();
-    while (queue.length > 0) {
-      const candidate = queue.shift()!;
-      if (seen.has(candidate.nodeId)) return false;
-      seen.add(candidate.nodeId);
-      const candidateSource = snapshotSource(candidate);
-      if (
-        !candidateSource ||
-        (candidate.projectionState !== undefined && candidate.projectionState !== "ready")
-      ) return false;
-      subtreeSources.push({
-        nodeId: candidate.nodeId,
-        parentNodeId: candidate.parentNodeId,
-        snapshot: {
-          ...captureCanvasNodeSnapshot(candidateSource),
-          etag: candidateSource.etag,
-        },
-      });
-      queue.push(...(byParent.get(candidate.nodeId) ?? []));
-    }
+    const subtreeSources = collectReadyPresentationSubtreeSources(nodes, nodeId);
+    if (!subtreeSources) return false;
     onPresentationChange((current) => {
       return dropPresentationSubtreeOrLeaf(
         current,

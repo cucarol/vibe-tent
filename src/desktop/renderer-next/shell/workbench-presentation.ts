@@ -3,7 +3,9 @@ import {
   placeEntityInVisibleViewport,
 } from "../model/canvas-document.js";
 import {
+  captureCanvasNodeSnapshot,
   type CanvasNodeSnapshot,
+  type CanvasSnapshotSource,
 } from "../model/canvas-node-snapshot.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
@@ -12,6 +14,7 @@ import {
   type CanvasSubtreeNodeSource,
   type SubtreeDirection,
 } from "../model/canvas-subtree-projection.js";
+import type { WorkbenchNodeView } from "./workbench-types.js";
 
 export type WorkbenchPresentationState = {
   document: CanvasDocument;
@@ -21,6 +24,68 @@ export type WorkbenchPresentationState = {
 export type WorkbenchPresentationUpdate = (
   current: WorkbenchPresentationState
 ) => WorkbenchPresentationState;
+
+export function canvasSnapshotSourceFromWorkbenchNode(
+  node: WorkbenchNodeView | null | undefined
+): CanvasSnapshotSource | null {
+  if (!node) return null;
+  return {
+    nodeId: node.nodeId,
+    etag: node.etag,
+    name: node.name,
+    ...(node.title?.trim() ? { title: node.title } : {}),
+    path: node.path,
+    type: node.type ?? "",
+    tags: node.tags,
+    mode: node.mode,
+    archived: node.archived,
+    invalid: node.invalid,
+  };
+}
+
+/**
+ * Capture one ready root and every reachable ready descendant in authoritative
+ * sibling order. An unavailable descendant prunes only its own branch; the
+ * ready parent and ready sibling branches still form a valid local projection.
+ */
+export function collectReadyPresentationSubtreeSources(
+  nodes: readonly WorkbenchNodeView[],
+  rootNodeId: string
+): CanvasSubtreeNodeSource[] | null {
+  const root = nodes.find((node) => node.nodeId === rootNodeId);
+  if (!root || (root.projectionState !== undefined && root.projectionState !== "ready")) {
+    return null;
+  }
+  const byParent = new Map<string, WorkbenchNodeView[]>();
+  for (const node of nodes) {
+    if (!node.parentNodeId) continue;
+    const siblings = byParent.get(node.parentNodeId) ?? [];
+    siblings.push(node);
+    byParent.set(node.parentNodeId, siblings);
+  }
+  const sources: CanvasSubtreeNodeSource[] = [];
+  const queue = [root];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    if (seen.has(node.nodeId)) return null;
+    seen.add(node.nodeId);
+    const source = canvasSnapshotSourceFromWorkbenchNode(node);
+    if (
+      !source ||
+      (node.projectionState !== undefined && node.projectionState !== "ready")
+    ) {
+      continue;
+    }
+    sources.push({
+      nodeId: node.nodeId,
+      parentNodeId: node.parentNodeId,
+      snapshot: { ...captureCanvasNodeSnapshot(source), etag: source.etag },
+    });
+    queue.push(...(byParent.get(node.nodeId) ?? []));
+  }
+  return sources;
+}
 
 export function canCreateNodePlacement(
   workspaceProjection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted",

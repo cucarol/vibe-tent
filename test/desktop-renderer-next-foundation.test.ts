@@ -41,6 +41,7 @@ import type { EventEnvelope } from "../src/service/types.js";
 import {
   canCreateNodePlacement,
   canDropNodeIntoPresentation,
+  collectReadyPresentationSubtreeSources,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
   withPresentationDocument,
@@ -229,6 +230,46 @@ test("Canvas drop requires a real presentation owner and fresh Node authority", 
   assert.equal(canDropNodeIntoPresentation(false, "fresh", "ready"), false);
   assert.equal(canDropNodeIntoPresentation(true, "stale", "ready"), false);
   assert.equal(canDropNodeIntoPresentation(true, "fresh", "stale"), false);
+});
+
+test("parent drop prunes an unavailable descendant branch without rejecting ready siblings", () => {
+  const node = (
+    nodeId: string,
+    parentNodeId: string | null,
+    projectionState: "ready" | "stale" = "ready"
+  ) => ({
+    nodeId,
+    parentNodeId,
+    projectionState,
+    etag: `${nodeId}-etag`,
+    path: `root/${nodeId}`,
+    name: nodeId,
+    title: nodeId,
+    type: "prompt",
+    tags: [],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+    hasChildren: false,
+  });
+  const sources = collectReadyPresentationSubtreeSources([
+    node("root", null),
+    node("stale-child", "root", "stale"),
+    node("hidden-grandchild", "stale-child"),
+    node("ready-sibling", "root"),
+    node("ready-grandchild", "ready-sibling"),
+  ], "root");
+
+  assert.deepEqual(
+    sources?.map((source) => source.nodeId),
+    ["root", "ready-sibling", "ready-grandchild"],
+    "ready branches retain parent-before-child order while a stale branch is pruned"
+  );
+  assert.equal(
+    collectReadyPresentationSubtreeSources([node("root", null, "stale")], "root"),
+    null,
+    "the exact dragged root still must be authoritative"
+  );
 });
 
 test("new placements use the canonical card geometry and choose a visible free slot", () => {
@@ -527,6 +568,30 @@ test("motion uses one bounded token grammar and reduced motion is instant", asyn
   assert.match(cards, /var\(--tn-motion-duration-standard\)/);
   assert.doesNotMatch(cards, /infinite|@keyframes\s+tn-excal-node/);
   assert.doesNotMatch(shell, /grid-template-columns[^;]*transition|transition:[^;]*grid-template-columns/);
+});
+
+test("compact Canvas Nodes keep canonical geometry and quiet shared line compositing", async () => {
+  const cards = await read(
+    "src/desktop/renderer-next/canvas/excalidraw/tent-embeddable-prototype.css"
+  );
+  const host = await read(
+    "src/desktop/renderer-next/canvas/excalidraw/canvas-v5-host.css"
+  );
+  const overlay = await read(
+    "src/desktop/renderer-next/canvas/excalidraw/CanvasSubtreeOverlay.tsx"
+  );
+  const shell = await read("src/desktop/renderer-next/styles/shell.css");
+
+  assert.match(cards, /\.tn-excal-node\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/);
+  assert.doesNotMatch(cards, /\.tn-excal-node\[data-title-lines="1"\]\s*\{[^}]*height:/);
+  assert.match(cards, /data-title-lines="1"\]\s+h3\s*\{\s*-webkit-line-clamp:\s*1/);
+  assert.match(overlay, /data-line-layer="base"/);
+  assert.match(overlay, /data-line-layer="highlight"/);
+  assert.match(host, /\.tn-canvas-subtree-lines__base\s*\{\s*opacity:/);
+  assert.match(host, /\.tn-canvas-subtree-lines__highlights\s*\{\s*opacity:/);
+  assert.doesNotMatch(host, /\.tn-canvas-subtree-lines__path\s*\{[^}]*opacity:/);
+  assert.match(shell, /\.tn-outline-presence\s*\{[^}]*width:\s*16px;/);
+  assert.match(shell, /\.tn-outline-presence\s*\{[^}]*justify-self:\s*end;/);
 });
 
 test("faint helper text token meets WCAG AA on white and panel surfaces", async () => {
