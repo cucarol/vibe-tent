@@ -439,6 +439,52 @@ test("replaceSession: success preserves Task + providerContextRestored=false + a
   });
 });
 
+test("replaceSession recovery tail keeps only continuity facts outside the canonical Task Package", async () => {
+  resetManagedAutoSubmitFlightsForTests();
+  const ws = await makeWorkspace("replace-session-bootstrap-tail");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
+      svc,
+      workspaceId,
+      nodeId
+    );
+
+    let replacementBootstrap: string | undefined;
+    const originalStart = svc.runtime.startSession.bind(svc.runtime);
+    (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = async (input) => {
+      replacementBootstrap = input.bootstrapPrompt;
+      return originalStart(input);
+    };
+
+    const replaced = await rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    });
+    assert.ok(!replaced.error, JSON.stringify(replaced.error));
+    const replacementSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
+    assert.notEqual(replacementSessionId, priorSessionId);
+
+    const packageMarker = "--- Tent Task Package ---";
+    const recoveryMarker = "--- Tent replace-session recovery ---";
+    const replacementPrompt = replacementBootstrap ?? "";
+    const packageIndex = replacementPrompt.indexOf(packageMarker);
+    const recoveryIndex = replacementPrompt.indexOf(recoveryMarker);
+    assert.ok(packageIndex >= 0, "canonical Task Package must be present");
+    assert.ok(recoveryIndex > packageIndex, "replace-session continuity tail must follow the canonical Task Package");
+    const recoveryTail = replacementPrompt.slice(recoveryIndex);
+    assert.match(recoveryTail, /providerContextRestored: false/);
+    assert.match(recoveryTail, /restoreReason: task\.replaceSession\.fresh/);
+    assert.match(recoveryTail, new RegExp(`priorSessionId: ${priorSessionId}`));
+    assert.match(recoveryTail, /Pending TaskInputs and acceptMode are preserved on this Task/);
+    assert.doesNotMatch(recoveryTail, /Task record:/);
+    assert.doesNotMatch(recoveryTail, /Task id:/);
+    assert.doesNotMatch(recoveryTail, /Manifest:/);
+    assert.doesNotMatch(recoveryTail, /workNodeIds:|contextNodeIds:|Node refs:/);
+  });
+});
+
 test("replaceSession: eligibility - isTurnActive, waitCode, force refused", async () => {
   resetManagedAutoSubmitFlightsForTests();
   {

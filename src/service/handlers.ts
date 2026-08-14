@@ -7754,12 +7754,8 @@ async function buildFreshReplaceSessionBootstrap(
     "providerContextRestored: false",
     "restoreReason: task.replaceSession.fresh",
     "Provider context was replaced explicitly. This is an independent managed Session on the same task/workspace lane.",
-    "Do not invent prior chat/cache continuity. Use Task/Node refs below.",
+    "Do not invent prior chat/cache continuity. The canonical Task Package above remains authoritative.",
     `priorSessionId: ${roots.priorSessionId}`,
-    `Task envelope: ${task.path}`,
-    ...(task.id ? [`Task id: ${task.id}`] : []),
-    ...(task.manifest ? [`Manifest: ${task.manifest}`] : []),
-    `Node refs: ${taskReferencedNodeIds(task).join(", ")}`,
     "Pending TaskInputs and acceptMode are preserved on this Task. Final report still goes through TaskResult only.",
   ].join("\n");
   return `${base}\n\n${tail}\n`;
