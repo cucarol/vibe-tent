@@ -13,7 +13,7 @@ export type OutlineRevealResolution = {
   shouldShowNodes: boolean;
 };
 
-/** Resolve one Canvas-origin reveal without retaining work while the tray is hidden. */
+/** Resolve one Canvas-origin reveal, retaining it while the tray is hidden. */
 export function resolveOutlineReveal(args: {
   nodes: readonly WorkbenchNodeView[];
   expandedNodeIds: ReadonlySet<string>;
@@ -23,34 +23,34 @@ export function resolveOutlineReveal(args: {
   pendingFocus: OutlineRevealRequest | null;
 }): OutlineRevealResolution {
   const revision = args.reveal?.revision ?? 0;
+  const retainedPending = args.pendingFocus && args.reveal &&
+    args.pendingFocus.revision >= args.reveal.revision
+    ? args.pendingFocus
+    : null;
+  const nextRequest = args.reveal && revision > args.handledRevision
+    ? args.reveal
+    : retainedPending
+      ? retainedPending
+      : null;
   if (!args.visible) {
     return {
       expandedNodeIds: args.expandedNodeIds,
-      pendingFocus: null,
+      pendingFocus: nextRequest,
       handledRevision: Math.max(args.handledRevision, revision),
       shouldShowNodes: false,
     };
   }
 
-  if (!args.reveal || revision === 0) {
+  if (!args.reveal || revision === 0 || !nextRequest) {
     return {
       expandedNodeIds: args.expandedNodeIds,
-      pendingFocus: null,
+      pendingFocus: retainedPending,
       handledRevision: args.handledRevision,
       shouldShowNodes: false,
     };
   }
 
-  if (revision <= args.handledRevision) {
-    return {
-      expandedNodeIds: args.expandedNodeIds,
-      pendingFocus: args.pendingFocus,
-      handledRevision: args.handledRevision,
-      shouldShowNodes: false,
-    };
-  }
-
-  if (!args.nodes.some((node) => node.nodeId === args.reveal?.nodeId)) {
+  if (!args.nodes.some((node) => node.nodeId === nextRequest.nodeId)) {
     return {
       expandedNodeIds: args.expandedNodeIds,
       pendingFocus: null,
@@ -60,13 +60,13 @@ export function resolveOutlineReveal(args: {
   }
 
   const nextExpandedNodeIds = new Set(args.expandedNodeIds);
-  for (const ancestor of outlineAncestorNodeIds(args.nodes, args.reveal.nodeId)) {
+  for (const ancestor of outlineAncestorNodeIds(args.nodes, nextRequest.nodeId)) {
     nextExpandedNodeIds.add(ancestor);
   }
   return {
     expandedNodeIds: nextExpandedNodeIds,
-    pendingFocus: args.reveal,
-    handledRevision: revision,
+    pendingFocus: nextRequest,
+    handledRevision: Math.max(args.handledRevision, revision),
     shouldShowNodes: true,
   };
 }

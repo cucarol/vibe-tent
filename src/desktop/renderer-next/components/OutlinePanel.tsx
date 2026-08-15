@@ -128,10 +128,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
   }, [nodes, onModeChange, reveal?.nodeId, reveal?.revision, visible]);
   useEffect(() => {
     cancelRevealFocus();
-    if (!visible) {
-      pendingRevealFocus.current = null;
-      return;
-    }
+    if (!visible) return;
 
     const pending = pendingRevealFocus.current;
     const latestReveal = latestRevealRef.current;
@@ -198,6 +195,9 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
       return [node.nodeId, { position: group.indexOf(node) + 1, size: group.length }] as const;
     }));
   }, [nodes]);
+  const rovingNodeId = visibleNodes.some((node) => node.nodeId === selectedNodeId)
+    ? selectedNodeId
+    : visibleNodes[0]?.nodeId ?? null;
 
   const focusItem = (node: WorkbenchNodeView | undefined | null) => {
     if (!node) return;
@@ -302,7 +302,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                 aria-expanded={expanded}
                 aria-posinset={position?.position}
                 aria-setsize={position?.size}
-                tabIndex={selected || (!selectedNodeId && node === visibleNodes[0]) ? 0 : -1}
+                tabIndex={node.nodeId === rovingNodeId ? 0 : -1}
                 ref={(element) => {
                   if (element) itemRefs.current.set(node.nodeId, element);
                   else itemRefs.current.delete(node.nodeId);

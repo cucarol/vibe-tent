@@ -49,23 +49,25 @@ test("visible Canvas reveal expands authoritative ancestors and queues the exact
   assert.equal(result.shouldShowNodes, true);
 });
 
-test("hidden reveal is consumed without opening, expanding, or retaining focus", () => {
+test("hidden reveal stays pending and expands ancestors with focus when the tray reopens", () => {
   const result = resolve(
     { nodeId: "leaf", revision: 4 },
     { visible: false, expandedNodeIds: new Set(["root"]) }
   );
 
   assert.deepEqual([...result.expandedNodeIds], ["root"]);
-  assert.equal(result.pendingFocus, null);
+  assert.deepEqual(result.pendingFocus, { nodeId: "leaf", revision: 4 });
   assert.equal(result.handledRevision, 4);
   assert.equal(result.shouldShowNodes, false);
 
   const reopened = resolve({ nodeId: "leaf", revision: 4 }, {
     handledRevision: result.handledRevision,
     expandedNodeIds: result.expandedNodeIds,
+    pendingFocus: result.pendingFocus,
   });
-  assert.equal(reopened.pendingFocus, null);
-  assert.equal(reopened.shouldShowNodes, false);
+  assert.deepEqual([...reopened.expandedNodeIds], ["root", "branch"]);
+  assert.deepEqual(reopened.pendingFocus, { nodeId: "leaf", revision: 4 });
+  assert.equal(reopened.shouldShowNodes, true);
 });
 
 test("newer reveal revisions replace older focus work and stale revisions are ignored", () => {

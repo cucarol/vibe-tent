@@ -74,10 +74,8 @@
   transition: opacity var(--tn-motion-duration-fast) var(--tn-motion-ease-out);
 }
 
-.tn-canvas-subtree-controls[data-visible="true"],
-.tn-canvas-subtree-controls:focus-within,
-.tn-canvas-placement-actions[data-visible="true"],
-.tn-canvas-placement-actions:focus-within {
+.tn-canvas-subtree-controls[data-interactive="true"],
+.tn-canvas-placement-actions[data-interactive="true"] {
   opacity: 1;
 }
 
@@ -92,6 +90,11 @@
   border-color: color-mix(in srgb, var(--tn-color-border) 78%, transparent);
   background: color-mix(in srgb, var(--tn-color-elevated-bg) 94%, transparent);
   box-shadow: none;
+  pointer-events: none;
+}
+
+.tn-canvas-subtree-controls[data-interactive="true"] .tn-canvas-subtree-controls__button,
+.tn-canvas-placement-actions[data-interactive="true"] .tn-ui-icon-btn {
   pointer-events: auto;
 }
 
@@ -140,35 +143,10 @@
   transform: translateX(-50%);
 }
 
-.tn-canvas-subtree-controls[data-menu-open="true"] .tn-canvas-subtree-controls__pending {
-  visibility: hidden;
-}
-
 .tn-canvas-placement-actions .tn-ui-icon-btn {
   top: 0;
   left: 0;
   transform: translate(-50%, -50%);
-}
-
-.tn-canvas-subtree-controls__menu {
-  position: absolute;
-  top: calc(100% + 7px);
-  left: 50%;
-  display: flex;
-  gap: 1px;
-  padding: 2px;
-  border: 1px solid var(--tn-color-border);
-  border-radius: var(--tn-radius-md);
-  background: var(--tn-color-elevated-bg);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--tn-color-overlay) 45%, transparent);
-  pointer-events: auto;
-  transform: translateX(-50%);
-}
-
-.tn-canvas-subtree-controls__menu-button {
-  position: static;
-  border-color: transparent;
-  box-shadow: none;
 }
 
 /* Default Excalidraw embeddable hint covers Tent cards — hide it; card footer carries the cue. */

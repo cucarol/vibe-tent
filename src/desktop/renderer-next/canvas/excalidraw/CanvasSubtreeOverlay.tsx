@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -41,6 +40,7 @@ const directionLabel: Record<SubtreeDirection, string> = {
   down: "下",
   left: "左",
 };
+const directions = ["up", "right", "down", "left"] as const;
 
 function DirectionGlyph({ direction }: { direction: SubtreeDirection }) {
   const path = direction === "up"
@@ -70,7 +70,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
     { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onHide, commandsEnabled },
     ref
   ) {
-    const [directionMenuPlacementId, setDirectionMenuPlacementId] = useState<string | null>(null);
+    const [keyboardFocusPlacementId, setKeyboardFocusPlacementId] = useState<string | null>(null);
     const groupRef = useRef<SVGGElement>(null);
     const pathRefs = useRef(new Map<string, { base: SVGPathElement | null; highlight: SVGPathElement | null }>());
     const controlRefs = useRef(new Map<string, HTMLDivElement>());
@@ -83,43 +83,6 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
       () => new Map(document.placements.map((placement) => [placement.placementId, placement] as const)),
       [document]
     );
-
-    useEffect(() => {
-      setDirectionMenuPlacementId(null);
-    }, [selectedPlacementId]);
-
-    useEffect(() => {
-      if (
-        directionMenuPlacementId &&
-        !projection.controls.some((control) => control.placementId === directionMenuPlacementId)
-      ) {
-        setDirectionMenuPlacementId(null);
-      }
-    }, [directionMenuPlacementId, projection.controls]);
-
-    useEffect(() => {
-      if (!directionMenuPlacementId) return;
-      const closeOnOutsidePointer = (event: PointerEvent) => {
-        const control = controlRefs.current.get(directionMenuPlacementId);
-        if (event.target instanceof Node && control?.contains(event.target)) return;
-        setDirectionMenuPlacementId(null);
-      };
-      const closeOnEscape = (event: KeyboardEvent) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        const control = controlRefs.current.get(directionMenuPlacementId);
-        setDirectionMenuPlacementId(null);
-        requestAnimationFrame(() => {
-          control?.querySelector<HTMLButtonElement>("[data-role=toggle]")?.focus({ preventScroll: true });
-        });
-      };
-      window.addEventListener("pointerdown", closeOnOutsidePointer, true);
-      window.addEventListener("keydown", closeOnEscape, true);
-      return () => {
-        window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-        window.removeEventListener("keydown", closeOnEscape, true);
-      };
-    }, [directionMenuPlacementId]);
 
     useImperativeHandle(ref, () => ({
       update(appState, override = null) {
@@ -199,12 +162,10 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
         </svg>
         {projection.controls.map((control) => {
           const visible = control.placementId === selectedPlacementId || control.placementId === hoveredPlacementId;
+          const keyboardFocused = keyboardFocusPlacementId === control.placementId;
+          const interactive = visible || keyboardFocused;
           const activeDirection = control.expandedDirection ?? control.lastDirection;
-          const directionMenuOpen = !control.expandedDirection && directionMenuPlacementId === control.placementId;
           const count = control.projectedDirectChildCount;
-          const label = control.expandedDirection
-            ? `收起${directionLabel[control.expandedDirection]}侧 ${count} 个后代`
-            : `展开子树，${count} 个直接后代`;
           return (
             <div
               key={`control:${control.placementId}`}
@@ -214,60 +175,45 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
               }}
               className="tn-canvas-subtree-controls"
               data-visible={visible ? "true" : "false"}
+              data-interactive={interactive ? "true" : "false"}
               data-expanded={control.expandedDirection ?? "collapsed"}
-              data-menu-open={directionMenuOpen ? "true" : "false"}
               role="group"
               aria-label="子树投影"
+              aria-hidden={interactive ? undefined : true}
+              onFocusCapture={() => setKeyboardFocusPlacementId(control.placementId)}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setKeyboardFocusPlacementId((current) => current === control.placementId ? null : current);
+                }
+              }}
             >
-              <IconButton
-                className="tn-canvas-subtree-controls__button"
-                data-role="toggle"
-                data-direction={activeDirection}
-                variant="quiet"
-                size="compact"
-                aria-label={label}
-                tooltip={label}
-                aria-expanded={control.expandedDirection ? true : directionMenuOpen}
-                aria-haspopup={control.expandedDirection ? undefined : "menu"}
-                disabled={!commandsEnabled || !control.canMutate}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => {
-                  if (!commandsEnabled) return;
-                  if (control.expandedDirection) {
-                    onDirection(control.placementId, control.expandedDirection);
-                    return;
-                  }
-                  setDirectionMenuPlacementId((current) => current === control.placementId ? null : control.placementId);
-                }}
-              >
-                <DirectionGlyph direction={activeDirection} />
-              </IconButton>
-              {directionMenuOpen ? (
-                <div className="tn-canvas-subtree-controls__menu" role="menu" aria-label="选择展开方向">
-                  {(["up", "right", "down", "left"] as const).map((direction) => (
+              {(control.expandedDirection ? [activeDirection] : directions).map((direction) => {
+                const label = control.expandedDirection
+                  ? `收起${directionLabel[direction]}侧 ${count} 个后代`
+                  : `向${directionLabel[direction]}展开 ${count} 个后代`;
+                return (
                   <IconButton
                     key={direction}
-                    className="tn-canvas-subtree-controls__menu-button"
-                    data-role="direction"
+                    className="tn-canvas-subtree-controls__button"
+                    data-role={control.expandedDirection ? "toggle" : "direction"}
                     data-direction={direction}
                     variant="quiet"
                     size="compact"
-                    role="menuitem"
-                    aria-label={`向${directionLabel[direction]}展开 ${count} 个后代`}
-                    tooltip={`向${directionLabel[direction]}展开`}
-                    disabled={!commandsEnabled || !control.canMutate}
+                    tabIndex={interactive ? 0 : -1}
+                    aria-label={label}
+                    tooltip={label}
+                    aria-expanded={Boolean(control.expandedDirection)}
+                    disabled={!interactive || !commandsEnabled || !control.canMutate}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={() => {
-                      if (!commandsEnabled) return;
-                      setDirectionMenuPlacementId(null);
+                      if (!interactive || !commandsEnabled) return;
                       onDirection(control.placementId, direction);
                     }}
                   >
                     <DirectionGlyph direction={direction} />
                   </IconButton>
-                  ))}
-                </div>
-              ) : null}
+                );
+              })}
               {control.unprojectedDirectChildCount > 0 ? (
                 <span
                   className="tn-canvas-subtree-controls__pending"
@@ -293,13 +239,16 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
               }}
               className="tn-canvas-placement-actions"
               data-visible={visible ? "true" : "false"}
+              data-interactive={visible ? "true" : "false"}
+              aria-hidden={visible ? undefined : true}
             >
               <IconButton
                 variant="quiet"
                 size="compact"
                 aria-label="在画布中隐藏"
                 tooltip="在画布中隐藏"
-                disabled={!commandsEnabled}
+                tabIndex={visible ? 0 : -1}
+                disabled={!visible || !commandsEnabled}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => onHide(placementId)}
               >

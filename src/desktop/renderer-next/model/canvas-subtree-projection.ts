@@ -299,9 +299,9 @@ export function createCanvasSubtreeProjectionInstance(
       parentPlacementId,
       depth,
       siblingOrder,
-      // A captured bundle starts folded. The root is the only visible member;
-      // each branch is revealed explicitly, one level at a time.
-      expandedDirection: null,
+      // A captured bundle reveals exactly its first ring. Every direct child
+      // remains folded, so deeper members are retained but disclosed locally.
+      expandedDirection: depth === 0 && directChildren.length > 0 ? direction : null,
       lastDirection: direction,
     } satisfies CanvasSubtreePlacementMeta;
     placements.push(withCanvasSubtreePlacementMeta(withCanvasNodeSnapshot({

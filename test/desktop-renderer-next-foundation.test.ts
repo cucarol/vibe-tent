@@ -697,6 +697,7 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shellCss, /data-connection="connecting"/);
 
   const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
+  const outlinePanel = await read("src/desktop/renderer-next/components/OutlinePanel.tsx");
   assert.match(shell, /aria-expanded=\{outlineOpen\}/);
   assert.match(shell, /aria-expanded=\{focusOpen\}/);
   assert.match(shell, /aria-controls="tn-outline-panel"/);
@@ -707,6 +708,8 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shell, /aria-label="展开详情面板"/);
   assert.match(shell, /const openOutline = \(\) => \{\s*setImmersive\(false\)/s);
   assert.match(shell, /const openFocus = \(\) => \{\s*setImmersive\(false\)/s);
+  assert.match(shell, /placePresentationSubtreeOrLeaf\(current, selectedNode\.nodeId, subtreeSources\)/);
+  assert.match(outlinePanel, /tabIndex=\{node\.nodeId === rovingNodeId \? 0 : -1\}/);
   assert.match(shell, /useMainLayout/);
   assert.match(shell, /layout\.effective\.leftCollapsed/);
   assert.match(shell, /layout\.effective\.rightCollapsed/);

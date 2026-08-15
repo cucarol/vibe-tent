@@ -28,7 +28,10 @@ import {
   preserveCanvasPresentationHistoryMarker,
 } from "../src/desktop/renderer-next/canvas/excalidraw/canvas-presentation-history.js";
 import { drawingElementsFromScene } from "../src/desktop/renderer-next/canvas/excalidraw/documentToExcalidraw.js";
-import { dropPresentationSubtreeOrLeaf } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
+import {
+  dropPresentationSubtreeOrLeaf,
+  placePresentationSubtreeOrLeaf,
+} from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 
 const emptyDocument = (): CanvasDocument => ({
   version: 1,
@@ -123,9 +126,9 @@ const TREE = [
   source("out-b", "root"),
 ] as const;
 
-function createInstance(document = emptyDocument(), prefix = "a") {
+function createInstance(document = emptyDocument(), prefix = "a", startExpanded = false) {
   let placement = 0;
-  return createCanvasSubtreeProjectionInstance(
+  const created = createCanvasSubtreeProjectionInstance(
     document,
     "root",
     TREE,
@@ -134,29 +137,36 @@ function createInstance(document = emptyDocument(), prefix = "a") {
     () => `instance-${prefix}`,
     () => `placement-${prefix}-${placement++}`
   );
+  return startExpanded
+    ? created
+    : {
+      ...created,
+      document: toggleCanvasSubtreeBranch(created.document, created.rootPlacementId, "right"),
+    };
 }
 
-test("subtree drop freezes the complete bundle while only its root starts visible", () => {
-  const created = createInstance();
+test("subtree drop freezes the complete bundle with root and direct children visible", () => {
+  const created = createInstance(emptyDocument(), "a", true);
   assert.equal(created.document.placements.length, 4);
   const projection = deriveCanvasSubtreeProjection(created.document, TREE);
   assert.deepEqual(
     projection.visiblePlacementIds,
-    ["placement-a-0"]
+    ["placement-a-0", "placement-a-1", "placement-a-3"]
   );
   assert.deepEqual(
     projection.relationships.map((edge) => [edge.parentPlacementId, edge.childPlacementId]),
-    []
+    [["placement-a-0", "placement-a-1"], ["placement-a-0", "placement-a-3"]]
   );
-  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-0")?.expandedDirection, null);
-  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-0")?.expandedDirection, "right");
+  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-1")?.expandedDirection, null);
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-1", "right");
   assert.deepEqual(
     deriveCanvasSubtreeProjection(expanded, TREE).visiblePlacementIds,
-    ["placement-a-0", "placement-a-1", "placement-a-3"]
+    ["placement-a-0", "placement-a-1", "placement-a-2", "placement-a-3"]
   );
   const branches = deriveCanvasSubtreeStructureBranches(
-    expanded,
-    deriveCanvasSubtreeProjection(expanded, TREE)
+    created.document,
+    projection
   );
   const sharedTrunks = branches.map((branch) => branch.path.split(/(?= H | V )/).slice(0, 2).join(""));
   assert.equal(new Set(sharedTrunks).size, 1, "direct siblings share one quiet short trunk");
@@ -201,8 +211,27 @@ test("wide sibling sets wrap into bounded directional bands instead of an unboun
       );
     }
   }
-  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-wide-0", "right");
-  assert.equal(deriveCanvasSubtreeProjection(expanded, wideTree).visiblePlacementIds.length, 14);
+  assert.equal(deriveCanvasSubtreeProjection(created.document, wideTree).visiblePlacementIds.length, 14);
+});
+
+test("right-pane placement repeats the same leaf-or-subtree materialization as drag", () => {
+  const first = placePresentationSubtreeOrLeaf(
+    { document: emptyDocument(), selectedNodeId: "root" },
+    "root",
+    TREE
+  );
+  const second = placePresentationSubtreeOrLeaf(first, "root", TREE);
+  assert.equal(second.document.placements.length, 8);
+  const roots = second.document.placements.filter((placement) => placement.entityRef === "root");
+  assert.equal(roots.length, 2);
+  assert.notEqual(
+    readCanvasSubtreePlacementMeta(roots[0]!)?.instanceId,
+    readCanvasSubtreePlacementMeta(roots[1]!)?.instanceId
+  );
+  assert.deepEqual(
+    second.document.placements.filter((placement) => placement.entityRef === "root").map((placement) => [placement.x, placement.y]),
+    [[96, 150], [96, 238]]
+  );
 });
 
 test("duplicate subtree instances never cross-pair relationships", () => {

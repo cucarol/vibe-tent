@@ -22,7 +22,7 @@ import {
   canvasPlacementSourceAuthority,
   collectReadyPresentationSubtreeSources,
   dropPresentationSubtreeOrLeaf,
-  placePresentationNode,
+  placePresentationSubtreeOrLeaf,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
   withPresentationDocument,
@@ -264,9 +264,10 @@ export function AppShell({
 
   const placeSelectedNode = () => {
     if (!selectedNode || !currentSource || !canCreatePlacement) return;
-    const snapshot = captureCanvasNodeSnapshot(currentSource);
+    const subtreeSources = collectReadyPresentationSubtreeSources(nodes, selectedNode.nodeId);
+    if (!subtreeSources) return;
     onPresentationChange?.((current) =>
-      placePresentationNode(current, selectedNode.nodeId, snapshot)
+      placePresentationSubtreeOrLeaf(current, selectedNode.nodeId, subtreeSources)
     );
   };
 

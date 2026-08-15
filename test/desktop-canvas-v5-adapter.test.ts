@@ -1149,8 +1149,10 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     ),
     "utf8"
   );
-  assert.match(overlay, /disabled=\{!commandsEnabled \|\| !control\.canMutate\}/);
-  assert.match(overlay, /onClick=\{\(\) => \{\s*if \(!commandsEnabled\) return;/);
+  assert.match(overlay, /tabIndex=\{interactive \? 0 : -1\}/);
+  assert.match(overlay, /disabled=\{!interactive \|\| !commandsEnabled \|\| !control\.canMutate\}/);
+  assert.match(overlay, /control\.expandedDirection \? \[activeDirection\] : directions/);
+  assert.match(overlay, /onClick=\{\(\) => \{\s*if \(!interactive \|\| !commandsEnabled\) return;/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
 });
