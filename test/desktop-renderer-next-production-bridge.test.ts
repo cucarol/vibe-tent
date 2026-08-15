@@ -819,6 +819,7 @@ test("Focus renders externally controlled placement state without inventing a se
     onCollapse: () => {},
   }));
   assert.match(placed, /已放入当前画布/);
+  assert.match(placed, />再放一份</);
 });
 
 test("Focus reports source status while sync remains a single Canvas command", () => {

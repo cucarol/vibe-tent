@@ -145,18 +145,16 @@ export function InspectorPanel({
                 </span>
               ) : null}
             </div>
-            {placementState !== "placed" ? (
-              <Button
-                ref={placementActionRef}
-                variant="primary"
-                size="compact"
-                disabled={!canCreatePlacement}
-                aria-describedby="tn-focus-placement-description"
-                onClick={onPlaceNode}
-              >
-                放入画布
-              </Button>
-            ) : null}
+            <Button
+              ref={placementActionRef}
+              variant="primary"
+              size="compact"
+              disabled={!canCreatePlacement}
+              aria-describedby="tn-focus-placement-description"
+              onClick={onPlaceNode}
+            >
+              {placementState === "placed" ? "再放一份" : "放入画布"}
+            </Button>
           </section>
 
           {projectionReady ? (

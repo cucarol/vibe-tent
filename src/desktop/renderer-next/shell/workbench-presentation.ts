@@ -232,25 +232,30 @@ export function placePresentationSubtreeOrLeaf(
     x: (VISIBLE_NODE_PLACEMENT.insetX - viewport.x) / zoom,
     y: (VISIBLE_NODE_PLACEMENT.insetY - viewport.y) / zoom,
   };
-  const overlaps = (point: { x: number; y: number }) => current.document.placements.some((placement) => {
-    const size = canvasPlacementSize(placement);
-    const x = placement.x ?? 0;
-    const y = placement.y ?? 0;
+  const overlaps = (candidate: WorkbenchPresentationState) => {
     const margin = 20;
-    return point.x < x + size.width + margin &&
-      point.x + NODE_CARD.width + margin > x &&
-      point.y < y + size.height + margin &&
-      point.y + NODE_CARD.height + margin > y;
-  });
-  let point = base;
-  const slotLimit = Math.max(12, current.document.placements.length * 4 + 4);
-  for (let slot = 0; slot < slotLimit; slot += 1) {
-    const candidate = {
+    const added = candidate.document.placements.slice(current.document.placements.length);
+    return added.some((nextPlacement) => {
+      const nextSize = canvasPlacementSize(nextPlacement);
+      const nextX = nextPlacement.x ?? 0;
+      const nextY = nextPlacement.y ?? 0;
+      return current.document.placements.some((placement) => {
+        const size = canvasPlacementSize(placement);
+        const x = placement.x ?? 0;
+        const y = placement.y ?? 0;
+        return nextX < x + size.width + margin &&
+          nextX + nextSize.width + margin > x &&
+          nextY < y + size.height + margin &&
+          nextY + nextSize.height + margin > y;
+      });
+    });
+  };
+  for (let slot = 0; ; slot += 1) {
+    const point = {
       x: base.x + (slot % 2) * (NODE_CARD.width + 32),
       y: base.y + Math.floor(slot / 2) * (NODE_CARD.height + 32),
     };
-    point = candidate;
-    if (!overlaps(candidate)) break;
+    const candidate = dropPresentationSubtreeOrLeaf(current, rootNodeId, sources, point);
+    if (!overlaps(candidate)) return candidate;
   }
-  return dropPresentationSubtreeOrLeaf(current, rootNodeId, sources, point);
 }

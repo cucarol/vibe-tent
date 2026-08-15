@@ -230,8 +230,28 @@ test("right-pane placement repeats the same leaf-or-subtree materialization as d
   );
   assert.deepEqual(
     second.document.placements.filter((placement) => placement.entityRef === "root").map((placement) => [placement.x, placement.y]),
-    [[96, 150], [96, 238]]
+    [[96, 150], [96, 326]]
   );
+  const firstInstanceId = readCanvasSubtreePlacementMeta(roots[0]!)?.instanceId;
+  const secondInstanceId = readCanvasSubtreePlacementMeta(roots[1]!)?.instanceId;
+  const firstPlacements = second.document.placements.filter(
+    (placement) => readCanvasSubtreePlacementMeta(placement)?.instanceId === firstInstanceId
+  );
+  const secondPlacements = second.document.placements.filter(
+    (placement) => readCanvasSubtreePlacementMeta(placement)?.instanceId === secondInstanceId
+  );
+  for (const firstPlacement of firstPlacements) {
+    for (const secondPlacement of secondPlacements) {
+      assert.equal(
+        Math.max(firstPlacement.x ?? 0, secondPlacement.x ?? 0) <
+          Math.min((firstPlacement.x ?? 0) + NODE_CARD.width, (secondPlacement.x ?? 0) + NODE_CARD.width) &&
+        Math.max(firstPlacement.y ?? 0, secondPlacement.y ?? 0) <
+          Math.min((firstPlacement.y ?? 0) + NODE_CARD.height, (secondPlacement.y ?? 0) + NODE_CARD.height),
+        false,
+        `${firstPlacement.placementId} must not overlap ${secondPlacement.placementId}`
+      );
+    }
+  }
 });
 
 test("duplicate subtree instances never cross-pair relationships", () => {
