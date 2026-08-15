@@ -38,7 +38,7 @@
 
 .tn-canvas-subtree-lines__path {
   fill: none;
-  stroke: color-mix(in srgb, var(--tn-color-text-faint) 58%, var(--tn-color-stage-bg));
+  stroke: color-mix(in srgb, var(--tn-color-text-faint) 42%, var(--tn-color-stage-bg));
   stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -48,16 +48,16 @@
 /* Composite the complete base tree once so sibling paths can share their
    short trunk without darkening it where identical segments overlap. */
 .tn-canvas-subtree-lines__base {
-  opacity: .5;
+  opacity: .34;
 }
 
 .tn-canvas-subtree-lines__highlights {
-  opacity: .78;
+  opacity: .88;
 }
 
 .tn-canvas-subtree-lines__path--highlight {
-  stroke: var(--tn-color-text-secondary);
-  stroke-width: 1.35;
+  stroke: color-mix(in srgb, var(--tn-color-text-secondary) 82%, var(--tn-color-stage-bg));
+  stroke-width: 1.25;
   stroke-dasharray: none;
 }
 
@@ -84,14 +84,14 @@
 .tn-canvas-subtree-controls__button,
 .tn-canvas-subtree-controls__menu-button,
 .tn-canvas-placement-actions .tn-ui-icon-btn {
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
-  min-height: 24px;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
   padding: 0;
-  border-color: var(--tn-color-border);
-  background: var(--tn-color-elevated-bg);
-  box-shadow: var(--tn-shadow-card);
+  border-color: color-mix(in srgb, var(--tn-color-border) 78%, transparent);
+  background: color-mix(in srgb, var(--tn-color-elevated-bg) 94%, transparent);
+  box-shadow: none;
   pointer-events: auto;
 }
 
@@ -155,12 +155,12 @@
   top: calc(100% + 7px);
   left: 50%;
   display: flex;
-  gap: 2px;
-  padding: 3px;
+  gap: 1px;
+  padding: 2px;
   border: 1px solid var(--tn-color-border);
   border-radius: var(--tn-radius-md);
   background: var(--tn-color-elevated-bg);
-  box-shadow: var(--tn-shadow-card);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--tn-color-overlay) 45%, transparent);
   pointer-events: auto;
   transform: translateX(-50%);
 }

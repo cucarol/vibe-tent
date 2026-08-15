@@ -236,19 +236,31 @@ function childPosition(
 ): { x: number; y: number } {
   const branchGap = 76;
   const siblingGap = 28;
-  const offset = (index - (count - 1) / 2) * (direction === "left" || direction === "right"
-    ? NODE_CARD.height + siblingGap
-    : NODE_CARD.width + siblingGap);
+  // A wide sibling set must not become an unbounded single-column circuit.
+  // Keep the chosen expansion direction, but wrap the initial positions into
+  // compact bands. This is only capture/explicit-relayout geometry; manual
+  // placement remains free and is never snapped back afterwards.
+  const crossAxisLimit = 5;
+  const band = Math.floor(index / crossAxisLimit);
+  const bandStart = band * crossAxisLimit;
+  const bandCount = Math.min(crossAxisLimit, count - bandStart);
+  const crossIndex = index - bandStart;
+  const offset = (crossIndex - (bandCount - 1) / 2) * (
+    direction === "left" || direction === "right"
+      ? NODE_CARD.height + siblingGap
+      : NODE_CARD.width + siblingGap
+  );
+  const along = band + 1;
   if (direction === "right") {
-    return { x: parent.x + NODE_CARD.width + branchGap, y: parent.y + offset };
+    return { x: parent.x + along * (NODE_CARD.width + branchGap), y: parent.y + offset };
   }
   if (direction === "left") {
-    return { x: parent.x - NODE_CARD.width - branchGap, y: parent.y + offset };
+    return { x: parent.x - along * (NODE_CARD.width + branchGap), y: parent.y + offset };
   }
   if (direction === "down") {
-    return { x: parent.x + offset, y: parent.y + NODE_CARD.height + branchGap };
+    return { x: parent.x + offset, y: parent.y + along * (NODE_CARD.height + branchGap) };
   }
-  return { x: parent.x + offset, y: parent.y - NODE_CARD.height - branchGap };
+  return { x: parent.x + offset, y: parent.y - along * (NODE_CARD.height + branchGap) };
 }
 
 export function createCanvasSubtreeProjectionInstance(

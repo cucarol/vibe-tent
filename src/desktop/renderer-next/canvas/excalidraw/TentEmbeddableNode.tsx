@@ -20,6 +20,7 @@ export type TentEmbeddableNodeProps = {
   data: TentEmbeddableNodeData;
   placementId: string;
   selected: boolean;
+  relationFocus?: "neutral" | "neighbor" | "background";
   projectionSyncState?: "current" | "pending-sync" | "unknown" | "tombstone";
   needsAttention?: boolean;
 };
@@ -38,7 +39,14 @@ const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
  * real Focus pane, while animation communicates collaboration state.
  */
 export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
-  const { data, placementId, selected, projectionSyncState = "current", needsAttention = false } = props;
+  const {
+    data,
+    placementId,
+    selected,
+    relationFocus = "neutral",
+    projectionSyncState = "current",
+    needsAttention = false,
+  } = props;
   const stateLabel = data.stateLabel ?? STATE_LABELS[data.state];
   const titleLines = Array.from(data.title.trim()).length <= 16 ? 1 : 2;
   return (
@@ -47,6 +55,7 @@ export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
       data-node-state={data.state}
       data-source-state={data.sourceState}
       data-selected={selected ? "true" : "false"}
+      data-relation-focus={selected ? "selected" : relationFocus}
       data-task-state={data.rawTaskState ?? undefined}
       data-projection-sync={projectionSyncState}
       data-needs-attention={needsAttention ? "true" : "false"}

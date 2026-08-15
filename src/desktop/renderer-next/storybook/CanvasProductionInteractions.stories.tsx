@@ -16,32 +16,24 @@ type AuthorityMode = "base" | "drifted";
 function driftedNodes(): WorkbenchNodeView[] {
   const nodes = fixtureNodes("ready")
     .filter((node) => node.nodeId !== "cx-research")
-    .map((node) => node.nodeId === "cx-product"
-      ? {
+    .map((node) => {
+      if (node.nodeId === "cx-product") {
+        return {
           ...node,
           etag: "etag-product-v2",
           title: "把复杂协作变成稳定、可见的工作",
-        }
-      : node);
-  return [
-    ...nodes,
-    {
-      nodeId: "cx-evidence",
-      etag: "etag-evidence-v1",
-      path: "产品方向/交互证据",
-      name: "交互证据",
-      title: "真实交互与持久化证据",
-      type: "output",
-      tags: ["E2E"],
-      mode: "editable",
-      archived: false,
-      invalid: false,
-      parentNodeId: "cx-product",
-      hasChildren: false,
-      depth: 1,
-      projectionState: "ready",
-    },
-  ];
+        };
+      }
+      if (node.nodeId === "cx-evidence") {
+        return {
+          ...node,
+          etag: "etag-evidence-v2",
+          title: "真实交互、持久化与恢复证据",
+        };
+      }
+      return node;
+    });
+  return nodes;
 }
 
 function nodesFor(mode: AuthorityMode, projection: ProjectionState): WorkbenchNodeView[] {

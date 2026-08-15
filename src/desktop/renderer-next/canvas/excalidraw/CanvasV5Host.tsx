@@ -329,6 +329,19 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     () => sceneDocumentForSubtreeProjection(canvasDocument, subtreeProjection),
     [canvasDocument, subtreeProjection]
   );
+  const relatedPlacementIds = useMemo(() => {
+    const focusedPlacementId = canvasDocument.focusedPlacementId;
+    const related = new Set<string>();
+    if (!focusedPlacementId) return related;
+    for (const relationship of subtreeProjection.relationships) {
+      if (relationship.parentPlacementId === focusedPlacementId) {
+        related.add(relationship.childPlacementId);
+      } else if (relationship.childPlacementId === focusedPlacementId) {
+        related.add(relationship.parentPlacementId);
+      }
+    }
+    return related;
+  }, [canvasDocument.focusedPlacementId, subtreeProjection.relationships]);
 
   const documentRef = useRef(canvasDocument);
   documentRef.current = canvasDocument;
@@ -1855,6 +1868,11 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   placementId={custom.placementId}
                   data={toNodeData(model)}
                   selected={selected}
+                  relationFocus={canvasDocument.focusedPlacementId
+                    ? relatedPlacementIds.has(custom.placementId)
+                      ? "neighbor"
+                      : "background"
+                    : "neutral"}
                   projectionSyncState={projectionStateByPlacement.get(custom.placementId) ?? "unknown"}
                   needsAttention={attentionPlacementIds.has(custom.placementId)}
                 />

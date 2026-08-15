@@ -51,10 +51,15 @@ import {
 import { captureCanvasNodeSnapshot } from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
 import { canvasAttentionPlacementIds } from "../src/desktop/renderer-next/model/canvas-attention.js";
 
-test("compact Canvas cards expose only a one-or-two-line title while sync and attention remain composable", () => {
-  const card = (title: string) => renderToStaticMarkup(createElement(TentEmbeddableNode, {
+test("compact Canvas cards expose only a one-or-two-line title while sync, attention, and local relation focus remain composable", () => {
+  const card = (
+    title: string,
+    relationFocus: "neutral" | "neighbor" | "background" = "neutral",
+    selected = true
+  ) => renderToStaticMarkup(createElement(TentEmbeddableNode, {
     placementId: "pl-a",
-    selected: true,
+    selected,
+    relationFocus,
     projectionSyncState: "pending-sync",
     needsAttention: true,
     data: {
@@ -70,9 +75,12 @@ test("compact Canvas cards expose only a one-or-two-line title while sync and at
   assert.match(short, /data-title-lines="1"/);
   assert.match(short, /data-projection-sync="pending-sync"/);
   assert.match(short, /data-needs-attention="true"/);
+  assert.match(short, /data-relation-focus="selected"/);
   assert.doesNotMatch(short, />目标</);
   assert.doesNotMatch(short, /不应进入紧凑卡片的详情/);
   assert.match(card("这是一段需要自然换成两行显示的中文节点标题"), /data-title-lines="2"/);
+  assert.match(card("直接子级", "neighbor", false), /data-relation-focus="neighbor"/);
+  assert.match(card("远处投影", "background", false), /data-relation-focus="background"/);
 });
 
 function state(workspaceId = "ws-a") {

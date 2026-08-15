@@ -162,6 +162,49 @@ test("subtree drop freezes the complete bundle while only its root starts visibl
   assert.equal(new Set(sharedTrunks).size, 1, "direct siblings share one quiet short trunk");
 });
 
+test("wide sibling sets wrap into bounded directional bands instead of an unbounded circuit column", () => {
+  const wideTree = [
+    source("root", null),
+    ...Array.from({ length: 13 }, (_value, index) => source(`child-${index}`, "root")),
+  ];
+  let placement = 0;
+  const created = createCanvasSubtreeProjectionInstance(
+    emptyDocument(),
+    "root",
+    wideTree,
+    { x: 100, y: 300 },
+    "right",
+    () => "instance-wide",
+    () => `placement-wide-${placement++}`
+  );
+  const children = created.document.placements.slice(1);
+  const xBands = [...new Set(children.map((child) => child.x))];
+  assert.equal(xBands.length, 3, "thirteen siblings use three rightward bands");
+  assert.deepEqual(
+    children.slice(0, 5).map((child) => child.x),
+    Array(5).fill(xBands[0])
+  );
+  const yValues = children.map((child) => child.y ?? 0);
+  assert.ok(
+    Math.max(...yValues) - Math.min(...yValues) <= 4 * (NODE_CARD.height + 28),
+    "cross-axis span is bounded to five cards"
+  );
+  for (let left = 0; left < children.length; left += 1) {
+    const leftRect = placementRectForTest(children[left]!);
+    for (let right = left + 1; right < children.length; right += 1) {
+      const rightRect = placementRectForTest(children[right]!);
+      assert.equal(
+        leftRect.left < rightRect.right && leftRect.right > rightRect.left &&
+          leftRect.top < rightRect.bottom && leftRect.bottom > rightRect.top,
+        false,
+        `initial cards ${left} and ${right} do not overlap`
+      );
+    }
+  }
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-wide-0", "right");
+  assert.equal(deriveCanvasSubtreeProjection(expanded, wideTree).visiblePlacementIds.length, 14);
+});
+
 test("duplicate subtree instances never cross-pair relationships", () => {
   const first = createInstance();
   const second = createInstance(first.document, "b");

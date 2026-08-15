@@ -227,12 +227,21 @@
   font-family: var(--tn-font-ui);
   transition:
     border-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
-    background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
+    background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
+    opacity var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
 }
 
 .tn-excal-node[data-selected="true"] {
-  border-color: var(--tn-color-text-secondary);
-  background: color-mix(in srgb, var(--tn-color-card-bg) 82%, var(--tn-color-selected));
+  border-color: var(--tn-color-text-primary);
+  background: color-mix(in srgb, var(--tn-color-card-bg) 76%, var(--tn-color-selected));
+}
+
+.tn-excal-node[data-relation-focus="neighbor"] {
+  border-color: color-mix(in srgb, var(--tn-color-text-faint) 52%, var(--tn-color-border));
+}
+
+.tn-excal-node[data-relation-focus="background"] {
+  opacity: .7;
 }
 
 .tn-excal-node[data-projection-sync="pending-sync"] {
@@ -275,7 +284,7 @@
   padding: 0 14px;
   overflow: hidden;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 580;
   line-height: 1.35;
   text-align: left;
   -webkit-box-orient: vertical;

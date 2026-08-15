@@ -590,6 +590,9 @@ test("compact Canvas Nodes keep canonical geometry and quiet shared line composi
   assert.match(host, /\.tn-canvas-subtree-lines__base\s*\{\s*opacity:/);
   assert.match(host, /\.tn-canvas-subtree-lines__highlights\s*\{\s*opacity:/);
   assert.doesNotMatch(host, /\.tn-canvas-subtree-lines__path\s*\{[^}]*opacity:/);
+  assert.match(cards, /data-relation-focus="neighbor"/);
+  assert.match(cards, /data-relation-focus="background"[^}]*opacity:/);
+  assert.match(host, /\.tn-canvas-subtree-controls__button[\s\S]*width:\s*20px;/);
   assert.match(shell, /\.tn-outline-presence\s*\{[^}]*width:\s*16px;/);
   assert.match(shell, /\.tn-outline-presence\s*\{[^}]*justify-self:\s*end;/);
 });
