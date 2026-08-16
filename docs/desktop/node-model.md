@@ -33,4 +33,6 @@ that result identity rather than copied into Node frontmatter.
 
 Node create/write/move/rename/type/tags/archive/restore/proposal apply are
 explicit user-authorized mutations with etag/path checks. Setting type to null
-removes the field. Task submit/review never edits a Node.
+removes the field. Task submit/review never edits a Node. After acceptance,
+`task.bindOutput` is the separate explicit provenance action for an existing
+Output Node.

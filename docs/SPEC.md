@@ -4,7 +4,7 @@ Protocol 9 is the only current public contract. Retired public commands and wire
 
 ## 1. Product vocabulary
 
-The top-level entities are Node, Role, Task, Session, and Agent Connection. A TaskResult is an immutable child record of one Task. TaskInput, DecisionRequest, and Proposal are interactions. Canvas and Inbox are views, never Core authorities.
+The core product entities are Node, Role, Task, and TaskResult. A Session records optional host execution continuity. An Agent Connection is optional machine configuration for Tent-managed ACP launch. TaskInput, DecisionRequest, and Proposal are interactions. Canvas and Inbox are views, never Core authorities.
 
 Host conversations are external continuity sources for Sessions. Tent has no Subagent entity: native host sub-collaboration stays host-local, while Tent-managed ACP execution is represented by its Task plus execution Session and never by a second Role.
 
@@ -16,9 +16,9 @@ Node bodies hold facts that remain useful across Tasks or Sessions. Operational 
 
 Project instructions live in the workspace `AGENTS.md`. Tent does not copy that authority into another rules file.
 
-## 3. Role, Session, and Agent Connection
+## 3. Role and execution carriers
 
-Role and Session are different. A Role has durable responsibility and can continue across replaceable Sessions. A Session is one bounded execution with a canonical `ss-` id. An Agent Connection is machine-local, non-secret launch configuration with an arbitrary stable `connectionId`; it is availability, not identity or authorization.
+Role and Session are different. A Role has durable responsibility and can continue across replaceable host Sessions. A Session is a bounded execution record with a canonical `ss-` id, not a prerequisite for Task Package generation or Result submission. An Agent Connection is optional machine-local, non-secret ACP launch configuration with an arbitrary stable `connectionId`; it is availability, not identity or authorization.
 
 Connection creation materializes canonical `command` plus complete `args` once. A Session stores an immutable Connection snapshot and uses it for start/resume. Public Connection projection uses `endpoint`; secrets are resolved only at the launch boundary and are never persisted or projected.
 
@@ -37,6 +37,8 @@ A Task is one work package and one review unit. Its TaskRecord contains:
 - `acceptMode`, WorkspaceLane facts, state, wait/status detail, and optional `currentResultId`.
 
 The Service derives execution and authority from canonical fields. The same work Node cannot be occupied by another active Task. Occupation is per exact work Node: parent and child Nodes are independent and never imply a subtree lock. Context Card v2 and incremental TaskInput/review deltas are persisted host-injected facts, not chat memory.
+
+Every Task exposes one canonical Task Package derived from its TaskRecord and frozen Context Card. The Package preserves ordered work/context Node snapshots and the near-field prompt, excludes Session/Connection runtime state, and is byte-stable for the same Task facts. Native Harnesses and Tent-managed ACP consume the same Package; adapters may wrap transport but cannot rewrite its authority semantics.
 
 Task state uses the existing lifecycle. An explicit blocked return is `waiting` with `statusDetail.kind=blocked`; a clear terminal failure is `failed` with bounded `statusDetail`. Needs-input is represented by a DecisionRequest rather than a Task state or result wrapper.
 
@@ -62,6 +64,8 @@ Task running
 ```
 
 Review authority comes from `requester`. The user path and exact Role Session authority are transport-bound. Accept integrates exact commits when required, then records accepted review and Task state. Reject records rejected review and may resume the same Task. Accept/reject never bind an Output Node or edit any Node.
+
+After acceptance, an explicit actor may update an existing Node through ordinary etag-safe Node mutation. To derive an Output, the actor creates an ordinary `type: output` Node and explicitly calls `task.bindOutput` with the accepted exact `resultId`. Binding only records provenance; it does not generate or rewrite Node content.
 
 `acceptMode` is a hard Task policy: `review-required` leaves the ready result for
 the requester and the executor never self-accepts; `auto-accept` runs the exact

@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { nodeNotePath } from "../src/core/tree.js";
-import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { createServiceClient } from "../src/service/client.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -84,7 +83,7 @@ test("task.accept never mutates Node or binds Output", async () => {
   });
 });
 
-test("Output provenance projects an explicit accepted Result link", async () => {
+test("task.bindOutput explicitly binds an accepted Result and is idempotent", async () => {
   await withService(async (svc) => {
     const root = await workspace();
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: root });
@@ -94,17 +93,84 @@ test("Output provenance projects an explicit accepted Result link", async () => 
     const { resultId } = await submitReadyResult(svc, workspaceId, root, source.nodeId);
     assert.ok(!(await rpc(svc, "task.accept", { workspaceId, resultId, actor: "user" })).error);
 
-    const fsa = new NodeFs(path.join(root, ".tent"));
-    const notePath = nodeNotePath(output.path);
-    const parsed = parseFrontmatter(await fsa.readFile(notePath));
-    parsed.data.resultId = resultId;
-    await fsa.writeFile(notePath, serializeFrontmatter(parsed.data, parsed.body, parsed.keyOrder));
+    const bound = await rpc(svc, "task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds: [output.nodeId],
+      actor: "user",
+    });
+    assert.ok(!bound.error, JSON.stringify(bound.error));
+    assert.deepEqual(
+      (bound.result as { outputNodeIds: string[]; changedNodeIds: string[] }).outputNodeIds,
+      [output.nodeId]
+    );
+    assert.deepEqual(
+      (bound.result as { changedNodeIds: string[] }).changedNodeIds,
+      [output.nodeId]
+    );
+
+    const retry = await rpc(svc, "task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds: [output.nodeId],
+      actor: "user",
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.deepEqual((retry.result as { changedNodeIds: string[] }).changedNodeIds, []);
+
     const provenance = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!provenance.error, JSON.stringify(provenance.error));
     const value = provenance.result as OutputProvenance;
     assert.equal(value.resultId, resultId);
     assert.equal(value.result?.status, "accepted");
     assert.deepEqual(value.result?.artifactRefs, [{ kind: "path", target: "dist/formal.txt" }]);
+  });
+});
+
+test("task.bindOutput rejects an unaccepted Result without changing any Output", async () => {
+  await withService(async (svc) => {
+    const root = await workspace();
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: root });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    const source = await createNote(svc, workspaceId, "job", "prompt");
+    const output = await createNote(svc, workspaceId, "published", "output");
+    const { resultId } = await submitReadyResult(svc, workspaceId, root, source.nodeId);
+    const fsa = new NodeFs(path.join(root, ".tent"));
+    const before = await fsa.readFile(nodeNotePath(output.path));
+
+    const denied = await rpc(svc, "task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds: [output.nodeId],
+      actor: "user",
+    });
+    assert.ok(denied.error);
+    assert.equal((denied.error?.data as { code?: string })?.code, "RESULT_NOT_ACCEPTED");
+    assert.equal(await fsa.readFile(nodeNotePath(output.path)), before);
+  });
+});
+
+test("task.bindOutput validates every target before writing any provenance", async () => {
+  await withService(async (svc) => {
+    const root = await workspace();
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: root });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    const source = await createNote(svc, workspaceId, "job", "prompt");
+    const output = await createNote(svc, workspaceId, "published", "output");
+    const notOutput = await createNote(svc, workspaceId, "ordinary", "prompt");
+    const { resultId } = await submitReadyResult(svc, workspaceId, root, source.nodeId);
+    assert.ok(!(await rpc(svc, "task.accept", { workspaceId, resultId, actor: "user" })).error);
+
+    const fsa = new NodeFs(path.join(root, ".tent"));
+    const before = await fsa.readFile(nodeNotePath(output.path));
+    const denied = await rpc(svc, "task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds: [output.nodeId, notOutput.nodeId],
+      actor: "user",
+    });
+    assert.ok(denied.error);
+    assert.equal(await fsa.readFile(nodeNotePath(output.path)), before);
   });
 });
 

@@ -2,7 +2,7 @@
 
 > *vibe 于帷幄之中*
 
-Vibe Tent 把 coding-agent 协作变成可接管、可审阅的工作系统：Node 保存长期事实，Role 承担责任，Task 定义一次工作，Session 承载一次执行，TaskResult 保存正式结果，Agent Connection 提供机器上的启动配置。Desktop 与 CLI 都连接同一个 Local Service；真实代码、文档和 Git 历史仍留在项目 workspace。
+Vibe Tent 是跨 Harness 的上下文控制平面：Node 保存长期事实，Role 承担责任，Task 把选定 Node 与 prompt 冻结为同一份 Task Package，TaskResult 保存正式结果。Codex、Claude、Pi 或其他 Harness 都可消费这份输入；Session 只连接宿主执行，Agent Connection 只在需要 Tent 代为启动 ACP 时提供机器配置。Desktop 与 CLI 连接同一个 Local Service；真实代码、文档和 Git 历史仍留在项目 workspace。
 
 <img width="1572" height="1076" alt="Vibe Tent demo" src="https://github.com/user-attachments/assets/2989b6ff-e249-435e-913e-c0267c05ffdf" />
 
@@ -26,13 +26,13 @@ Use only the CLI, Desktop, and bundled Skill installation paths above.
 
 - **Node**：带稳定 `cx-` id 的 Markdown 事实与上下文；只有一个可选 `type` 标记。
 - **Role**：跨 Session 持续对用户负责的主体。
-- **Task**：一次工作与审阅单位，记录 prompt、work/context Nodes、requester、执行绑定和 `currentResultId`。
+- **Task**：一次工作与审阅单位，记录 prompt、有序 work/context Nodes、requester 和 `currentResultId`，并导出确定性的 Task Package。
 - **TaskResult**：Task 的不可变提交内容；每次正式提交生成新的 `rs-` 记录，review 针对 exact `resultId`。
-- **Session**：一次可结束、恢复或显式替换的执行。
-- **Agent Connection**：机器本地的非秘密启动配置；不是身份或权限。
+- **Session**：可选的宿主执行连续性记录；不是 Task 或 Role 的替代品。
+- **Agent Connection**：可选的机器本地 ACP 启动配置；不是身份或权限。
 - **TaskInput / DecisionRequest / Proposal**：交互记录。Canvas 和 Inbox 只是权威事实的视图。
 
-`blocked` 写入 Task `waiting` + `statusDetail`；明确终止失败写入 `failed` + `statusDetail`；需要用户选择时使用 DecisionRequest。正常非空 final report 直接提交 TaskResult。TaskResult 被接受后，用户或 Role 才可另行决定是否更新已有 Node 或派生 Output Node。
+`blocked` 写入 Task `waiting` + `statusDetail`；明确终止失败写入 `failed` + `statusDetail`；需要用户选择时使用 DecisionRequest。正常非空 final report 直接提交 TaskResult。TaskResult 被接受后，用户或 Role 才可另行决定是否更新已有 Node，或创建 Output Node 并显式绑定该 Result。
 
 ## 架构
 

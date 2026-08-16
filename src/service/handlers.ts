@@ -96,6 +96,7 @@ import {
   type TaskResultRecord,
 } from "../core/task-result.js";
 import {
+  bindOutputsToTaskResult,
   OutputProvenanceError,
   resolveOutputProvenance,
   type OutputProvenance as CoreOutputProvenance,
@@ -558,6 +559,10 @@ export async function dispatchMethod(
         return taskList(ctx, p);
       case "task.get":
         return taskGet(ctx, p);
+      case "task.package":
+        return taskPackage(ctx, p);
+      case "task.bindOutput":
+        return taskBindOutputRpc(ctx, p, callContext);
       case "taskResult.list":
         return taskResultList(ctx, p);
       case "taskResult.get":
@@ -5521,7 +5526,7 @@ async function resolveReviewCallerActor(
   ctx: HandlerContext,
   workspaceId: string,
   requestedActor: string,
-  action: "accept" | "reject" | "worktreeReclaim.reconcile",
+  action: "accept" | "reject" | "bindOutput" | "worktreeReclaim.reconcile",
   callContext: VerifiedCallerContext
 ): Promise<string> {
   const callerSessionId = callContext.callerSessionId?.trim();
@@ -5574,6 +5579,35 @@ async function resolveReviewCallerActor(
     );
   }
   return derivedActor;
+}
+
+function assertAcceptedResultForOutputBinding(
+  review: { task: TaskRecord & { id: string }; result: TaskResultRecord },
+  actor: string
+): void {
+  const requester = review.task.requester;
+  const expectedKind = actor === "user" ? "user" : "role";
+  if (!requester || requester.kind !== expectedKind || requester.id !== actor) {
+    throw new RpcError(-32001, "task.bindOutput requires the exact persisted requester", {
+      code: "OUTPUT_BIND_CALLER_FORBIDDEN",
+      resultId: review.result.id,
+      actor,
+      requester,
+    });
+  }
+  if (
+    review.task.state !== "accepted" ||
+    review.task.currentResultId !== review.result.id ||
+    review.result.status !== "accepted"
+  ) {
+    throw new RpcError(RPC_LIFECYCLE, "task.bindOutput requires an accepted exact TaskResult", {
+      code: "RESULT_NOT_ACCEPTED",
+      resultId: review.result.id,
+      taskId: review.task.id,
+      taskState: review.task.state,
+      resultStatus: review.result.status,
+    });
+  }
 }
 
 /**
@@ -5806,6 +5840,94 @@ async function outputProvenanceRpc(
     if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
     throw err;
   }
+}
+
+/**
+ * Explicit post-accept Result → Output provenance binding.
+ * Node content and creation remain ordinary Node actions; review never writes Nodes.
+ */
+async function taskBindOutputRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "resultId", "outputNodeIds", "actor"]),
+    "task.bindOutput"
+  );
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const resultId = requireString(p, "resultId");
+  if (!isTaskResultId(resultId)) {
+    throw new RpcError(-32602, `Invalid TaskResult id: ${resultId}`);
+  }
+  const outputNodeIds = optionalStringArray(p, "outputNodeIds") ?? [];
+  if (outputNodeIds.length === 0) {
+    throw new RpcError(-32602, "task.bindOutput requires at least one outputNodeId");
+  }
+  const actor = requireString(p, "actor");
+  const reviewerActor = await resolveReviewCallerActor(
+    ctx,
+    workspaceId,
+    actor,
+    "bindOutput",
+    callContext
+  );
+  const initialReview = await requireUniqueTaskForReviewTaskResult(
+    ctx,
+    workspaceId,
+    resultId
+  );
+  assertAcceptedResultForOutputBinding(initialReview, reviewerActor);
+
+  let bound: { boundIds: string[]; changedIds: string[] };
+  try {
+    bound = await ctx.mutations.run(workspaceId, async () => {
+      const exactReview = await requireUniqueTaskForReviewTaskResult(
+        ctx,
+        workspaceId,
+        resultId
+      );
+      assertReviewTaskResultIdentityUnchanged(initialReview, exactReview);
+      assertAcceptedResultForOutputBinding(exactReview, reviewerActor);
+      ctx.host.markSelfWrite(workspaceId);
+      return bindOutputsToTaskResult(
+        mount.env.fs,
+        outputNodeIds,
+        resultId
+      );
+    });
+  } catch (err) {
+    if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+    throw err;
+  }
+
+  if (bound.changedIds.length > 0) {
+    const tent = await loadTent(mount.env.fs);
+    for (const nodeId of bound.changedIds) {
+      const node = tent.byId.get(nodeId);
+      ctx.events.emit(
+        "node.changed",
+        workspaceId,
+        {
+          nodeId,
+          ...(node ? { path: node.path } : {}),
+          resultId,
+          reason: "task.bindOutput",
+        },
+        "self"
+      );
+    }
+  }
+
+  return {
+    workspaceId,
+    taskPath: initialReview.task.path,
+    resultId,
+    outputNodeIds: bound.boundIds,
+    changedNodeIds: bound.changedIds,
+  };
 }
 
 function projectOutputProvenanceWire(
@@ -7772,11 +7894,26 @@ async function taskList(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 async function taskGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(p, new Set(["workspaceId", "taskPath"]), "task.get");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const task = await loadTaskRecord(mount.env.fs, taskPath);
   return { workspaceId, task: projectTask(task) };
+}
+
+async function taskPackage(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(p, new Set(["workspaceId", "taskPath"]), "task.package");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskRecord(mount.env.fs, taskPath);
+  return {
+    workspaceId,
+    taskPath: task.path,
+    taskId: task.id,
+    taskPackage: taskPackageForTask(task),
+  };
 }
 
 /**

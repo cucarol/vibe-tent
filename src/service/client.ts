@@ -2,6 +2,9 @@
 
 import type {
   TaskResultProjection,
+  TaskBindOutputResult,
+  TaskGetResult,
+  TaskPackageResult,
   EventEnvelope,
   GraphProjection,
   NodeProjection,
@@ -828,7 +831,23 @@ export class ServiceClient {
     return this.call("task.list", { workspaceId });
   }
   taskGet(workspaceId: string, taskPath: string) {
-    return this.call("task.get", { workspaceId, taskPath });
+    return this.call<TaskGetResult>("task.get", { workspaceId, taskPath });
+  }
+  taskPackage(workspaceId: string, taskPath: string) {
+    return this.call<TaskPackageResult>("task.package", { workspaceId, taskPath });
+  }
+  taskBindOutput(
+    workspaceId: string,
+    resultId: string,
+    outputNodeIds: string[],
+    actor: string
+  ) {
+    return this.call<TaskBindOutputResult>("task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds,
+      actor,
+    });
   }
 
   /** Optional selected Node collaboration + user-actionable Inbox in one authoritative read. */

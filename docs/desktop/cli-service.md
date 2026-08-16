@@ -8,11 +8,13 @@ then calls typed RPC. It never edits `.tent/temp` directly.
 ```text
 tent task list
 tent task get <taskPath>
+tent task package <taskPath>
 tent task claim <taskPath>
 tent task claim --work-node <nodeId> ... --prompt <text>|-
 tent task dispatch --target role:<roleId>|connection:<connectionId> ...
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review]
 tent task accept <resultId> --actor <user|roleId>
+tent task bind-output <resultId> --output-node <nodeId> ... --actor <user|roleId>
 tent task reject <resultId> --actor <user|roleId> [--note ...] [--resume|--no-resume]
 tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label]
 tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny)
@@ -30,12 +32,16 @@ Review targets the exact positional `resultId`. Service resolves only the Task's
 `currentResultId`, validates requester authority, and applies the existing Git
 and review lifecycle. A review-required executor never accepts its own result.
 
+`task package` prints the canonical frozen execution input without mutating the
+Task. After acceptance, `task bind-output` explicitly records Result provenance
+on existing `type: output` Nodes; Node content and creation remain ordinary Node actions.
+
 ## Role and Connection targets
 
 `role:<roleId>` creates queued work for that durable Role. A Role requester is
 valid only from its exact authenticated Role Session. `connection:<connectionId>`
-creates a managed Session from the immutable Connection snapshot. Agent Connection
-is launch configuration, not Task identity or authorization.
+is the optional managed-ACP path and creates a Session from the immutable Connection
+snapshot. Agent Connection is launch configuration, not Task identity or authorization.
 
 ## Inputs and host actions
 

@@ -6,11 +6,13 @@ All commands attach to Protocol 9 Local Service. Use the exact `taskPath`,
 ```text
 tent task list [--json]
 tent task get <taskPath> [--json]
+tent task package <taskPath> [--json]
 tent task claim <taskPath> [--json]
 tent task claim --work-node <nodeId> ... --prompt <text>|-
 tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> ... --prompt <text>|-
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review] [--json]
 tent task accept <resultId> --actor <user|roleId> [--json]
+tent task bind-output <resultId> --output-node <nodeId> ... --actor <user|roleId> [--json]
 tent task reject <resultId> --actor <user|roleId> [--note ...] [--resume|--no-resume] [--json]
 tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label]
 tent task decision respond <requestId> (--option <id> | --text <text>|- | --deny)
@@ -26,6 +28,9 @@ Claim re-reads the persisted Task. Direct Role claim requires the current truste
 Role Session plus at least one work Node. Dispatch targets a durable Role or an
 Agent Connection. The caller supplies prompt and Node refs; Service derives
 requester, responsibility, execution, lane, and review authority.
+
+`task package` exports the deterministic frozen execution input shared by every
+Harness. It is read-only and excludes Session/Connection runtime state.
 
 ## Submit and review
 
@@ -59,4 +64,6 @@ exact request/response.
 
 Task and TaskResult are the default record. After acceptance, an explicit actor
 may promote durable facts into an existing relevant writable Node. If none exists,
-report to requester. Node promotion is optional and separate from review.
+report to requester. For an intentional Output derivation, create a `type: output`
+Node and bind the accepted Result with `task bind-output`. Node promotion is
+optional and separate from review.

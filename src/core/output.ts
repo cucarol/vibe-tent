@@ -2,7 +2,7 @@
 // Authoritative link is Output frontmatter `resultId` only — no taskId/source Node denorm,
 // artifactRefs copy, or generic relation substitute (Canvas P0 / cx-f2kxd4).
 
-import type { FsAdapter } from "./adapter.js";
+import { withTentMutation, type FsAdapter } from "./adapter.js";
 import type { ArtifactRef } from "./artifact.js";
 import { loadTaskResults, type TaskResultRecord } from "./task-result.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
@@ -340,6 +340,24 @@ export async function bindOutputsToTaskResultUnlocked(
   }
 
   return { boundIds: outputIds, changedIds, snapshots };
+}
+
+/** Explicit post-review provenance action; accepting a Result never calls this. */
+export async function bindOutputsToTaskResult(
+  fs: FsAdapter,
+  outputNodeIds: readonly string[],
+  resultId: string
+): Promise<{ boundIds: string[]; changedIds: string[] }> {
+  return withTentMutation(fs, async () => {
+    const tent = await loadTent(fs);
+    const bound = await bindOutputsToTaskResultUnlocked(
+      fs,
+      tent,
+      outputNodeIds,
+      resultId
+    );
+    return { boundIds: bound.boundIds, changedIds: bound.changedIds };
+  });
 }
 
 /**

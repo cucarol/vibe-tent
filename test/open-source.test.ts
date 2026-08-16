@@ -263,7 +263,9 @@ test("docs/skill drift: Protocol 9 Node/Task/TaskResult model and optional type"
   assert.match(spec, /Protocol 9/);
   assert.match(spec, /WorkspaceLane/);
   assert.match(spec, /one optional arbitrary `type` marker/);
-  assert.match(spec, /Node, Role, Task, Session, and Agent Connection/);
+  assert.match(spec, /core product entities are Node, Role, Task, and TaskResult/i);
+  assert.match(spec, /Every Task exposes one canonical Task Package/);
+  assert.match(spec, /task\.bindOutput/);
   assert.match(spec, /currentResultId.*only review selector/i);
   assert.doesNotMatch(
     spec,

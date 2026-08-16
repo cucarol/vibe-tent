@@ -11,6 +11,14 @@ and optional `currentResultId`.
 execution are separate. For Session-only Tasks, the path's Session segment is an
 immutable storage partition; it is never current execution or review authority.
 
+## Task Package
+
+`task.package` returns the canonical Task Package and `tent task package` exports
+its bytes directly. Ordinary `task.get` remains a lightweight lifecycle read. The
+Package is derived from TaskRecord plus the frozen Context Card, keeps
+ordered work/context Node snapshots, and excludes Session/Connection runtime state.
+Every Harness receives this same contract; transport wrappers are not authority.
+
 ## TaskResultRecord
 
 One fresh logical `task.submit` creates a new `rs-` TaskResult. An exact retry
@@ -56,6 +64,13 @@ Promise. A committed Result candidate is recovered before any new provider seal.
 Successful publication clears the draft; a reversible publication failure keeps
 it and records bounded status detail. Duplicate completion cannot create a second
 result for the same candidate.
+
+## Explicit durable output
+
+Review never edits a Node. After an exact Result is accepted, ordinary Node
+create/write remains the content-authority path. `task.bindOutput` may then bind
+that Result id to one or more existing `type: output` Nodes. Same-id retries are
+idempotent; unaccepted Results and non-Output Nodes fail without partial writes.
 
 ## Collaboration projection
 

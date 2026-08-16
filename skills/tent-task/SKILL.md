@@ -10,15 +10,17 @@ Use this Skill for one concrete Task. A durable Role executor also applies
 
 ## Load the contract
 
-1. Read the exact TaskRecord and Context Card before editing.
+1. Read the exact Task Package with `tent task package <taskPath>` before editing.
 2. Verify `prompt`, work/context Node ids, requester, WorkspaceLane, Task state,
-   and current Session binding.
+   and any attached host Session binding.
 3. Consume each TaskInput or review delta once through the formal lifecycle.
 4. Work only in the recorded workspace/worktree and preserve unrelated changes.
 
-The host injects persisted Context Card v2 plus incremental input/review deltas.
-These are authoritative persisted facts, never chat memory. Node bodies are
-context; TaskRecord defines the work; TaskResult is the formal submission.
+The canonical Task Package is derived from TaskRecord and its frozen Context Card,
+and is shared by native and ACP Harnesses. The host may
+inject that Package plus incremental input/review deltas, but may not rewrite its
+authority semantics. Node bodies are context; TaskRecord defines the work;
+TaskResult is the formal submission.
 
 ## Interactions
 
@@ -57,7 +59,8 @@ requester authority reviews the current `resultId` when review is required.
 Task and TaskResult are the default durable work record. After acceptance,
 promote only cross-Task/cross-Session durable facts into an existing relevant
 writable Node. If none exists, report to requester; never create a process-only
-Node. Node promotion is optional and never a prerequisite for submission.
+Node. An intentional Output derivation uses an explicit Output Node plus
+`tent task bind-output`; promotion is optional and never a prerequisite for submission.
 
 ## Host Session boundary
 

@@ -12,8 +12,8 @@ Renderer -> typed preload bridge -> Desktop main -> authenticated Local Service
 
 ## Authority boundaries
 
-- Core owns Node, Role, Task, TaskResult, Session, Agent Connection, and exact
-  lifecycle rules.
+- Core owns Node, Role, Task, TaskResult, and exact lifecycle rules. Session and
+  Agent Connection are supporting execution records, not peer responsibility models.
 - Local Service owns workspace mounting, authenticated RPC, runtime orchestration,
   filesystem mutation, Git integration, and projection events.
 - Desktop main holds the endpoint token and exposes a narrow typed bridge.
@@ -23,7 +23,7 @@ Renderer -> typed preload bridge -> Desktop main -> authenticated Local Service
 
 TaskResult review uses exact `resultId`. Decision response uses exact `requestId`.
 Task submission and review do not mutate Nodes; a later explicit Node action may
-promote an accepted result.
+update durable context or bind an accepted result to an Output Node.
 
 ## Attach and events
 

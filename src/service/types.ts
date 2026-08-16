@@ -343,6 +343,28 @@ export type TaskProjection = {
   contextGeneration?: string;
 };
 
+export type TaskGetResult = {
+  workspaceId: string;
+  task: TaskProjection;
+};
+
+export type TaskPackageResult = {
+  workspaceId: string;
+  taskPath: string;
+  taskId: string;
+  /** Canonical, deterministic execution input shared by every Harness. */
+  taskPackage: string;
+};
+
+export type TaskBindOutputResult = {
+  workspaceId: string;
+  taskPath: string;
+  resultId: string;
+  outputNodeIds: string[];
+  /** Empty on an idempotent retry. */
+  changedNodeIds: string[];
+};
+
 export type TaskResultProjection = {
   path: string;
   id: string;
@@ -802,6 +824,13 @@ export const CLIENT_METHODS = [
   "task.replaceSession",
   "task.list",
   "task.get",
+  "task.package",
+  /**
+   * Explicit post-accept Result provenance binding for existing Output Nodes.
+   * Params: workspaceId + exact accepted resultId + outputNodeIds[] + actor.
+   * Accepting a Result never calls this automatically.
+   */
+  "task.bindOutput",
   "taskResult.list",
   "taskResult.get",
   /**

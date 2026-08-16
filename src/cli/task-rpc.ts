@@ -104,6 +104,18 @@ export async function runTaskCommand(
         const result = await client.taskGet(workspaceId, taskPath);
         return okPrint(result, json, (r) => formatTaskGet(r as { task: TaskLike }));
       }
+      case "package": {
+        const unknown = findUnknownFlag(flags, TASK_COMMON_FLAGS);
+        if (unknown) return failUsage(`Unknown option --${unknown} for task package`);
+        const taskPath = positionals[0];
+        if (!taskPath || positionals.length > 1) {
+          return failUsage("Usage: tent task package <taskPath> [--workspace <path>] [--json]");
+        }
+        const result = await client.taskPackage(workspaceId, taskPath);
+        return okPrint(result, json, (r) =>
+          String((r as { taskPackage: string }).taskPackage)
+        );
+      }
       case "claim": {
         const taskPath = positionals[0];
         const hasDirectClaimInput =
@@ -362,6 +374,46 @@ export async function runTaskCommand(
             `✓ Accepted via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
             `state: ${row.state ?? "accepted"}\n`
+          );
+        });
+      }
+      case "bind-output": {
+        const unknown = findUnknownFlag(
+          flags,
+          new Set(["actor", "by", "output-node", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task bind-output`);
+        const resultId = positionals[0];
+        if (!resultId || positionals.length > 1 || !isTaskResultId(resultId)) {
+          return failUsage(
+            "Usage: tent task bind-output <resultId> --output-node <nodeId> [--output-node <nodeId> ...] --actor <user|roleId> [--workspace <path>] [--json]"
+          );
+        }
+        const outputNodeIds = collectTaskNodeIds(repeatable["output-node"]);
+        if (outputNodeIds.length === 0) {
+          return failUsage("tent task bind-output requires at least one --output-node <nodeId>");
+        }
+        const actor = flags.actor || flags.by || process.env.TENT_ROLE;
+        if (!actor) return failUsage("tent task bind-output requires --actor <user|roleId>");
+        const result = await client.taskBindOutput(
+          workspaceId,
+          resultId,
+          outputNodeIds,
+          actor
+        );
+        return okPrint(result, json, (r) => {
+          const row = r as {
+            taskPath: string;
+            resultId: string;
+            outputNodeIds: string[];
+            changedNodeIds: string[];
+          };
+          return (
+            `✓ Bound accepted Result to Output Node provenance\n` +
+            `taskPath: ${row.taskPath}\n` +
+            `resultId: ${row.resultId}\n` +
+            `outputNodeIds: ${row.outputNodeIds.join(", ")}\n` +
+            `changedNodeIds: ${row.changedNodeIds.join(", ") || "(none; already bound)"}\n`
           );
         });
       }
@@ -1051,7 +1103,7 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 /** Flags that may appear more than once (values collected in order). */
-const REPEATABLE_FLAGS = new Set(["work-node", "context-node"]);
+const REPEATABLE_FLAGS = new Set(["work-node", "context-node", "output-node"]);
 
 const DISPATCH_FLAGS = new Set([
   "target",
@@ -1145,6 +1197,7 @@ Local Service is the sole mutation entry; CLI does not kill the service on exit.
 Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
+  tent task package <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
@@ -1158,6 +1211,7 @@ Commands:
       # requester derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <resultId> --actor <user|roleId> [--workspace <path>] [--json]
+  tent task bind-output <resultId> --output-node <nodeId> [--output-node <nodeId> ...] --actor <user|roleId> [--workspace <path>] [--json]
   tent task reject <resultId> --actor <user|roleId> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]

@@ -26,14 +26,15 @@ only cross-Task/cross-Session decisions, constraints, or accepted results into
 an existing relevant writable Node. If none exists, report to the requester;
 never create a process-only Node.
 
-The host injects persisted Context Card v2 and incremental TaskInput/review
-deltas. They are authoritative persisted facts, never chat memory.
+Load the canonical input with `tent task package <taskPath>`. It is the same
+frozen Task/Context Card contract for every Harness. Incremental TaskInput/review
+deltas remain persisted facts, never chat memory.
 
 ## Dispatch
 
 - Direct Role work: `tent task claim --work-node ... --prompt ...`.
 - Durable handoff: `tent task dispatch --target role:<roleId> ...`.
-- Machine execution: `tent task dispatch --target connection:<connectionId> ...`.
+- Optional Tent-managed ACP execution: `tent task dispatch --target connection:<connectionId> ...`.
 - Preserve exact work/context Node ids and requester chain. Do not invent Role,
   Connection, Session, or Task facts.
 
@@ -48,9 +49,10 @@ Read the exact current `resultId` from Task/Inbox projection. Review only when
 requester authority belongs to this Role, interactions are settled, and Git
 facts/checks are exact. Accept/reject never edits a Node or binds Output.
 
-An accepted result may later inform an explicit update to an existing Node or
-an explicit Output Node derivation. Keep that Node-authority decision separate
-from review.
+An accepted result may later inform an explicit update to an existing Node. For
+an Output derivation, create the `type: output` Node, then use
+`tent task bind-output <resultId> --output-node <nodeId> --actor <user|roleId>`.
+Keep that Node-authority decision separate from review.
 
 ## Report to the user
 
