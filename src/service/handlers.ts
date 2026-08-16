@@ -542,7 +542,7 @@ export async function dispatchMethod(
       case "task.sendInput":
         return taskSendInputRpc(ctx, p);
       case "task.submit":
-        return taskSubmitRpc(ctx, p);
+        return taskSubmitRpc(ctx, p, callContext);
       case "task.accept":
         return taskAcceptRpc(ctx, p, callContext);
       case "task.reject":
@@ -5373,7 +5373,11 @@ async function resolveSubmitCommitsForExecutorLane(
   }
 }
 
-async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskSubmitRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: { callerSessionId?: string }
+) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
@@ -5387,6 +5391,8 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
   // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const taskForCaller = await loadTaskRecord(mount.env.fs, taskPath);
+    await assertTaskSubmitCallerBinding(ctx, workspaceId, taskForCaller, callContext);
     let targetHead: string | undefined;
     let canonicalCommits: string[] = [];
     const prepared = await ctx.mutations.run(workspaceId, async () => {
@@ -5485,6 +5491,32 @@ async function taskSubmitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     autoIntegrated: result.autoIntegrated,
     state: result.task.state,
   };
+}
+
+async function assertTaskSubmitCallerBinding(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: TaskRecord,
+  callContext: { callerSessionId?: string }
+): Promise<void> {
+  const callerSessionId = callContext.callerSessionId?.trim();
+  if (!callerSessionId) return;
+
+  const session = await ctx.runtime.registry.read(callerSessionId);
+  if (
+    !task.id ||
+    !session ||
+    task.executionSessionId !== callerSessionId ||
+    session.workspace !== workspaceId ||
+    session.currentTaskId !== task.id
+  ) {
+    throw new RpcError(-32001, "task.submit caller is not the exact Session bound to this Task", {
+      code: "TASK_SUBMIT_SESSION_MISMATCH",
+      taskId: task.id,
+      taskSessionId: task.executionSessionId,
+      callerSessionId,
+    });
+  }
 }
 
 async function loadRecoverableTaskSubmitResult(

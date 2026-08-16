@@ -309,6 +309,100 @@ test("service RPC session.enter/status/leave: idempotent, no submit", async () =
   });
 });
 
+test("task.submit authenticates the exact external Session without blocking callerless submit", async () => {
+  await withService(async (svc) => {
+    const workspaceA = await makeWorkspace("submit-authority-a");
+    const workspaceB = await makeWorkspace("submit-authority-b");
+    const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const workspaceIdA = ((await root.mount(workspaceA)) as { workspaceId: string }).workspaceId;
+    const workspaceIdB = ((await root.mount(workspaceB)) as { workspaceId: string }).workspaceId;
+
+    const enter = async (workspaceId: string, externalKey: string) => {
+      const entered = (await root.sessionEnter({
+        workspaceId,
+        roleId: "rl-executor",
+        externalKey,
+      })) as { session: { sessionId: string }; sessionToken: string };
+      return createServiceClient({
+        baseUrl: svc.url,
+        token: svc.token,
+        currentSessionId: entered.session.sessionId,
+        currentSessionToken: entered.sessionToken,
+      });
+    };
+    const dispatch = async (workspaceId: string, name: string) => {
+      const node = (await root.call("docs.createNote", {
+        workspaceId,
+        name,
+        type: "prompt",
+        body: `# ${name}\n`,
+      })) as { nodeId: string };
+      return (await root.taskDispatch(workspaceId, {
+        workNodeIds: [node.nodeId],
+        contextNodeIds: [],
+        assigneeRoleId: "rl-executor",
+        prompt: name,
+        requester: { kind: "user", id: "user" },
+        acceptMode: "review-required",
+      })) as { taskPath: string };
+    };
+
+    const sessionA = await enter(workspaceIdA, "submit-authority-a");
+    const taskA = await dispatch(workspaceIdA, "submit-authority-a");
+    await sessionA.taskClaim(workspaceIdA, taskA.taskPath);
+    await sessionA.taskSubmit(workspaceIdA, taskA.taskPath, { report: "exact Session submit" });
+
+    const sessionB = await enter(workspaceIdA, "submit-authority-b");
+    const taskB = await dispatch(workspaceIdA, "submit-authority-b");
+    await sessionB.taskClaim(workspaceIdA, taskB.taskPath);
+    const mountA = svc.hostApi.require(workspaceIdA);
+    const taskBRecord = await loadTaskRecord(mountA.env.fs, taskB.taskPath);
+    const taskBBefore = await mountA.env.fs.readFile(taskB.taskPath);
+    const taskBResultsBefore = await loadTaskResults(mountA.env.fs, { taskId: taskBRecord.id });
+    const crossTask = await sessionA.tryCall("task.submit", {
+      workspaceId: workspaceIdA,
+      taskPath: taskB.taskPath,
+      report: "wrong Session",
+    });
+    assert.equal(crossTask.ok, false);
+    if (!crossTask.ok) {
+      assert.equal(
+        (crossTask.error.data as { code?: string } | undefined)?.code,
+        "TASK_SUBMIT_SESSION_MISMATCH"
+      );
+    }
+    assert.equal(await mountA.env.fs.readFile(taskB.taskPath), taskBBefore);
+    assert.deepEqual(await loadTaskResults(mountA.env.fs, { taskId: taskBRecord.id }), taskBResultsBefore);
+
+    const sessionC = await enter(workspaceIdB, "submit-authority-c");
+    const taskC = await dispatch(workspaceIdB, "submit-authority-c");
+    await sessionC.taskClaim(workspaceIdB, taskC.taskPath);
+    const mountB = svc.hostApi.require(workspaceIdB);
+    const taskCRecord = await loadTaskRecord(mountB.env.fs, taskC.taskPath);
+    const taskCBefore = await mountB.env.fs.readFile(taskC.taskPath);
+    const taskCResultsBefore = await loadTaskResults(mountB.env.fs, { taskId: taskCRecord.id });
+    const crossWorkspace = await sessionA.tryCall("task.submit", {
+      workspaceId: workspaceIdB,
+      taskPath: taskC.taskPath,
+      report: "wrong workspace",
+    });
+    assert.equal(crossWorkspace.ok, false);
+    if (!crossWorkspace.ok) {
+      assert.equal(
+        (crossWorkspace.error.data as { code?: string } | undefined)?.code,
+        "TASK_SUBMIT_SESSION_MISMATCH"
+      );
+    }
+    assert.equal(await mountB.env.fs.readFile(taskC.taskPath), taskCBefore);
+    assert.deepEqual(await loadTaskResults(mountB.env.fs, { taskId: taskCRecord.id }), taskCResultsBefore);
+
+    const callerless = (await root.taskSubmit(workspaceIdA, taskB.taskPath, {
+      report: "callerless local submit",
+    })) as { result: { status: string } };
+    assert.equal(callerless.result.status, "ready");
+  });
+});
+
 test("external Role reject-resume keeps the exact live Session and Task running", async () => {
   await withService(async (svc) => {
     const workspace = await makeWorkspace("external-reject-resume");
