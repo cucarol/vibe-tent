@@ -1990,8 +1990,8 @@ function formatStableProjectContext(input) {
   ].join("\n");
 }
 function formatDynamicDelta(input) {
-  const taskPackage = input.taskPackage ?? "";
-  if (!taskPackage.trim()) {
+  const taskPackage2 = input.taskPackage ?? "";
+  if (!taskPackage2.trim()) {
     throw new TaskContextCardError(
       "INVALID_CARD",
       "Managed prompt assembly requires a non-empty canonical Task Package."
@@ -1999,11 +1999,11 @@ function formatDynamicDelta(input) {
   }
   const wrapper = input.dynamicWrapper?.trim();
   if (!wrapper) {
-    return { taskPackage, dynamicDelta: taskPackage };
+    return { taskPackage: taskPackage2, dynamicDelta: taskPackage2 };
   }
   return {
-    taskPackage,
-    dynamicDelta: `${taskPackage}
+    taskPackage: taskPackage2,
+    dynamicDelta: `${taskPackage2}
 
 ${wrapper}`
   };
@@ -2016,14 +2016,14 @@ function assembleManagedPrompt(input) {
     );
   }
   const includeStablePrefix = input.includeStablePrefix !== false;
-  const { taskPackage, dynamicDelta } = formatDynamicDelta(input);
+  const { taskPackage: taskPackage2, dynamicDelta } = formatDynamicDelta(input);
   if (!includeStablePrefix) {
     return {
       text: dynamicDelta + "\n",
       contextGeneration: input.contextGeneration,
       includedStablePrefix: false,
       stablePrefix: "",
-      taskPackage,
+      taskPackage: taskPackage2,
       dynamicDelta
     };
   }
@@ -2050,7 +2050,7 @@ ${dynamicDelta}
     contextGeneration: input.contextGeneration,
     includedStablePrefix: true,
     stablePrefix,
-    taskPackage,
+    taskPackage: taskPackage2,
     dynamicDelta
   };
 }
@@ -15238,6 +15238,183 @@ function collectReferencedTaskResultIds(tent) {
   }
   return out;
 }
+function assertOutputBindable(node2, resultId) {
+  if (!node2.id) {
+    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${node2.path}`);
+  }
+  if (node2.invalid) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Output is invalid: ${node2.path}`,
+      { outputId: node2.id, detail: node2.invalidReason }
+    );
+  }
+  if (node2.archived || node2.mode === "archived") {
+    throw new OutputProvenanceError(
+      "OUTPUT_ARCHIVED",
+      `Output is archived and cannot bind provenance: ${node2.id}`,
+      { outputId: node2.id }
+    );
+  }
+  if (!isOutputNodeType(node2.type)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_NOT_OUTPUT_TYPE",
+      `Node type must be output to bind provenance (got ${node2.type}): ${node2.id}`,
+      { outputId: node2.id, type: node2.type }
+    );
+  }
+  if (!isTaskResultId(resultId)) {
+    throw new OutputProvenanceError(
+      "INVALID_RESULT_ID",
+      `Invalid result id for provenance bind: ${resultId}`
+    );
+  }
+  const existing = readOutputTaskResultId(node2.fm);
+  if (existing && existing !== resultId) {
+    throw new OutputProvenanceError(
+      "OUTPUT_ALREADY_BOUND",
+      `Output ${node2.id} is already bound to ${existing}; cannot rebind to ${resultId}`,
+      { outputId: node2.id, existingTaskResultId: existing, resultId }
+    );
+  }
+  return { alreadyBound: existing === resultId };
+}
+function validateOutputResultBinding(tent, outputNodeIds, resultId) {
+  if (!outputNodeIds || outputNodeIds.length === 0) {
+    return { outputIds: [], nodes: [] };
+  }
+  if (!isTaskResultId(resultId)) {
+    throw new OutputProvenanceError(
+      "INVALID_RESULT_ID",
+      `Invalid result id for provenance bind: ${resultId}`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const outputIds = [];
+  const nodes = [];
+  for (const raw of outputNodeIds) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new OutputProvenanceError(
+        "INVALID_SELECTOR",
+        "outputNodeIds entries must be non-empty Node ids"
+      );
+    }
+    const id = raw.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (tent.duplicateIds.has(id)) {
+      throw new OutputProvenanceError(
+        "OUTPUT_INVALID",
+        `Duplicate node id '${id}' found; repair before binding provenance.`,
+        { outputId: id }
+      );
+    }
+    const node2 = tent.byId.get(id);
+    if (!node2) {
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
+        outputId: id
+      });
+    }
+    assertOutputBindable(node2, resultId);
+    outputIds.push(id);
+    nodes.push(node2);
+  }
+  return { outputIds, nodes };
+}
+async function restoreOutputBindSnapshots(fs21, snapshots) {
+  if (snapshots.length === 0) return;
+  const failures = [];
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const snap = snapshots[i];
+    try {
+      await fs21.writeFile(snap.notePath, snap.raw);
+      const prev = snap.previousTaskResultId;
+      if (prev === void 0) {
+        delete snap.node.fm[OUTPUT_PROVENANCE_FIELD];
+      } else {
+        snap.node.fm[OUTPUT_PROVENANCE_FIELD] = prev;
+      }
+    } catch (err) {
+      failures.push({
+        outputId: snap.outputId,
+        notePath: snap.notePath,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  if (failures.length > 0) {
+    throw new OutputProvenanceError(
+      "BIND_ROLLBACK_FAILED",
+      `Failed to roll back Output provenance bind for ${failures.length} file(s); disk may be partially bound.`,
+      { failures }
+    );
+  }
+}
+async function bindOutputsToTaskResultUnlocked(fs21, tent, outputNodeIds, resultId) {
+  const { outputIds, nodes } = validateOutputResultBinding(tent, outputNodeIds, resultId);
+  const planned = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node2 = nodes[i];
+    const outputId = outputIds[i];
+    const { alreadyBound } = assertOutputBindable(node2, resultId);
+    if (alreadyBound) continue;
+    const notePath = nodeNotePath(node2.path);
+    const raw = await fs21.readFile(notePath);
+    planned.push({
+      node: node2,
+      outputId,
+      notePath,
+      raw,
+      previousTaskResultId: readOutputTaskResultId(node2.fm)
+    });
+  }
+  const snapshots = [];
+  const changedIds = [];
+  try {
+    for (const item of planned) {
+      const { data, body, keyOrder } = parseFrontmatter(item.raw);
+      data[OUTPUT_PROVENANCE_FIELD] = resultId;
+      const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
+      await fs21.writeFile(item.notePath, nextRaw);
+      snapshots.push({
+        outputId: item.outputId,
+        notePath: item.notePath,
+        raw: item.raw,
+        node: item.node,
+        previousTaskResultId: item.previousTaskResultId
+      });
+      item.node.fm[OUTPUT_PROVENANCE_FIELD] = resultId;
+      changedIds.push(item.outputId);
+    }
+  } catch (err) {
+    try {
+      await restoreOutputBindSnapshots(fs21, snapshots);
+    } catch (rollbackErr) {
+      if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
+      throw new OutputProvenanceError(
+        "BIND_ROLLBACK_FAILED",
+        `Output provenance bind failed and rollback also failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)} (original: ${err instanceof Error ? err.message : String(err)})`,
+        {
+          originalError: err instanceof Error ? err.message : String(err)
+        }
+      );
+    }
+    throw err;
+  }
+  return { boundIds: outputIds, changedIds, snapshots };
+}
+async function bindOutputsToTaskResult(fs21, outputNodeIds, resultId) {
+  return withTentMutation(fs21, async () => {
+    const tent = await loadTent(fs21);
+    const bound = await bindOutputsToTaskResultUnlocked(
+      fs21,
+      tent,
+      outputNodeIds,
+      resultId
+    );
+    return { boundIds: bound.boundIds, changedIds: bound.changedIds };
+  });
+}
 function projectOutputProvenance(node2, indexes) {
   if (node2.invalid) {
     throw new OutputProvenanceError(
@@ -15353,6 +15530,13 @@ function resolveOutputNode(tent, selector) {
     });
   }
   return node2;
+}
+function outputKeyOrder(existing) {
+  const preferred = [...NODE_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
+  return [
+    ...preferred,
+    ...existing.filter((key2) => !preferred.includes(key2))
+  ];
 }
 
 // src/core/proposal.ts
@@ -20874,6 +21058,13 @@ var CLIENT_METHODS = [
   "task.replaceSession",
   "task.list",
   "task.get",
+  "task.package",
+  /**
+   * Explicit post-accept Result provenance binding for existing Output Nodes.
+   * Params: workspaceId + exact accepted resultId + outputNodeIds[] + actor.
+   * Accepting a Result never calls this automatically.
+   */
+  "task.bindOutput",
   "taskResult.list",
   "taskResult.get",
   /**
@@ -25266,6 +25457,10 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
         return taskList(ctx, p);
       case "task.get":
         return taskGet(ctx, p);
+      case "task.package":
+        return taskPackage(ctx, p);
+      case "task.bindOutput":
+        return taskBindOutputRpc(ctx, p, callContext);
       case "taskResult.list":
         return taskResultList(ctx, p);
       case "taskResult.get":
@@ -29103,6 +29298,27 @@ async function resolveReviewCallerActor(ctx, workspaceId, requestedActor, action
   }
   return derivedActor;
 }
+function assertAcceptedResultForOutputBinding(review, actor) {
+  const requester = review.task.requester;
+  const expectedKind = actor === "user" ? "user" : "role";
+  if (!requester || requester.kind !== expectedKind || requester.id !== actor) {
+    throw new RpcError(-32001, "task.bindOutput requires the exact persisted requester", {
+      code: "OUTPUT_BIND_CALLER_FORBIDDEN",
+      resultId: review.result.id,
+      actor,
+      requester
+    });
+  }
+  if (review.task.state !== "accepted" || review.task.currentResultId !== review.result.id || review.result.status !== "accepted") {
+    throw new RpcError(RPC_LIFECYCLE, "task.bindOutput requires an accepted exact TaskResult", {
+      code: "RESULT_NOT_ACCEPTED",
+      resultId: review.result.id,
+      taskId: review.task.id,
+      taskState: review.task.state,
+      resultStatus: review.result.status
+    });
+  }
+}
 async function requireUniqueTaskForReviewTaskResult(ctx, workspaceId, resultId) {
   const mount = ctx.host.require(workspaceId);
   const tasks = await loadTaskRecords(mount.env.fs);
@@ -29268,6 +29484,82 @@ async function outputProvenanceRpc(ctx, p) {
     if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
     throw err;
   }
+}
+async function taskBindOutputRpc(ctx, p, callContext) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "resultId", "outputNodeIds", "actor"]),
+    "task.bindOutput"
+  );
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const resultId = requireString(p, "resultId");
+  if (!isTaskResultId(resultId)) {
+    throw new RpcError(-32602, `Invalid TaskResult id: ${resultId}`);
+  }
+  const outputNodeIds = optionalStringArray(p, "outputNodeIds") ?? [];
+  if (outputNodeIds.length === 0) {
+    throw new RpcError(-32602, "task.bindOutput requires at least one outputNodeId");
+  }
+  const actor = requireString(p, "actor");
+  const reviewerActor = await resolveReviewCallerActor(
+    ctx,
+    workspaceId,
+    actor,
+    "bindOutput",
+    callContext
+  );
+  const initialReview = await requireUniqueTaskForReviewTaskResult(
+    ctx,
+    workspaceId,
+    resultId
+  );
+  assertAcceptedResultForOutputBinding(initialReview, reviewerActor);
+  let bound;
+  try {
+    bound = await ctx.mutations.run(workspaceId, async () => {
+      const exactReview = await requireUniqueTaskForReviewTaskResult(
+        ctx,
+        workspaceId,
+        resultId
+      );
+      assertReviewTaskResultIdentityUnchanged(initialReview, exactReview);
+      assertAcceptedResultForOutputBinding(exactReview, reviewerActor);
+      ctx.host.markSelfWrite(workspaceId);
+      return bindOutputsToTaskResult(
+        mount.env.fs,
+        outputNodeIds,
+        resultId
+      );
+    });
+  } catch (err) {
+    if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+    throw err;
+  }
+  if (bound.changedIds.length > 0) {
+    const tent = await loadTent(mount.env.fs);
+    for (const nodeId of bound.changedIds) {
+      const node2 = tent.byId.get(nodeId);
+      ctx.events.emit(
+        "node.changed",
+        workspaceId,
+        {
+          nodeId,
+          ...node2 ? { path: node2.path } : {},
+          resultId,
+          reason: "task.bindOutput"
+        },
+        "self"
+      );
+    }
+  }
+  return {
+    workspaceId,
+    taskPath: initialReview.task.path,
+    resultId,
+    outputNodeIds: bound.boundIds,
+    changedNodeIds: bound.changedIds
+  };
 }
 function projectOutputProvenanceWire(workspaceId, core) {
   return {
@@ -30804,11 +31096,25 @@ async function taskList(ctx, p) {
   };
 }
 async function taskGet(ctx, p) {
+  assertAllowedParams(p, /* @__PURE__ */ new Set(["workspaceId", "taskPath"]), "task.get");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const task = await loadTaskRecord(mount.env.fs, taskPath);
   return { workspaceId, task: projectTask(task) };
+}
+async function taskPackage(ctx, p) {
+  assertAllowedParams(p, /* @__PURE__ */ new Set(["workspaceId", "taskPath"]), "task.package");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskRecord(mount.env.fs, taskPath);
+  return {
+    workspaceId,
+    taskPath: task.path,
+    taskId: task.id,
+    taskPackage: taskPackageForTask(task)
+  };
 }
 async function workspaceCollaborationRpc(ctx, p) {
   assertAllowedParams(p, /* @__PURE__ */ new Set(["workspaceId", "nodeId"]), "workspace.collaboration");
@@ -34513,7 +34819,7 @@ function buildContextCardManagedBootstrap(task, roots) {
     sessionContextGeneration: roots.sessionContextGeneration,
     currentContextGeneration: roots.currentContextGeneration
   });
-  const taskPackage = taskPackageForTask(task);
+  const taskPackage2 = taskPackageForTask(task);
   const dynamicWrapperParts = [
     "--- Tent managed session execution ---",
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
@@ -34531,7 +34837,7 @@ function buildContextCardManagedBootstrap(task, roots) {
     rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
     contextGeneration: roots.currentContextGeneration,
-    taskPackage,
+    taskPackage: taskPackage2,
     dynamicWrapper,
     includeStablePrefix
   });

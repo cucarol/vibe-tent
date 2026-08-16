@@ -3834,6 +3834,17 @@ var ServiceClient = class {
   taskGet(workspaceId, taskPath) {
     return this.call("task.get", { workspaceId, taskPath });
   }
+  taskPackage(workspaceId, taskPath) {
+    return this.call("task.package", { workspaceId, taskPath });
+  }
+  taskBindOutput(workspaceId, resultId, outputNodeIds, actor) {
+    return this.call("task.bindOutput", {
+      workspaceId,
+      resultId,
+      outputNodeIds,
+      actor
+    });
+  }
   /** Optional selected Node collaboration + user-actionable Inbox in one authoritative read. */
   workspaceCollaboration(workspaceId, nodeId) {
     return this.call("workspace.collaboration", {
@@ -4358,6 +4369,20 @@ async function runTaskCommand(sub, args, globals = {}) {
         const result = await client.taskGet(workspaceId, taskPath);
         return okPrint(result, json, (r) => formatTaskGet(r));
       }
+      case "package": {
+        const unknown = findUnknownFlag(flags, TASK_COMMON_FLAGS);
+        if (unknown) return failUsage(`Unknown option --${unknown} for task package`);
+        const taskPath = positionals[0];
+        if (!taskPath || positionals.length > 1) {
+          return failUsage("Usage: tent task package <taskPath> [--workspace <path>] [--json]");
+        }
+        const result = await client.taskPackage(workspaceId, taskPath);
+        return okPrint(
+          result,
+          json,
+          (r) => String(r.taskPackage)
+        );
+      }
       case "claim": {
         const taskPath = positionals[0];
         const hasDirectClaimInput = (repeatable["work-node"]?.length ?? 0) > 0 || (repeatable["context-node"]?.length ?? 0) > 0 || Object.prototype.hasOwnProperty.call(flags, "prompt") || Object.prototype.hasOwnProperty.call(flags, "from-task");
@@ -4574,6 +4599,40 @@ ${usage2}`);
           return `\u2713 Accepted via service RPC
 taskPath: ${row.taskPath}
 state: ${row.state ?? "accepted"}
+`;
+        });
+      }
+      case "bind-output": {
+        const unknown = findUnknownFlag(
+          flags,
+          /* @__PURE__ */ new Set(["actor", "by", "output-node", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task bind-output`);
+        const resultId = positionals[0];
+        if (!resultId || positionals.length > 1 || !isTaskResultId(resultId)) {
+          return failUsage(
+            "Usage: tent task bind-output <resultId> --output-node <nodeId> [--output-node <nodeId> ...] --actor <user|roleId> [--workspace <path>] [--json]"
+          );
+        }
+        const outputNodeIds = collectTaskNodeIds(repeatable["output-node"]);
+        if (outputNodeIds.length === 0) {
+          return failUsage("tent task bind-output requires at least one --output-node <nodeId>");
+        }
+        const actor = flags.actor || flags.by || process.env.TENT_ROLE;
+        if (!actor) return failUsage("tent task bind-output requires --actor <user|roleId>");
+        const result = await client.taskBindOutput(
+          workspaceId,
+          resultId,
+          outputNodeIds,
+          actor
+        );
+        return okPrint(result, json, (r) => {
+          const row = r;
+          return `\u2713 Bound accepted Result to Output Node provenance
+taskPath: ${row.taskPath}
+resultId: ${row.resultId}
+outputNodeIds: ${row.outputNodeIds.join(", ")}
+changedNodeIds: ${row.changedNodeIds.join(", ") || "(none; already bound)"}
 `;
         });
       }
@@ -5080,7 +5139,7 @@ var BOOLEAN_FLAGS = /* @__PURE__ */ new Set([
   "as-sub",
   "deny"
 ]);
-var REPEATABLE_FLAGS = /* @__PURE__ */ new Set(["work-node", "context-node"]);
+var REPEATABLE_FLAGS = /* @__PURE__ */ new Set(["work-node", "context-node", "output-node"]);
 var DISPATCH_FLAGS = /* @__PURE__ */ new Set([
   "target",
   "work-node",
@@ -5160,6 +5219,7 @@ Local Service is the sole mutation entry; CLI does not kill the service on exit.
 Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
+  tent task package <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
@@ -5173,6 +5233,7 @@ Commands:
       # requester derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <resultId> --actor <user|roleId> [--workspace <path>] [--json]
+  tent task bind-output <resultId> --output-node <nodeId> [--output-node <nodeId> ...] --actor <user|roleId> [--workspace <path>] [--json]
   tent task reject <resultId> --actor <user|roleId> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
@@ -6436,10 +6497,10 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Node, Role, Task, TaskResult, and Agent Connection:
+Core collaboration:
   tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
-  tent task list|get|claim|submit|\u2026   Attach Local Service \u2192 mount \u2192 task.* RPC
+  tent task list|get|package|claim|\u2026  Attach Local Service \u2192 mount \u2192 task.* RPC
   tent task --help                    Full task subcommand help
 
 Service-backed workspace operations:
