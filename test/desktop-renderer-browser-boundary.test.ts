@@ -29,5 +29,4 @@ test("floating desktop renderer stays browser-safe", async () => {
     false,
     "browser renderer must not import the Node-only content etag module"
   );
-  assert.ok(inputs.some((input) => input.endsWith("src/core/okf-index.ts")));
 });

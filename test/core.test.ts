@@ -332,9 +332,10 @@ test("dispatch:只写 pending envelope + frozen Node Context Card；manifest 按
   assert.equal((await loadTaskRecord(env.fs, second.taskPath)).state, "running");
 });
 
-test("dispatch: corrupt Role registry is quarantined and exact missing roleId fails loud", async () => {
+test("dispatch: corrupt Role registry fails loud without mutation", async () => {
   const dir = await makeTent();
-  await fs.writeFile(path.join(dir, "roles.json"), "{not-json", "utf8");
+  const corrupt = "{not-json";
+  await fs.writeFile(path.join(dir, "roles.json"), corrupt, "utf8");
   const env = {
     fs: new NodeFs(dir),
     clock: { now: () => "2026-06-29T01:02:03.000Z" },
@@ -349,14 +350,14 @@ test("dispatch: corrupt Role registry is quarantined and exact missing roleId fa
       prompt: "请只处理表达式任务书。",
       requester: { kind: "user", id: "user" },
     }),
-    /Role not found in registry: rl-analyst/
+    /JSON/
   );
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
   assert.equal(box.owner, undefined);
   assert.equal(box.status, undefined);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "roles.json"), "utf8")), { roles: [] });
-  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), true);
+  assert.equal(await fs.readFile(path.join(dir, "roles.json"), "utf8"), corrupt);
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), false);
   assert.equal((await loadTaskRecords(env.fs)).length, 0, "failed Role lookup writes no Task");
 });
 

@@ -57,6 +57,7 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
       {
         roles: [
           {
+            id: "rl-executor",
             name: "executor",
             prompt: "do work",
           },

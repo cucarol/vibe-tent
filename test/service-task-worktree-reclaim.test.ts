@@ -508,6 +508,7 @@ test("external Session leave never deletes a lane; explicit reconcile remains ex
         worktree: targetLane.worktree,
         branch: targetLane.branch,
         targetBranch: targetLane.targetBranch,
+        baseCommit: targetLane.baseCommit,
       },
     });
     const otherPath = await writeTaskRecord(sysFs, clock, {
@@ -522,6 +523,7 @@ test("external Session leave never deletes a lane; explicit reconcile remains ex
         worktree: otherLane.worktree,
         branch: otherLane.branch,
         targetBranch: otherLane.targetBranch,
+        baseCommit: otherLane.baseCommit,
       },
     });
 
