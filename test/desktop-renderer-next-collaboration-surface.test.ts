@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CollaborationPanel } from "../src/desktop/renderer-next/components/CollaborationPanel.js";
+import { CollaborationInboxDetail, CollaborationPanel } from "../src/desktop/renderer-next/components/CollaborationPanel.js";
 import { CollaborationSurfaceController, type CollaborationSurfaceGateway } from "../src/desktop/renderer-next/model/collaboration-surface-controller.js";
 import type { WorkspaceCollaborationView } from "../src/desktop/renderer-next/model/workspace-collaboration-view.js";
 import { guardCollaborationViewIdentity } from "../src/desktop/renderer-next/model/use-collaboration-surface.js";
@@ -30,6 +30,34 @@ test("workspace Inbox loads with null selected Node and never invents a surrogat
   assert.equal(controller.getView().status, "ready");
   assert.equal(controller.getView().snapshot?.selectedNode, null);
   assert.equal(controller.getView().snapshot?.inbox.counts.total, 1);
+});
+
+test("prompt-only Inbox Result renders its exact right-side detail", () => {
+  const view = { workspaceId: "ws-a", nodeId: null, status: "ready" as const, snapshot: snapshot(null), targets: [], targetsReady: true, busyKey: null, canMutate: true };
+  const item = view.snapshot.inbox.items[0]!;
+  const html = renderToStaticMarkup(createElement(CollaborationInboxDetail, {
+    item,
+    view,
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /data-inbox-detail="rs-a"/);
+  assert.match(html, /data-result-id="rs-a"/);
+  assert.match(html, /完成/);
+  assert.match(html, />接纳</);
+});
+
+test("node-less Inbox Decision renders exact respond actions", () => {
+  const item = { kind: "decision" as const, requestId: "dr-empty", nodeIds: [], question: "继续？", options: [{ id: "yes", label: "继续" }], createdAt: "now" };
+  const view = { workspaceId: "ws-a", nodeId: null, status: "ready" as const, snapshot: { ...snapshot(null), inbox: { items: [item], counts: { result: 0, decision: 1, total: 1 } } }, targets: [], targetsReady: true, busyKey: null, canMutate: true };
+  const html = renderToStaticMarkup(createElement(CollaborationInboxDetail, {
+    item,
+    view,
+    actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
+  }));
+  assert.match(html, /data-inbox-detail="dr-empty"/);
+  assert.match(html, /data-request-id="dr-empty"/);
+  assert.match(html, /继续？/);
+  assert.match(html, /提交回复|拒绝此次请求/);
 });
 
 test("selected identity switch clears old content synchronously and late A is discarded", async () => {

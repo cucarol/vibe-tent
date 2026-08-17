@@ -9,6 +9,7 @@ import {
 } from "../shell/workbench-types.js";
 import { FocusDocumentPanel } from "./FocusDocumentPanel.js";
 import {
+  CollaborationInboxDetail,
   CollaborationPanel,
   collaborationPanelIdentity,
 } from "./CollaborationPanel.js";
@@ -21,6 +22,7 @@ import type {
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
 import type { CanvasPlacementSourceState } from "../model/canvas-node-snapshot.js";
+import type { CollaborationInboxItem } from "../model/workspace-collaboration-view.js";
 
 export type InspectorLocalNodeView = Omit<
   WorkbenchNodeView,
@@ -43,6 +45,7 @@ export type InspectorPanelProps = {
   taskPackage?: ReactNode;
   collaboration?: CollaborationSurfaceView;
   collaborationActions?: CollaborationSurfaceActions;
+  inboxItem?: CollaborationInboxItem | null;
   tab?: "content" | "collaboration";
   onTabChange?: (tab: "content" | "collaboration") => void;
   expanded?: boolean;
@@ -65,6 +68,7 @@ export function InspectorPanel({
   taskPackage,
   collaboration,
   collaborationActions,
+  inboxItem = null,
   tab: controlledTab,
   onTabChange,
   expanded = false,
@@ -107,7 +111,16 @@ export function InspectorPanel({
         title="详情"
         actions={<IconButton size="compact" aria-label="收起详情面板" tooltip="收起详情面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
       />
-      {!displayNode ? (
+      {inboxItem && collaboration && collaborationActions ? (
+        <div className="tn-inspector-content">
+          <CollaborationInboxDetail
+            key={inboxItem.kind === "result" ? inboxItem.resultId : inboxItem.requestId}
+            item={inboxItem}
+            view={collaboration}
+            actions={collaborationActions}
+          />
+        </div>
+      ) : !displayNode ? (
         <div className="tn-inspector-content">
           <div className="tn-pane-empty" role="status">
             <strong>选择一个节点</strong>

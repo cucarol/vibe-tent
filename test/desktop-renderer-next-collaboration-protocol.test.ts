@@ -16,6 +16,17 @@ test("workspace collaboration strips Task identity and accepts workspace-level n
   assert.equal(JSON.stringify(normalized.value).includes("tk-secret"), false);
 });
 
+test("workspace collaboration admits an exact node-less Inbox Decision", () => {
+  const raw = {
+    workspaceId: "ws-a", selectedNode: null,
+    inbox: { items: [{ kind: "decision", requestId: "dr-empty", taskId: "tk-a", nodeIds: [], question: "继续？", options: [], createdAt: "2026-08-12T00:00:00Z" }], counts: { result: 0, decision: 1, total: 1 } },
+  };
+  const normalized = normalizeWorkspaceCollaboration(raw, "ws-a", null);
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+  assert.deepEqual(normalized.value.inbox.items[0], { kind: "decision", requestId: "dr-empty", nodeIds: [], question: "继续？", options: [], createdAt: "2026-08-12T00:00:00Z" });
+});
+
 test("workspace collaboration validates exact selected identity and minimal action DTOs", () => {
   const raw = {
     workspaceId: "ws-a",

@@ -10,6 +10,7 @@ import type {
 import type {
   CollaborationActiveTask,
   CollaborationDecision,
+  CollaborationInboxItem,
   CollaborationTaskResult,
 } from "../model/workspace-collaboration-view.js";
 
@@ -83,11 +84,24 @@ function DecisionItem({ request, view, actions }: { request: CollaborationDecisi
   const [optionId, setOptionId] = useState(""); const [custom, setCustom] = useState(""); const [customMode, setCustomMode] = useState(false); const [error, setError] = useState<string | null>(null);
   const response = decisionResponseFromDraft({ customMode, optionId, custom }); const busy = view.busyKey === `decision:${request.requestId}`;
   const respond = (value: DecisionResponse | null) => { if (!value) return; setError(null); void actions.respondDecision(request.requestId, value).then((ok) => { if (!ok) setError("回复未完成。"); }); };
-  return <article className="tn-inbox-item" data-kind="decision"><div className="tn-inbox-item-heading"><strong>需要你的决定</strong><StatusBadge tone="warning">待回复</StatusBadge></div><p>{request.question}</p>
+  return <article className="tn-inbox-item" data-kind="decision" data-request-id={request.requestId}><div className="tn-inbox-item-heading"><strong>需要你的决定</strong><StatusBadge tone="warning">待回复</StatusBadge></div><p>{request.question}</p>
     <fieldset className="tn-decision-options" disabled={!view.canMutate || busy}><legend>选择回复</legend>{request.options.map((option) => <Radio key={option.id} name={`decision-${request.requestId}`} value={option.id} checked={!customMode && optionId === option.id} onChange={() => { setCustomMode(false); setOptionId(option.id); }} label={option.label} />)}<Radio name={`decision-${request.requestId}`} checked={customMode} onChange={() => setCustomMode(true)} label="自定义回复" /></fieldset>
     {customMode ? <TextField multiline label="自定义回复" rows={3} value={custom} disabled={!view.canMutate || busy} onChange={(event) => setCustom(event.target.value)} /> : null}
     {error ? <p className="tn-action-error" role="alert">{error}</p> : null}<div className="tn-inbox-actions"><Button size="compact" variant="quiet" disabled={!view.canMutate || busy} onClick={() => respond({ kind: "deny" })}>拒绝此次请求</Button><Button size="compact" variant="primary" loading={busy} disabled={!view.canMutate || busy || !response} onClick={() => respond(response)}>提交回复</Button></div>
   </article>;
+}
+
+export function CollaborationInboxDetail({ item, view, actions }: { item: CollaborationInboxItem; view: CollaborationSurfaceView; actions: CollaborationSurfaceActions }) {
+  const identity = item.kind === "result" ? item.resultId : item.requestId;
+  return <div className="tn-collaboration-panel" data-collaboration-status={view.status} data-inbox-detail={identity}>
+    <ResourceNotice view={view} />
+    <section className="tn-collaboration-section tn-inbox">
+      {item.kind === "result"
+        ? <TaskResultItem key={item.resultId} result={item} view={view} actions={actions} />
+        : <DecisionItem key={item.requestId} request={item} view={view} actions={actions} />}
+    </section>
+    {(view.status === "error" || view.status === "stale") ? <Button variant="quiet" size="compact" onClick={() => void actions.retry()}>重新读取</Button> : null}
+  </div>;
 }
 
 export function CollaborationPanel(props: CollaborationPanelProps) {

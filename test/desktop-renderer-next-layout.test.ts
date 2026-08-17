@@ -170,21 +170,23 @@ test("ordinary Canvas and Outline selection does not open either pane", async ()
   );
   assert.doesNotMatch(canvasSelection, /layout\.(toggle|restore|collapse)\(/);
   assert.doesNotMatch(outlineSelection, /layout\.(toggle|restore|collapse)\(/);
+  assert.match(canvasSelection, /setSelectedInboxIdentity\(null\)/);
+  assert.match(outlineSelection, /setSelectedInboxIdentity\(null\)/);
 });
 
-test("explicit Inbox Decision opens the right collaboration surface", async () => {
+test("explicit Inbox item opens the exact right detail without Node authority", async () => {
   const shell = await fs.readFile(
     path.join(process.cwd(), "src/desktop/renderer-next/shell/AppShell.tsx"),
     "utf8"
   );
-  const decisionActivation = shell.slice(
-    shell.indexOf("const openDecision"),
+  const itemActivation = shell.slice(
+    shell.indexOf("const openInboxItem"),
     shell.indexOf("const toggleOutline")
   );
-  assert.match(decisionActivation, /selectNodeFromOutline\(nodeId\)/);
-  assert.match(decisionActivation, /setInspectorTab\("collaboration"\)/);
-  assert.match(decisionActivation, /layout\.restore\("right"\)/);
-  assert.match(shell, /onOpenDecision=\{openDecision\}/);
+  assert.match(itemActivation, /setSelectedInboxIdentity\(identity\)/);
+  assert.match(itemActivation, /setInspectorTab\("collaboration"\)/);
+  assert.match(itemActivation, /layout\.restore\("right"\)/);
+  assert.match(shell, /onOpenInboxItem=\{openInboxItem\}/);
 });
 
 test("Outline ordinary rows stay dense while selected rows retain type and full-title access", async () => {

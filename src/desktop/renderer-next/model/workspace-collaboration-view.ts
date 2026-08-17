@@ -36,6 +36,26 @@ export type CollaborationInboxItem =
   | ({ kind: "result" } & CollaborationTaskResult)
   | ({ kind: "decision"; nodeIds: readonly string[]; createdAt: string } & CollaborationDecision);
 
+export type CollaborationInboxIdentity =
+  | { kind: "result"; resultId: string }
+  | { kind: "decision"; requestId: string };
+
+export function collaborationInboxIdentity(item: CollaborationInboxItem): CollaborationInboxIdentity {
+  return item.kind === "result"
+    ? { kind: "result", resultId: item.resultId }
+    : { kind: "decision", requestId: item.requestId };
+}
+
+export function findCollaborationInboxItem(
+  snapshot: WorkspaceCollaborationView | null | undefined,
+  identity: CollaborationInboxIdentity | null
+): CollaborationInboxItem | null {
+  if (!snapshot || !identity) return null;
+  return identity.kind === "result"
+    ? snapshot.inbox.items.find((item) => item.kind === "result" && item.resultId === identity.resultId) ?? null
+    : snapshot.inbox.items.find((item) => item.kind === "decision" && item.requestId === identity.requestId) ?? null;
+}
+
 /**
  * Product-facing renderer projection. Task ids exist only inside Service joins;
  * the renderer owns exact Task Result / Decision identities and no Session facts.
@@ -328,7 +348,6 @@ export function normalizeWorkspaceCollaboration(
         ]) &&
         nonEmpty(item.requestId) &&
         Array.isArray(item.nodeIds) &&
-        item.nodeIds.length > 0 &&
         item.nodeIds.every(nonEmpty) &&
         new Set(item.nodeIds).size === item.nodeIds.length &&
         nonEmpty(item.question) &&

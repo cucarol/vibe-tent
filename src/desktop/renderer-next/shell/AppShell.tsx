@@ -46,6 +46,10 @@ import type {
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
 import {
+  findCollaborationInboxItem,
+  type CollaborationInboxIdentity,
+} from "../model/workspace-collaboration-view.js";
+import {
   deriveCanvasSubtreeProjection,
   reconcileCanvasDocumentSyncFromLatestAuthority,
   type CanvasProjectionAuthorityReader,
@@ -142,10 +146,15 @@ export function AppShell({
   const [inspectorTab, setInspectorTab] = useState<"content" | "collaboration">(
     initialInspectorTab
   );
+  const [selectedInboxIdentity, setSelectedInboxIdentity] = useState<CollaborationInboxIdentity | null>(null);
   const [outlineReveal, setOutlineReveal] = useState({ nodeId: "", revision: 0 });
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
   const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === focusedNodeId) ?? null, [nodes, focusedNodeId]);
+  const selectedInboxItem = useMemo(
+    () => findCollaborationInboxItem(collaboration?.snapshot, selectedInboxIdentity),
+    [collaboration?.snapshot, selectedInboxIdentity]
+  );
   const attentionNodeIds = useMemo(() => {
     if (collaboration?.status !== "ready" || !collaboration.snapshot) return new Set<string>();
     const ids = new Set<string>();
@@ -255,6 +264,7 @@ export function AppShell({
     : null;
 
   const selectNodeFromCanvas = (nodeId: string | null, placementId?: string | null, toggle = false) => {
+    setSelectedInboxIdentity(null);
     onPresentationChange?.((current) =>
       selectPresentationNode(current, nodeId, placementId)
     );
@@ -265,6 +275,7 @@ export function AppShell({
   };
 
   const selectNodeFromOutline = (nodeId: string, toggle = false) => {
+    setSelectedInboxIdentity(null);
     onPresentationChange?.((current) =>
       selectPresentationNodeFromOutline(current, nodeId)
     );
@@ -314,8 +325,15 @@ export function AppShell({
     requestAnimationFrame(() => placementActionRef.current?.focus());
   };
 
-  const openDecision = (nodeId: string) => {
-    selectNodeFromOutline(nodeId);
+  const openInboxItem = (identity: CollaborationInboxIdentity, nodeId: string | null) => {
+    setSelectedInboxIdentity(identity);
+    if (nodeId) {
+      onPresentationChange?.((current) => selectPresentationNodeFromOutline(current, nodeId));
+      onNodeSelectionChange?.(nodeId, false);
+    } else {
+      onPresentationChange?.((current) => selectPresentationNode(current, null, null));
+      onNodeSelectionChange?.(null, false);
+    }
     setInspectorTab("collaboration");
     layout.restore("right");
   };
@@ -364,7 +382,7 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" style={layoutStyle} data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={(mode) => { setOutlineMode(mode); if (mode === "inbox") onNodeSelectionChange?.(null, false); }} nodes={nodes} projection={projection} focusedNodeId={focusedNodeId} selectedNodeIds={selectedNodeIds} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} onOpenDecision={openDecision} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={(mode) => { setOutlineMode(mode); if (mode === "inbox") onNodeSelectionChange?.(null, false); }} nodes={nodes} projection={projection} focusedNodeId={focusedNodeId} selectedNodeIds={selectedNodeIds} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} selectedInboxItem={selectedInboxIdentity} onOpenInboxItem={openInboxItem} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNodes={onPresentationChange ? dropNodes : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionPlacementIds={attentionPlacementIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
@@ -389,6 +407,7 @@ export function AppShell({
           ) : null}
           collaboration={collaboration}
           collaborationActions={collaborationActions}
+          inboxItem={selectedInboxItem}
           tab={inspectorTab}
           onTabChange={setInspectorTab}
           expanded={focusExpanded}

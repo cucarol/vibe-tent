@@ -16,6 +16,7 @@ import {
   type OutlineRevealRequest,
 } from "../model/outline-reveal.js";
 import { InboxView, inboxModelCount } from "./InboxView.js";
+import type { CollaborationInboxIdentity } from "../model/workspace-collaboration-view.js";
 import type { CollaborationSurfaceView } from "../model/collaboration-surface-controller.js";
 
 export type OutlinePanelProps = {
@@ -28,7 +29,8 @@ export type OutlinePanelProps = {
   selectedNodeIds?: readonly string[];
   onSelectNode: (nodeId: string, toggle?: boolean) => void;
   onOpenNodeActions?: (nodeId: string) => void;
-  onOpenDecision?: (nodeId: string) => void;
+  selectedInboxItem?: CollaborationInboxIdentity | null;
+  onOpenInboxItem?: (item: CollaborationInboxIdentity, nodeId: string | null) => void;
   canDragToCanvas?: boolean;
   canvasPresence?: ReadonlyMap<string, { count: number; pendingSync: boolean }>;
   reveal?: { nodeId: string; revision: number };
@@ -67,7 +69,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, focusedNodeId, selectedNodeIds = focusedNodeId ? [focusedNodeId] : [], onSelectNode, onOpenNodeActions, onOpenDecision, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, collaboration = { workspaceId: null, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false } }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, focusedNodeId, selectedNodeIds = focusedNodeId ? [focusedNodeId] : [], onSelectNode, onOpenNodeActions, selectedInboxItem = null, onOpenInboxItem, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, collaboration = { workspaceId: null, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false } }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -279,7 +281,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
         </>}
       />
       {mode === "inbox" ? (
-        <InboxView view={collaboration} nodes={nodes} projection={projection} onSelectNode={onSelectNode} onOpenDecision={onOpenDecision} />
+        <InboxView view={collaboration} nodes={nodes} projection={projection} selectedItem={selectedInboxItem} onOpenItem={onOpenInboxItem} />
       ) : nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
           <strong>{emptyCopy.title}</strong>
