@@ -1171,31 +1171,30 @@ function dirName(path23) {
 }
 
 // src/core/manifest.ts
-function buildManifest(tent, input) {
+function buildManifest(input) {
   const roleId = input.roleId?.trim();
   const sessionId = input.sessionId?.trim();
   if (!roleId && !sessionId) throw new Error("Manifest requires roleId or sessionId.");
-  const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
-  const claimScope = input.claimRoot ? allNodes(tent).filter(isUsableNode) : claimNodes.flatMap(subtree);
+  const selectedNodes = requireSelectedNodes(input);
+  const selectedScope = selectedNodes.flatMap(subtree);
   const readable = [];
   const writable = [];
-  for (const node2 of allNodes(tent)) {
+  for (const node2 of selectedScope) {
     if (isUsableNode(node2)) {
       readable.push({ id: node2.id, path: node2.path, note: oneLineNote(node2) });
     }
   }
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
-  for (const node2 of claimScope) {
+  for (const node2 of selectedScope) {
     if (isUsableNode(node2)) {
       writable.push({ id: node2.id, path: node2.path });
     }
   }
-  if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structural permission: may create/move top-level nodes at the Tent root." });
-  }
-  for (const node2 of claimScope) {
-    writable.push({ id: node2.id, path: `${node2.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
+  for (const node2 of selectedScope) {
+    if (isUsableNode(node2)) {
+      writable.push({ id: node2.id, path: `${node2.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
+    }
   }
   const executorRoot = roleId ? join("temp", "roles", roleId) : join("temp", "sessions", sessionId);
   writable.push({ path: executorRoot + "/" });
@@ -1241,17 +1240,14 @@ function oneLineNote(node2) {
   const firstLine = node2.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
   return firstLine ? firstLine.slice(0, 40) : node2.type ?? "";
 }
-function allNodes(tent) {
-  return [...tent.byPath.values()];
-}
 function subtree(node2) {
   const out = [node2];
   for (const c of node2.children) out.push(...subtree(c));
   return out;
 }
-function requireClaimNodes(input) {
-  if (!input.claimNodes || input.claimNodes.length === 0) throw new Error("Missing claim nodes.");
-  return input.claimNodes;
+function requireSelectedNodes(input) {
+  if (!Array.isArray(input.selectedNodes)) throw new Error("Missing selected nodes.");
+  return input.selectedNodes;
 }
 function dedupe(entries) {
   const seen = /* @__PURE__ */ new Set();
@@ -1263,1735 +1259,6 @@ function dedupe(entries) {
     out.push(e);
   }
   return out;
-}
-
-// src/core/task.ts
-import { Buffer as Buffer2 } from "node:buffer";
-
-// src/core/task-model.ts
-var DEFAULT_ACCEPT_MODE = "review-required";
-var TaskLifecycleError = class extends Error {
-  constructor(code, message2) {
-    super(message2);
-    this.code = code;
-    this.name = "TaskLifecycleError";
-  }
-};
-function isTaskActorKind(value) {
-  return value === "user" || value === "role";
-}
-function parseTaskActorRef(value, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task ${label} must be an object { kind, id }.`
-    );
-  }
-  const raw = value;
-  const kind = raw.kind;
-  const id = typeof raw.id === "string" ? raw.id.trim() : "";
-  if (!isTaskActorKind(kind)) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task ${label}.kind must be user|role; got ${String(kind)}.`
-    );
-  }
-  if (!id) {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task ${label}.id must be a non-empty string.`
-    );
-  }
-  if (kind === "user" && id !== "user") {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task ${label} with kind=user requires id "user"; got ${id}.`
-    );
-  }
-  if (kind === "role" && id === "user") {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      `Task ${label} with kind=role must name a durable role (not user).`
-    );
-  }
-  return { kind, id };
-}
-function allowsNonReviewAcceptMode(input) {
-  const parent = input.requester;
-  return Boolean(parent && parent.kind === "user" && parent.id === "user");
-}
-function parseTaskOutcomeReport(text3) {
-  const raw = typeof text3 === "string" ? text3.replace(/^\uFEFF/, "") : "";
-  if (!raw.trim()) return null;
-  const lines = raw.replace(/\r\n/g, "\n").split("\n");
-  let i = 0;
-  while (i < lines.length && lines[i].trim() === "") i += 1;
-  if (i >= lines.length) return null;
-  let fence = false;
-  if (lines[i].trim() === "---") {
-    fence = true;
-    i += 1;
-    while (i < lines.length && lines[i].trim() === "") i += 1;
-  }
-  if (i >= lines.length) return null;
-  const match = lines[i].trim().match(/^outcome\s*:\s*(blocked)\s*$/i);
-  if (!match) return null;
-  const outcome = match[1].toLowerCase();
-  i += 1;
-  if (fence) {
-    while (i < lines.length && lines[i].trim() === "") i += 1;
-    if (i < lines.length && lines[i].trim() === "---") i += 1;
-  }
-  if (i < lines.length && lines[i].trim() === "") i += 1;
-  const report = lines.slice(i).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
-  return { outcome, report };
-}
-function isAcceptMode(value) {
-  return value === "review-required" || value === "auto-accept" || value === "agent-decide";
-}
-var ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
-  "queued",
-  "running",
-  "waiting",
-  "submitted"
-]);
-var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
-  "accepted",
-  "rejected",
-  "interrupted",
-  "failed"
-]);
-function isActiveTaskState(state) {
-  return ACTIVE_TASK_STATES.has(state);
-}
-function makeTaskId(rand = Math.random, len = 8) {
-  const stem = makeNodeId(rand, len).slice(3);
-  return `tk-${stem}`;
-}
-function makeTaskResultId(rand = Math.random, len = 8) {
-  const stem = makeNodeId(rand, len).slice(3);
-  return `rs-${stem}`;
-}
-function isTaskId(id) {
-  return /^tk-[a-z0-9]+$/.test(id);
-}
-function isTaskResultId(id) {
-  return /^rs-[a-z0-9]+$/.test(id);
-}
-function assertTransition(from, event, to) {
-  const ok2 = allowedTransitions(from).some((t) => t.event === event && t.to === to);
-  if (!ok2) {
-    throw new TaskLifecycleError(
-      "INVALID_TRANSITION",
-      `Invalid task transition: ${from} --${event}\u2192 ${to}`
-    );
-  }
-}
-function allowedTransitions(from) {
-  switch (from) {
-    case "queued":
-      return [
-        { event: "claim", to: "running" },
-        { event: "cancel", to: "interrupted" },
-        { event: "interrupt", to: "interrupted" }
-      ];
-    case "running":
-      return [
-        { event: "wait", to: "waiting" },
-        { event: "submit", to: "submitted" },
-        { event: "interrupt", to: "interrupted" },
-        { event: "fail", to: "failed" }
-      ];
-    case "waiting":
-      return [
-        { event: "resume", to: "running" },
-        { event: "interrupt", to: "interrupted" },
-        { event: "fail", to: "failed" }
-      ];
-    case "submitted":
-      return [
-        { event: "accept", to: "accepted" },
-        { event: "reject-resume", to: "running" },
-        { event: "reject-terminal", to: "rejected" }
-      ];
-    case "rejected":
-      return [];
-    default:
-      return [];
-  }
-}
-function resolveSubmitRouting(mode, decision) {
-  if (!isAcceptMode(mode)) {
-    throw new TaskLifecycleError(
-      "INVALID_ACCEPT_MODE",
-      `Invalid acceptMode: ${String(mode)}.`
-    );
-  }
-  if (mode === "auto-accept") {
-    return { autoIntegrate: true, integrationMode: "auto-accept", enterSubmitted: false };
-  }
-  if (mode === "review-required") {
-    if (decision === "integrate") {
-      throw new TaskLifecycleError(
-        "POLICY_FORBIDS_AUTO_INTEGRATE",
-        "acceptMode=review-required forbids decision=integrate; use request-review or change mode."
-      );
-    }
-    return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
-  }
-  if (!decision) {
-    throw new TaskLifecycleError(
-      "DECISION_REQUIRED",
-      "acceptMode=agent-decide requires decision: integrate | request-review."
-    );
-  }
-  if (decision === "integrate") {
-    return {
-      autoIntegrate: true,
-      integrationMode: "agent-decided-integrate",
-      enterSubmitted: false
-    };
-  }
-  return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
-}
-function assertReviewAuthority(input) {
-  const actor = input.actor.trim();
-  const executorRoleId = input.executorRoleId?.trim();
-  const action = input.action ?? "accept";
-  if (!actor) {
-    throw new TaskLifecycleError(
-      "REVIEW_FORBIDDEN",
-      `task.${action} requires a non-empty actor.`
-    );
-  }
-  if (executorRoleId && actor === executorRoleId) {
-    throw new TaskLifecycleError(
-      "SELF_ACCEPT_FORBIDDEN",
-      `task.${action} actor must not equal executing Role (${executorRoleId}).`
-    );
-  }
-  const requester = input.requester;
-  if (!requester) {
-    throw new TaskLifecycleError(
-      "REVIEW_FORBIDDEN",
-      `task.${action} requires an explicit Task.requester.`
-    );
-  }
-  if (requester.kind === "user") {
-    if (actor === requester.id && actor === "user") return;
-    throw new TaskLifecycleError(
-      "REVIEW_FORBIDDEN",
-      `task.${action} on user-reviewed task requires actor user; got ${actor}.`
-    );
-  }
-  if (actor === requester.id) return;
-  throw new TaskLifecycleError(
-    "REVIEW_FORBIDDEN",
-    `task.${action} requires actor equal to requester role (${requester.id}); got ${actor}.`
-  );
-}
-
-// src/core/canonical-digest.ts
-import { createHash as createHash2 } from "node:crypto";
-function sortForCanonical(value) {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortForCanonical);
-  const object = value;
-  const sorted = {};
-  for (const key2 of Object.keys(object).sort(compareCodeUnits)) {
-    const item = object[key2];
-    if (item === void 0) continue;
-    sorted[key2] = sortForCanonical(item);
-  }
-  return sorted;
-}
-function compareCodeUnits(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-function canonicalJson(value) {
-  return JSON.stringify(sortForCanonical(value));
-}
-function sha256Hex(text3) {
-  return createHash2("sha256").update(text3, "utf8").digest("hex");
-}
-function canonicalSha256(value) {
-  return sha256Hex(canonicalJson(value));
-}
-
-// src/core/task-node-selection.ts
-var TaskNodeSelectionError = class extends Error {
-  constructor(message2) {
-    super(message2);
-    this.name = "TaskNodeSelectionError";
-  }
-};
-function normalizeNodeIds(value, field) {
-  if (!Array.isArray(value)) {
-    throw new TaskNodeSelectionError(`Task ${field} must be an array.`);
-  }
-  const ids = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of value) {
-    if (typeof item !== "string" || item !== item.trim() || item !== item.toLowerCase() || !isNodeId(item)) {
-      throw new TaskNodeSelectionError(
-        `Task ${field} must contain canonical lowercase cx-* Node ids.`
-      );
-    }
-    if (seen.has(item)) {
-      throw new TaskNodeSelectionError(`Task ${field} contains duplicate Node id: ${item}.`);
-    }
-    seen.add(item);
-    ids.push(item);
-  }
-  return ids;
-}
-function normalizeTaskNodeSelection(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskNodeSelectionError("Task Node selection must be an object.");
-  }
-  const record = value;
-  const expected = /* @__PURE__ */ new Set(["workNodeIds", "contextNodeIds"]);
-  if (Object.keys(record).some((key2) => !expected.has(key2))) {
-    throw new TaskNodeSelectionError("Task Node selection contains unknown fields.");
-  }
-  const workNodeIds = normalizeNodeIds(record.workNodeIds, "workNodeIds");
-  const contextNodeIds = normalizeNodeIds(record.contextNodeIds, "contextNodeIds");
-  if (workNodeIds.length === 0) {
-    throw new TaskNodeSelectionError("Task workNodeIds requires at least one Node.");
-  }
-  const work = new Set(workNodeIds);
-  const overlap = contextNodeIds.find((id) => work.has(id));
-  if (overlap) {
-    throw new TaskNodeSelectionError(
-      `Task Node cannot be both writable work and read-only context: ${overlap}.`
-    );
-  }
-  return { workNodeIds, contextNodeIds };
-}
-function orderedTaskNodeIds(selection) {
-  const normalized = normalizeTaskNodeSelection(selection);
-  return [...normalized.workNodeIds, ...normalized.contextNodeIds];
-}
-
-// src/core/task-node-snapshot.ts
-var TaskNodeSnapshotError = class extends Error {
-  constructor(message2) {
-    super(message2);
-    this.name = "TaskNodeSnapshotError";
-  }
-};
-function normalizeNodePath(value) {
-  const path23 = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
-  if (!path23 || path23.startsWith("/") || /^[a-zA-Z]:/.test(path23) || path23.split("/").some((segment) => segment === ".." || segment === "")) {
-    throw new TaskNodeSnapshotError("Task Node snapshot path must be a canonical relative Node path.");
-  }
-  return path23;
-}
-function normalizeTags2(value) {
-  if (!Array.isArray(value)) {
-    throw new TaskNodeSnapshotError("Task Node snapshot tags must be an array.");
-  }
-  const tags = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of value) {
-    if (typeof item !== "string" || !item.trim()) {
-      throw new TaskNodeSnapshotError("Task Node snapshot tags must contain non-empty strings.");
-    }
-    const tag = item.trim();
-    if (seen.has(tag)) continue;
-    seen.add(tag);
-    tags.push(tag);
-  }
-  return tags;
-}
-function normalizeTaskNodeSnapshot(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskNodeSnapshotError("Task Node snapshot must be an object.");
-  }
-  const record = value;
-  const expected = /* @__PURE__ */ new Set(["id", "path", "type", "tags", "body", "etag"]);
-  if (Object.keys(record).some((key2) => !expected.has(key2))) {
-    throw new TaskNodeSnapshotError("Task Node snapshot contains unknown fields.");
-  }
-  if (typeof record.id !== "string" || record.id !== record.id.trim() || record.id !== record.id.toLowerCase() || !isNodeId(record.id)) {
-    throw new TaskNodeSnapshotError("Task Node snapshot id must be a canonical cx-* Node id.");
-  }
-  if (typeof record.path !== "string") {
-    throw new TaskNodeSnapshotError("Task Node snapshot path must be a string.");
-  }
-  if (typeof record.type !== "string" || !record.type.trim()) {
-    throw new TaskNodeSnapshotError("Task Node snapshot type must be a non-empty string.");
-  }
-  if (typeof record.body !== "string") {
-    throw new TaskNodeSnapshotError("Task Node snapshot body must be a string.");
-  }
-  if (typeof record.etag !== "string" || !/^[a-f0-9]{24}$/.test(record.etag)) {
-    throw new TaskNodeSnapshotError("Task Node snapshot etag must be a canonical content etag.");
-  }
-  return {
-    id: record.id.trim(),
-    path: normalizeNodePath(record.path),
-    type: record.type.trim(),
-    tags: normalizeTags2(record.tags),
-    body: record.body,
-    etag: record.etag
-  };
-}
-function captureTaskNodeSnapshot(node2, etag) {
-  return normalizeTaskNodeSnapshot({
-    id: node2.id,
-    path: node2.path,
-    type: node2.type,
-    tags: node2.tags,
-    body: node2.body,
-    etag
-  });
-}
-function normalizeTaskNodeSnapshots(value, selection) {
-  if (!Array.isArray(value)) {
-    throw new TaskNodeSnapshotError("Task Node snapshots must be an array.");
-  }
-  const snapshots = value.map(normalizeTaskNodeSnapshot);
-  const orderedNodeIds = orderedTaskNodeIds(normalizeTaskNodeSelection(selection));
-  if (snapshots.length !== orderedNodeIds.length || snapshots.some((snapshot, index2) => snapshot.id !== orderedNodeIds[index2])) {
-    throw new TaskNodeSnapshotError(
-      "Task Node snapshots must exactly match the ordered work/context Node refs."
-    );
-  }
-  return snapshots;
-}
-
-// src/core/task-node-context.ts
-var TaskNodeContextError = class extends Error {
-  constructor(message2, cause) {
-    super(message2);
-    this.name = "TaskNodeContextError";
-    this.cause = cause;
-  }
-};
-function normalizeTaskNodeContext(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskNodeContextError("Task Node context must be an object.");
-  }
-  const record = value;
-  const expected = /* @__PURE__ */ new Set(["workNodeIds", "contextNodeIds", "nodeSnapshots"]);
-  if (Object.keys(record).some((key2) => !expected.has(key2))) {
-    throw new TaskNodeContextError("Task Node context contains unknown fields.");
-  }
-  try {
-    const selection = normalizeTaskNodeSelection({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds
-    });
-    return {
-      ...selection,
-      nodeSnapshots: normalizeTaskNodeSnapshots(record.nodeSnapshots, selection)
-    };
-  } catch (error) {
-    throw new TaskNodeContextError(
-      error instanceof Error ? error.message : "Invalid Task Node context.",
-      error
-    );
-  }
-}
-
-// src/core/task-context-card-schema.ts
-var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v2";
-var TaskContextCardSchemaError = class extends Error {
-  constructor(message2, cause) {
-    super(message2);
-    this.name = "TaskContextCardSchemaError";
-    this.cause = cause;
-  }
-};
-function normalizeTaskContextCard(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskContextCardSchemaError("Task Context Card must be an object.");
-  }
-  const record = value;
-  const expected = /* @__PURE__ */ new Set([
-    "schemaVersion",
-    "workNodeIds",
-    "contextNodeIds",
-    "nodeSnapshots",
-    "contextGeneration"
-  ]);
-  if (Object.keys(record).some((key2) => !expected.has(key2))) {
-    throw new TaskContextCardSchemaError("Task Context Card contains retired or unknown fields.");
-  }
-  if (record.schemaVersion !== TASK_CONTEXT_CARD_SCHEMA_VERSION) {
-    throw new TaskContextCardSchemaError(
-      `Task Context Card schemaVersion must be ${TASK_CONTEXT_CARD_SCHEMA_VERSION}.`
-    );
-  }
-  if (record.contextGeneration !== void 0 && (typeof record.contextGeneration !== "string" || !/^cg-v1-[a-f0-9]{64}$/.test(record.contextGeneration))) {
-    throw new TaskContextCardSchemaError(
-      "Task Context Card contextGeneration must be a canonical cg-v1 digest when present."
-    );
-  }
-  try {
-    const nodeContext = normalizeTaskNodeContext({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds,
-      nodeSnapshots: record.nodeSnapshots
-    });
-    return {
-      schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-      ...nodeContext,
-      ...record.contextGeneration !== void 0 ? { contextGeneration: record.contextGeneration } : {}
-    };
-  } catch (error) {
-    throw new TaskContextCardSchemaError(
-      error instanceof Error ? error.message : "Invalid Task Node context.",
-      error
-    );
-  }
-}
-function buildTaskContextCardV2(input) {
-  const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.workNodeIds,
-    contextNodeIds: input.contextNodeIds,
-    nodeSnapshots: input.nodeSnapshots
-  });
-  return normalizeTaskContextCard({
-    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    ...nodeContext,
-    ...input.contextGeneration ? { contextGeneration: input.contextGeneration } : {}
-  });
-}
-function serializeTaskContextCard(card) {
-  const normalized = normalizeTaskContextCard(card);
-  return {
-    schemaVersion: normalized.schemaVersion,
-    workNodeIds: [...normalized.workNodeIds],
-    contextNodeIds: [...normalized.contextNodeIds],
-    nodeSnapshots: normalized.nodeSnapshots.map((snapshot) => ({
-      ...snapshot,
-      tags: [...snapshot.tags]
-    })),
-    ...normalized.contextGeneration ? { contextGeneration: normalized.contextGeneration } : {}
-  };
-}
-function formatTaskContextCardV2Prompt(card) {
-  const normalized = normalizeTaskContextCard(card);
-  const work = new Set(normalized.workNodeIds);
-  const lines = [
-    "Tent Task Context Card v2",
-    `workNodeIds: ${normalized.workNodeIds.join(", ")}`,
-    `contextNodeIds: ${normalized.contextNodeIds.join(", ") || "(none)"}`,
-    ...normalized.contextGeneration ? [`contextGeneration: ${normalized.contextGeneration}`] : []
-  ];
-  for (const snapshot of normalized.nodeSnapshots) {
-    lines.push(
-      "",
-      `--- ${work.has(snapshot.id) ? "Work" : "Context"} Node ${snapshot.id} ---`,
-      `path: ${snapshot.path}`,
-      `type: ${snapshot.type}`,
-      `tags: ${snapshot.tags.join(", ") || "(none)"}`,
-      `etag: ${snapshot.etag}`,
-      "body:",
-      snapshot.body
-    );
-  }
-  return lines.join("\n").trimEnd();
-}
-
-// src/core/task-context-card.ts
-var CONTEXT_GENERATION_VERSION = "v1";
-var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, Task authority, Node context, or chat-memory continuity. Final report goes through TaskResult only.";
-var INTEGRATION_MUTATOR_SERVICE = "service";
-var CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
-  "taskId",
-  "taskPath",
-  "objective",
-  "acceptance",
-  "prompt",
-  "taskInputDelta"
-];
-var TaskContextCardError = class extends Error {
-  constructor(code, message2, details) {
-    super(message2);
-    this.name = "TaskContextCardError";
-    this.code = code;
-    this.details = details;
-  }
-};
-function formatContextGeneration(stableCanonicalBytes) {
-  return `cg-${CONTEXT_GENERATION_VERSION}-${sha256Hex(stableCanonicalBytes)}`;
-}
-function isContextGenerationId(value) {
-  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
-}
-function computeContextGeneration(inputs) {
-  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
-  const payload = {
-    v: CONTEXT_GENERATION_VERSION,
-    workspaceIdentity: inputs.workspaceIdentity.trim(),
-    agentsPointerDigest: inputs.agentsPointerDigest.trim(),
-    tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
-    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
-    rolePrompt: inputs.rolePrompt?.trim() || "",
-    tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
-    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
-    connectionAdapterCompatibility: inputs.connectionAdapterCompatibility?.trim() || "",
-    extraStable
-  };
-  return formatContextGeneration(canonicalJson(payload));
-}
-function sanitizeContextGenerationExtraStable(extra) {
-  const out = {};
-  if (!extra) return out;
-  const forbidden = new Set(
-    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
-  );
-  for (const key2 of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
-    if (forbidden.has(key2.toLowerCase())) continue;
-    const v = extra[key2];
-    if (v === void 0) continue;
-    out[key2] = v;
-  }
-  return out;
-}
-function agentsBodyCompatibilityDigest(agentsBody) {
-  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
-}
-function skillBodyCompatibilityDigest(input) {
-  return sha256Hex(
-    canonicalJson({
-      name: input.name?.trim() || "",
-      version: input.version?.trim() || "",
-      body: input.body
-    })
-  );
-}
-function computeContextGenerationFromStableFacts(input) {
-  const tentRoleDigest = input.tentRoleBody !== void 0 ? skillBodyCompatibilityDigest({
-    body: input.tentRoleBody,
-    version: input.tentRoleVersion,
-    name: "tent-role"
-  }) : "";
-  const tentTaskDigest = input.tentTaskBody !== void 0 ? skillBodyCompatibilityDigest({
-    body: input.tentTaskBody,
-    version: input.tentTaskVersion,
-    name: "tent-task"
-  }) : "";
-  return computeContextGeneration({
-    workspaceIdentity: input.workspaceIdentity,
-    agentsPointerDigest: input.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(input.agentsBody),
-    tentRoleDigest: tentRoleDigest || void 0,
-    tentRoleVersion: input.tentRoleVersion,
-    rolePrompt: input.rolePrompt,
-    tentTaskDigest: tentTaskDigest || void 0,
-    tentTaskVersion: input.tentTaskVersion,
-    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
-      connectionId: input.connectionId,
-      adapterId: input.adapterId,
-      capabilityFlags: input.capabilityFlags,
-      launchDigest: input.connectionLaunchDigest
-    }),
-    extraStable: {
-      ...input.roleId ? { roleId: input.roleId } : {},
-      ...input.connectionLaunchDigest?.trim() ? { connectionLaunchDigest: input.connectionLaunchDigest.trim() } : {},
-      ...input.extraStable
-    }
-  });
-}
-function buildTaskContextCard(input) {
-  const retired = [
-    "objective",
-    "frozenDecisions",
-    "scope",
-    "acceptance",
-    "refs"
-  ];
-  const record = input;
-  const retiredField = retired.find((field) => field in record);
-  if (retiredField) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      `Task Context Card field ${retiredField} is retired; use frozen Node snapshots.`,
-      { retiredField }
-    );
-  }
-  if (input.contextGeneration && !isContextGenerationId(input.contextGeneration)) {
-    throw new TaskContextCardError(
-      "INVALID_GENERATION",
-      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
-    );
-  }
-  try {
-    return buildTaskContextCardV2(input);
-  } catch (error) {
-    if (error instanceof TaskContextCardError) throw error;
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      error instanceof Error ? error.message : "Invalid Task Context Card.",
-      { cause: error }
-    );
-  }
-}
-function parseTaskContextCard(data) {
-  try {
-    return normalizeTaskContextCard(data);
-  } catch (error) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      error instanceof Error ? error.message : "Invalid Task Context Card.",
-      { cause: error }
-    );
-  }
-}
-function loadTaskContextCardFromFrontmatter(data) {
-  if (data.contextCard !== void 0 && data.contextCard !== null) {
-    return parseTaskContextCard(data.contextCard);
-  }
-  return null;
-}
-function serializeTaskContextCardForFrontmatter(card) {
-  return serializeTaskContextCard(card);
-}
-function formatTaskContextCardPrompt(card) {
-  return formatTaskContextCardV2Prompt(card);
-}
-function formatTaskPackage(input) {
-  const card = parseTaskContextCard(input.contextCard);
-  const packageCard = { ...card };
-  delete packageCard.contextGeneration;
-  const prompt = input.prompt?.trim() || "";
-  if (!prompt) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      "Task Package requires a non-empty prompt."
-    );
-  }
-  const parts = [
-    "--- Tent Task Package ---",
-    formatTaskContextCardPrompt(packageCard)
-  ];
-  if (input.taskPointers?.trim()) {
-    parts.push("", input.taskPointers.trim());
-  }
-  parts.push(
-    "",
-    "## Prompt",
-    "",
-    prompt
-  );
-  return parts.join("\n");
-}
-function formatStableProjectContext(input) {
-  return [
-    "Tent stable project context v1",
-    `workspaceRoot: ${input.workspaceRoot}`,
-    `systemRoot: ${input.systemRoot}`,
-    `AGENTS: ${input.agentsPointer}`,
-    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent).",
-    "Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp."
-  ].join("\n");
-}
-function formatDynamicDelta(input) {
-  const taskPackage2 = input.taskPackage ?? "";
-  if (!taskPackage2.trim()) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      "Managed prompt assembly requires a non-empty canonical Task Package."
-    );
-  }
-  const wrapper = input.dynamicWrapper?.trim();
-  if (!wrapper) {
-    return { taskPackage: taskPackage2, dynamicDelta: taskPackage2 };
-  }
-  return {
-    taskPackage: taskPackage2,
-    dynamicDelta: `${taskPackage2}
-
-${wrapper}`
-  };
-}
-function assembleManagedPrompt(input) {
-  if (!isContextGenerationId(input.contextGeneration)) {
-    throw new TaskContextCardError(
-      "INVALID_GENERATION",
-      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
-    );
-  }
-  const includeStablePrefix = input.includeStablePrefix !== false;
-  const { taskPackage: taskPackage2, dynamicDelta } = formatDynamicDelta(input);
-  if (!includeStablePrefix) {
-    return {
-      text: dynamicDelta + "\n",
-      contextGeneration: input.contextGeneration,
-      includedStablePrefix: false,
-      stablePrefix: "",
-      taskPackage: taskPackage2,
-      dynamicDelta
-    };
-  }
-  const stableParts = [
-    MANAGED_BOOTSTRAP_INVARIANT,
-    formatStableProjectContext(input)
-  ];
-  if (input.tentRoleSection?.trim()) {
-    stableParts.push(input.tentRoleSection.trim());
-  }
-  if (input.rolePromptSection?.trim()) {
-    stableParts.push(input.rolePromptSection.trim());
-  }
-  if (input.tentTaskSection?.trim()) {
-    stableParts.push(input.tentTaskSection.trim());
-  }
-  const stablePrefix = stableParts.join("\n\n");
-  const text3 = `${stablePrefix}
-
-${dynamicDelta}
-`;
-  return {
-    text: text3,
-    contextGeneration: input.contextGeneration,
-    includedStablePrefix: true,
-    stablePrefix,
-    taskPackage: taskPackage2,
-    dynamicDelta
-  };
-}
-function decideStablePrefixInjection(input) {
-  const currentGen = input.currentContextGeneration?.trim() || "";
-  if (!isContextGenerationId(currentGen)) {
-    return {
-      includeStablePrefix: true,
-      reason: "current_context_generation_invalid_or_missing"
-    };
-  }
-  const prior = input.sessionContextGeneration?.trim() || "";
-  if (!prior) {
-    return { includeStablePrefix: true, reason: "session_has_no_context_generation" };
-  }
-  if (!isContextGenerationId(prior)) {
-    return {
-      includeStablePrefix: true,
-      reason: "session_context_generation_invalid"
-    };
-  }
-  if (prior !== currentGen) {
-    return {
-      includeStablePrefix: true,
-      reason: "context_generation_mismatch"
-    };
-  }
-  return {
-    includeStablePrefix: false,
-    reason: "same_context_generation"
-  };
-}
-function shouldInjectStablePrefix(input) {
-  return decideStablePrefixInjection(input).includeStablePrefix;
-}
-function connectionAdapterCompatibilityDigest(input) {
-  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  return sha256Hex(
-    canonicalJson({
-      connectionId: input.connectionId.trim(),
-      adapterId: input.adapterId.trim(),
-      flags,
-      launchDigest: input.launchDigest?.trim() || ""
-    })
-  );
-}
-function deriveIntegrationAuthority(input) {
-  try {
-    const requester = parseTaskActorRef(input.requester, "requester");
-    return {
-      actor: { kind: requester.kind, id: requester.id },
-      mutator: INTEGRATION_MUTATOR_SERVICE
-    };
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        requester: input.requester
-      });
-    }
-    throw err;
-  }
-}
-function assertIntegrationAuthorityMatchesParent(authority, requester) {
-  const derived = deriveIntegrationAuthority({ requester });
-  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from requester.",
-      { authority }
-    );
-  }
-  const raw = authority;
-  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
-      { authority }
-    );
-  }
-  let actor;
-  try {
-    actor = parseTaskActorRef(raw.actor, "requester");
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
-    }
-    throw err;
-  }
-  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task requester (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
-      { authority, derived }
-    );
-  }
-  return derived;
-}
-function projectExecutionLaneFromTask(task) {
-  const baseCommit = typeof task.baseCommit === "string" && task.baseCommit.trim() ? task.baseCommit.trim() : "";
-  const targetBranch = typeof task.targetBranch === "string" ? task.targetBranch.trim() : "";
-  const branch = typeof task.branch === "string" ? task.branch.trim() : "";
-  const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
-  let integrationAuthority;
-  if (task.requester) {
-    integrationAuthority = deriveIntegrationAuthority({ requester: task.requester });
-  }
-  if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
-    return void 0;
-  }
-  const out = {};
-  if (baseCommit) out.baseCommit = baseCommit;
-  if (targetBranch) out.targetBranch = targetBranch;
-  if (branch) out.branch = branch;
-  if (worktree) out.worktree = worktree;
-  if (integrationAuthority) out.integrationAuthority = integrationAuthority;
-  return out;
-}
-function formatExecutionLanePrompt(lane) {
-  if (!lane) return "";
-  const lines = ["executionLane (derived projection \u2014 Task workspaceLane is truth):"];
-  if (lane.baseCommit) lines.push(`  baseCommit: ${lane.baseCommit}`);
-  if (lane.targetBranch) lines.push(`  targetBranch: ${lane.targetBranch}`);
-  if (lane.branch) lines.push(`  branch: ${lane.branch}`);
-  if (lane.worktree) lines.push(`  worktree: ${lane.worktree}`);
-  if (lane.integrationAuthority) {
-    const a = lane.integrationAuthority.actor;
-    lines.push(
-      `  integrationAuthority.actor: ${a.kind}:${a.id}`,
-      `  integrationAuthority.mutator: ${lane.integrationAuthority.mutator}`
-    );
-  }
-  return lines.join("\n");
-}
-var ExecutorLaneHistoryError = class extends Error {
-  constructor(code, message2, details) {
-    super(message2);
-    this.name = "ExecutorLaneHistoryError";
-    this.code = code;
-    this.details = details;
-  }
-};
-function assertOrdinaryExecutorLaneHistory(input) {
-  const base = input.baseCommit?.trim() || "";
-  const tip = input.tipCommit?.trim() || "";
-  if (!base) {
-    throw new ExecutorLaneHistoryError(
-      "MISSING_BASE",
-      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready TaskResult)."
-    );
-  }
-  if (!tip) {
-    throw new ExecutorLaneHistoryError(
-      "MISSING_TIP",
-      "Executor lane history gate requires tip commit (fail-loud; no ready TaskResult)."
-    );
-  }
-  const commits = input.commits ?? [];
-  if (commits.length === 0) {
-    if (base !== tip) {
-      throw new ExecutorLaneHistoryError(
-        "TIP_MISMATCH",
-        `Executor lane has no commits in base..tip but tip ${tip} !== base ${base}.`,
-        { base, tip }
-      );
-    }
-    return;
-  }
-  const first = commits[0];
-  if (!first.sha?.trim()) {
-    throw new ExecutorLaneHistoryError(
-      "FOREIGN_ANCESTRY",
-      "Executor lane history contains a commit with empty sha.",
-      { index: 0 }
-    );
-  }
-  if (!first.parents || first.parents.length === 0) {
-    throw new ExecutorLaneHistoryError(
-      "EMPTY_PARENT",
-      `Executor lane commit ${first.sha} has no parents (unexpected root in task range).`,
-      { sha: first.sha }
-    );
-  }
-  if (first.parents.length !== 1) {
-    throw new ExecutorLaneHistoryError(
-      "MERGE_COMMIT",
-      `Unauthorized merge commit on ordinary executor lane: ${first.sha} has ${first.parents.length} parents (no ready TaskResult; lane/audit preserved).`,
-      { sha: first.sha, parents: first.parents }
-    );
-  }
-  if (first.parents[0] !== base) {
-    throw new ExecutorLaneHistoryError(
-      "BASE_NOT_FIRST_PARENT",
-      `Recorded baseCommit ${base} is not the exact first parent of the first Task commit ${first.sha} (parent=${first.parents[0]}). Unauthorized foreign ancestry; no ready TaskResult.`,
-      { base, firstSha: first.sha, firstParent: first.parents[0] }
-    );
-  }
-  let prev = first.sha;
-  for (let i = 0; i < commits.length; i++) {
-    const c = commits[i];
-    const sha = c.sha?.trim() || "";
-    if (!sha) {
-      throw new ExecutorLaneHistoryError(
-        "FOREIGN_ANCESTRY",
-        `Executor lane history contains a commit with empty sha at index ${i}.`,
-        { index: i }
-      );
-    }
-    const parents = c.parents ?? [];
-    if (parents.length === 0) {
-      throw new ExecutorLaneHistoryError(
-        "EMPTY_PARENT",
-        `Executor lane commit ${sha} has no parents.`,
-        { sha, index: i }
-      );
-    }
-    if (parents.length !== 1) {
-      throw new ExecutorLaneHistoryError(
-        "MERGE_COMMIT",
-        `Unauthorized merge commit on ordinary executor lane: ${sha} has ${parents.length} parents (executor must not merge parent/target/dependency; no ready TaskResult).`,
-        { sha, parents, index: i }
-      );
-    }
-    if (i > 0 && parents[0] !== prev) {
-      throw new ExecutorLaneHistoryError(
-        "FOREIGN_ANCESTRY",
-        `Executor lane commit ${sha} first parent ${parents[0]} is not prior tip ${prev} (foreign ancestry / non-linear history; no ready TaskResult).`,
-        { sha, firstParent: parents[0], expectedParent: prev, index: i }
-      );
-    }
-    prev = sha;
-  }
-  if (prev !== tip) {
-    throw new ExecutorLaneHistoryError(
-      "TIP_MISMATCH",
-      `Executor lane tip ${tip} does not match last commit in base..tip range ${prev}.`,
-      { tip, last: prev, base }
-    );
-  }
-}
-
-// src/core/task-node-refs.ts
-var MISSING_TASK_NODE_SELECTION = "MISSING_TASK_NODE_SELECTION: Task.workNodeIds and Task.contextNodeIds are required.";
-function normalizedSelection(task) {
-  const label = task.id || task.path || "(unknown)";
-  try {
-    return normalizeTaskNodeSelection({
-      workNodeIds: task.workNodeIds,
-      contextNodeIds: task.contextNodeIds
-    });
-  } catch (error) {
-    const wrapped = new Error(`${MISSING_TASK_NODE_SELECTION} task=${label}`);
-    wrapped.cause = error;
-    throw wrapped;
-  }
-}
-function taskReferencedNodeIds(task) {
-  const selection = normalizedSelection(task);
-  return [...selection.workNodeIds, ...selection.contextNodeIds];
-}
-function taskDirectlyReferencesNode(task, nodeId) {
-  if (!nodeId) return false;
-  return normalizedSelection(task).workNodeIds.includes(nodeId);
-}
-function listDirectActiveTasksForNode(nodeId, tasks) {
-  const matches = tasks.filter(
-    (task) => isActiveTaskState(task.state) && taskDirectlyReferencesNode(task, nodeId)
-  );
-  return sortTasksDeterministically(matches);
-}
-function sortTasksDeterministically(tasks) {
-  return [...tasks].sort((a, b) => {
-    const ca = a.createdAt || "";
-    const cb = b.createdAt || "";
-    if (ca !== cb) return ca.localeCompare(cb);
-    const ia = a.id || "";
-    const ib = b.id || "";
-    if (ia !== ib) return ia.localeCompare(ib);
-    return (a.path || "").localeCompare(b.path || "");
-  });
-}
-
-// src/core/task.ts
-async function loadTaskRecords(fs21) {
-  const tasks = [];
-  if (!await fs21.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs21.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name !== ROLES_TEMP_DIR && entry.name !== SESSIONS_TEMP_DIR) continue;
-    const ownerRoot = join(TEMP_DIR, entry.name);
-    for (const ownerEntry of await fs21.listDir(ownerRoot)) {
-      if (!ownerEntry.isDir) continue;
-      await collectTaskFiles(fs21, join(ownerRoot, ownerEntry.name, "tasks"), tasks);
-    }
-  }
-  return tasks.sort((a, b) => a.path.localeCompare(b.path));
-}
-async function collectTaskFiles(fs21, taskDir, tasks) {
-  if (!await fs21.exists(taskDir)) return;
-  for (const entry of await fs21.listDir(taskDir)) {
-    if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path23 = join(taskDir, entry.name);
-    tasks.push(await loadTaskRecord(fs21, path23));
-  }
-}
-function taskExecutionLabel(task) {
-  return [task.assigneeRoleId ? `assigneeRoleId=${task.assigneeRoleId}` : "", task.executionSessionId ? `executionSessionId=${task.executionSessionId}` : ""].filter(Boolean).join(" ");
-}
-function taskParentRoleId(task) {
-  return task.requester?.kind === "role" ? task.requester.id : void 0;
-}
-function serializeTaskActorRef(actor) {
-  return { kind: actor.kind, id: actor.id };
-}
-function serializeBaseCommitCapture(capture) {
-  return {
-    source: capture.source,
-    baseCommit: capture.baseCommit,
-    actor: serializeTaskActorRef(capture.actor),
-    capturedAt: capture.capturedAt
-  };
-}
-function assertIsoTimestamp(value, label) {
-  const raw = value.trim();
-  if (!raw) {
-    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
-  }
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
-    throw new Error(
-      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
-    );
-  }
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms)) {
-    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
-  }
-  return raw;
-}
-var TASK_STATUS_DETAIL_REPORT_MAX_BYTES = 64 * 1024;
-var TASK_STATUS_DETAIL_ERROR_MAX_BYTES = 8 * 1024;
-var TASK_STATUS_DETAIL_CODE_MAX_BYTES = 128;
-function parseTaskStatusDetail(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Task statusDetail must be an object.");
-  }
-  const raw = value;
-  const allowed = /* @__PURE__ */ new Set(["kind", "report", "error", "code", "at", "executionSessionId"]);
-  if (Object.keys(raw).some((key2) => !allowed.has(key2))) {
-    throw new Error("Task statusDetail contains unknown fields.");
-  }
-  const kind = raw.kind;
-  if (kind !== "blocked" && kind !== "failed") {
-    throw new Error("Task statusDetail.kind must be blocked or failed.");
-  }
-  const report = parseBoundedTaskStatusDetailString(
-    raw.report,
-    "report",
-    TASK_STATUS_DETAIL_REPORT_MAX_BYTES
-  );
-  const error = parseBoundedTaskStatusDetailString(
-    raw.error,
-    "error",
-    TASK_STATUS_DETAIL_ERROR_MAX_BYTES
-  );
-  if (!report && !error) {
-    throw new Error("Task statusDetail requires report or error.");
-  }
-  const code = parseBoundedTaskStatusDetailString(
-    raw.code,
-    "code",
-    TASK_STATUS_DETAIL_CODE_MAX_BYTES
-  );
-  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
-    throw new Error("Task statusDetail.code must be a stable machine identifier.");
-  }
-  const at = raw.at === void 0 ? void 0 : assertIsoTimestamp(String(raw.at), "Task statusDetail.at");
-  const executionSessionId = raw.executionSessionId === void 0 ? void 0 : String(raw.executionSessionId).trim();
-  if (executionSessionId && !isSessionId(executionSessionId)) {
-    throw new Error(`Invalid Task statusDetail.executionSessionId: ${executionSessionId}.`);
-  }
-  return {
-    kind,
-    ...report ? { report } : {},
-    ...error ? { error } : {},
-    ...code ? { code } : {},
-    ...at ? { at } : {},
-    ...executionSessionId ? { executionSessionId } : {}
-  };
-}
-function parseBoundedTaskStatusDetailString(value, field, maxBytes) {
-  if (value === void 0 || value === null) return void 0;
-  if (typeof value !== "string") {
-    throw new Error(`Task statusDetail.${field} must be a string.`);
-  }
-  const text3 = value.trim();
-  if (!text3) return void 0;
-  const bytes = Buffer2.byteLength(text3, "utf8");
-  if (bytes > maxBytes) {
-    throw new Error(`Task statusDetail.${field} exceeds ${maxBytes} UTF-8 bytes.`);
-  }
-  return text3;
-}
-function parseBaseCommitCapture(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(
-      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
-    );
-  }
-  const raw = value;
-  const source = raw.source;
-  if (source !== "first-claim") {
-    throw new Error(
-      `Task baseCommitCapture.source must be first-claim; got ${String(source)}.`
-    );
-  }
-  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
-  if (!baseCommit) {
-    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
-  }
-  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
-  const capturedAt = assertIsoTimestamp(
-    capturedAtRaw,
-    "Task baseCommitCapture.capturedAt"
-  );
-  let actor;
-  try {
-    actor = parseTaskActorRef(raw.actor, "requester");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(msg.replace(/Task requester/g, "Task baseCommitCapture.actor"));
-  }
-  return { source, baseCommit, actor, capturedAt };
-}
-function resolveDispatchRequester(input) {
-  if (!input.requester) {
-    throw new Error(
-      "task.dispatch requires explicit requester { kind, id }."
-    );
-  }
-  return parseTaskActorRef(input.requester, "requester");
-}
-async function loadTaskRecord(fs21, path23) {
-  if (!await fs21.exists(path23)) throw new Error(`Task record not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs21.readFile(path23));
-  assertNoRetiredTaskAuthorityFields(data);
-  if (data.type !== "task" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task record format: ${path23}.`);
-  }
-  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
-  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
-  if (!assigneeRoleId && !executionSessionId) {
-    throw new Error(`Invalid Task record format: ${path23} (assigneeRoleId or executionSessionId is required).`);
-  }
-  if (assigneeRoleId && !isRoleId(assigneeRoleId)) {
-    throw new Error(`Invalid Task record format: ${path23} (invalid assigneeRoleId).`);
-  }
-  if (executionSessionId && !isSessionId(executionSessionId)) {
-    throw new Error(`Invalid Task record format: ${path23} (invalid executionSessionId).`);
-  }
-  const normalizedTaskPath = path23.replace(/\\/g, "/");
-  const authoritativeOwnerDir = assigneeRoleId ? `temp/${ROLES_TEMP_DIR}/${assigneeRoleId}/tasks/` : void 0;
-  const sessionOwnerMatch = normalizedTaskPath.match(
-    new RegExp(`^temp/${SESSIONS_TEMP_DIR}/([^/]+)/tasks/`)
-  );
-  const ownerIsValid = assigneeRoleId ? normalizedTaskPath.startsWith(authoritativeOwnerDir) : !!sessionOwnerMatch && isSessionId(sessionOwnerMatch[1]);
-  if (!ownerIsValid) {
-    throw new Error(
-      `Invalid Task record owner namespace: ${path23}.`
-    );
-  }
-  if (typeof data.id !== "string" || !isTaskId(data.id)) {
-    throw new Error(`Invalid task record format: ${path23} (canonical task id is required).`);
-  }
-  const state = parseTaskState(data.state);
-  const requester = resolveRequesterFromDisk(data);
-  const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
-  if (!contextCard) {
-    throw new Error(
-      `Invalid task record format: ${path23} (missing Task Context Card v2).`
-    );
-  }
-  if (!isAcceptMode(data.acceptMode)) {
-    throw new Error(
-      `Invalid task record format: ${path23} (acceptMode must be review-required, auto-accept, or agent-decide).`
-    );
-  }
-  const prompt = body.trim();
-  if (!prompt) {
-    throw new Error(`Invalid Task record format: ${path23} (non-empty prompt is required).`);
-  }
-  const task = {
-    path: path23,
-    ...assigneeRoleId ? { assigneeRoleId } : {},
-    ...executionSessionId ? { executionSessionId } : {},
-    manifest: data.manifest,
-    state,
-    id: data.id,
-    requester,
-    prompt,
-    contextCard,
-    workNodeIds: contextCard.workNodeIds,
-    contextNodeIds: contextCard.contextNodeIds,
-    nodeSnapshots: contextCard.nodeSnapshots,
-    acceptMode: data.acceptMode
-  };
-  if (typeof data.workspace === "string") task.workspace = data.workspace;
-  if (typeof data.worktree === "string") task.worktree = data.worktree;
-  if (typeof data.branch === "string") task.branch = data.branch;
-  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
-    task.roleBranchBase = data.roleBranchBase.trim();
-  }
-  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
-    task.baseCommit = data.baseCommit.trim();
-  }
-  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
-  if (baseCommitCapture) {
-    const recordedBase = task.baseCommit?.trim() || "";
-    if (!recordedBase) {
-      throw new Error(
-        `Invalid task record format: ${path23} (baseCommitCapture present but baseCommit missing).`
-      );
-    }
-    if (recordedBase !== baseCommitCapture.baseCommit) {
-      throw new Error(
-        `Invalid task record format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
-      );
-    }
-    task.baseCommitCapture = baseCommitCapture;
-  }
-  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.requester) {
-    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
-      data.integrationAuthority,
-      task.requester
-    );
-  }
-  task.contextGeneration = contextCard.contextGeneration;
-  if (data.currentResultId !== void 0) {
-    if (typeof data.currentResultId !== "string" || data.currentResultId !== data.currentResultId.trim() || !isTaskResultId(data.currentResultId)) {
-      throw new Error(`Invalid Task currentResultId: ${String(data.currentResultId)}.`);
-    }
-    task.currentResultId = data.currentResultId;
-  }
-  const statusDetail = parseTaskStatusDetail(data.statusDetail);
-  if (statusDetail) task.statusDetail = statusDetail;
-  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
-  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
-  const wait = parseWaitFields(data);
-  if (wait) task.wait = wait;
-  return task;
-}
-function resolveRequesterFromDisk(data) {
-  if (data.requester === void 0 || data.requester === null) {
-    throw new Error("Invalid Task record: missing requester.");
-  }
-  return parseTaskActorRef(data.requester, "requester");
-}
-function assertNoRetiredTaskAuthorityFields(data) {
-  for (const field of ["reviewer", "dispatchedBy"]) {
-    if (Object.prototype.hasOwnProperty.call(data, field)) {
-      throw new Error(`Invalid Task record: retired ${field} field; use requester.`);
-    }
-  }
-}
-function resolveTaskPromptRoots(roots) {
-  if (typeof roots !== "string") {
-    return {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot: roots.systemRoot
-    };
-  }
-  const systemRoot = roots;
-  const normalized = systemRoot.replace(/[\\/]+$/, "");
-  const base = normalized.split(/[\\/]/).pop() ?? "";
-  const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
-  return { workspaceRoot, systemRoot };
-}
-function formatTaskPackagePointers(task) {
-  const lines = [
-    `Task record: ${task.path}`,
-    `Manifest: ${task.manifest}`
-  ];
-  if (task.id) {
-    lines.push(`Task id: ${task.id}`);
-  }
-  if (task.contextCard) {
-    lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
-    lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
-  }
-  if (task.requester) {
-    lines.push(
-      `requester: ${task.requester.kind}:${task.requester.id}`
-    );
-  }
-  lines.push(`acceptMode: ${task.acceptMode}`);
-  if (task.assigneeRoleId) {
-    lines.push(`assigneeRoleId: ${task.assigneeRoleId}`);
-  }
-  if (!task.assigneeRoleId) lines.push(`Session-only execution (no durable Role responsibility).`);
-  return lines.join("\n");
-}
-function taskPackageForTask(task) {
-  const prompt = extractTaskPrompt(task);
-  if (!prompt) throw new Error(`Task Package requires a non-empty prompt: ${task.path}.`);
-  const pointerSections = [formatTaskPackagePointers(task)];
-  const executionLane = formatExecutionLanePrompt(projectExecutionLaneFromTask(task));
-  if (executionLane) {
-    pointerSections.push(executionLane);
-  }
-  pointerSections.push(
-    "TaskResult contract: a non-empty final report is the normal success path.",
-    "When applicable, include commits, checks, and artifact refs in the same TaskResult.",
-    "Never self-accept."
-  );
-  return formatTaskPackage({
-    contextCard: task.contextCard,
-    taskPointers: pointerSections.join("\n"),
-    prompt
-  });
-}
-function formatExternalPathBlock(task, roots) {
-  const taskFile = join(".tent", task.path);
-  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
-  return [
-    `workspaceRoot: ${roots.workspaceRoot}`,
-    `systemRoot: ${roots.systemRoot}`,
-    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
-    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} \u2014 never <workspaceRoot>/temp.`
-  ].join("\n");
-}
-function relayPromptForTask(task, roots) {
-  const resolved = resolveTaskPromptRoots(roots);
-  const assigneeLine = task.assigneeRoleId ? `A Tent task has been handed to Role ${task.assigneeRoleId}.
-` : `A Tent task is bound to Session ${task.executionSessionId}.
-`;
-  const initStep = task.assigneeRoleId ? `4. If this is a new session for this Role, complete Role init first (read the init file above).` : `4. Read the Task record and task-scoped manifest pointers above; no Role init applies.`;
-  const roleInitBlock = task.assigneeRoleId ? `${join(".tent", "temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md")}
-` : "";
-  return assigneeLine + `${formatExternalPathBlock(task, resolved)}
-` + roleInitBlock + `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the Task record). Resolve current Node state by id only when comparing drift.
-3. When finished, run \`tent task submit ${task.path} --report <text>\` (optional: --commits sha,sha).
-${initStep}
-
-` + taskPackageForTask(task);
-}
-function extractTaskPrompt(task) {
-  const body = task.prompt?.trim() || "";
-  if (!body) return "";
-  const match = body.match(/##\s*Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
-  if (match) return match[1].trim();
-  return body;
-}
-async function ensureRoleInit(fs21, role, tentName) {
-  if (!role.id || !isRoleId(role.id)) {
-    throw new Error(`Role init requires a canonical Role id for ${role.name}.`);
-  }
-  const path23 = join(TEMP_DIR, ROLES_TEMP_DIR, role.id, "init.md");
-  const body = `# Role Init
-
-- Tent: ${tentName}
-- Agent rules (workspace file read): AGENTS.md at the workspace root
-- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
-
-## Role Prompt
-
-${role.prompt?.trim() || "(no persistent role prompt)"}
-
-## Operating Model
-
-Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
-Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
-`;
-  await fs21.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path23;
-}
-async function writeTaskRecord(fs21, clock, input) {
-  const prompt = input.prompt?.trim() || "";
-  if (!prompt) throw new Error("Dispatch requires a prompt.");
-  const assigneeRoleId = input.assigneeRoleId?.trim() || "";
-  const executionSessionId = input.executionSessionId?.trim() || "";
-  if (!assigneeRoleId && !executionSessionId) {
-    throw new Error("Task requires assigneeRoleId or executionSessionId at creation.");
-  }
-  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
-  if (executionSessionId && !isSessionId(executionSessionId)) {
-    throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
-  }
-  const dir = assigneeRoleId ? roleTasksDir(assigneeRoleId) : sessionTasksDir(executionSessionId);
-  await ensureDir(fs21, dir);
-  const requestedId = input.id?.trim() || "";
-  if (requestedId && !isTaskId(requestedId)) {
-    throw new Error(`Invalid Task id: ${requestedId}.`);
-  }
-  const id = requestedId || makeTaskId();
-  const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.workNodeIds,
-    contextNodeIds: input.contextNodeIds,
-    nodeSnapshots: input.nodeSnapshots
-  });
-  const primaryRef = nodeContext.workNodeIds[0];
-  const stem = taskStem(clock.now(), primaryRef);
-  const path23 = await uniqueMarkdownPath(fs21, dir, stem);
-  input.onPathAllocated?.(path23);
-  const now = clock.now();
-  const requester = resolveDispatchRequester({ requester: input.requester });
-  const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
-  if (!isAcceptMode(acceptMode)) {
-    throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
-  }
-  if (acceptMode !== "review-required" && !allowsNonReviewAcceptMode({
-    requester
-  })) {
-    throw new Error(
-      `acceptMode=${acceptMode} is only legal for a user-facing Task; downstream Task Agent \u2192 requester must use review-required (requester=${requester.kind}:${requester.id}).`
-    );
-  }
-  const contextCard = buildTaskContextCard({
-    ...nodeContext
-  });
-  const data = {
-    type: "task",
-    id,
-    state: "queued",
-    ...assigneeRoleId ? { assigneeRoleId } : {},
-    ...executionSessionId ? { executionSessionId } : {},
-    requester: serializeTaskActorRef(requester),
-    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
-    manifest: input.manifestPath,
-    acceptMode,
-    createdAt: now,
-    updatedAt: now
-  };
-  if (input.workspace) {
-    data.workspace = input.workspace.workspace;
-    data.worktree = input.workspace.worktree;
-    data.branch = input.workspace.branch;
-    data.targetBranch = input.workspace.targetBranch;
-    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
-    if (tip) {
-      data.baseCommit = tip;
-      data.roleBranchBase = tip;
-    }
-  }
-  const pointers = nodeContext.nodeSnapshots.map((snapshot) => `- ${snapshot.id}: ${snapshot.path}`).join("\n");
-  const body = `# Task
-
-## Context Pointers
-
-${pointers || "(none)"}
-
-- Manifest: ${input.manifestPath}
-` + (input.id || id ? `- Task id: ${id}
-` : "") + `
-## Prompt
-
-${prompt}
-`;
-  await fs21.writeFile(path23, serializeFrontmatter(data, body));
-  return path23;
-}
-async function ackTaskRecord(fs21, path23) {
-  await patchTaskRecord(fs21, path23, {
-    state: "running"
-  });
-}
-async function patchTaskRecord(fs21, path23, patch) {
-  if ("acceptMode" in patch) {
-    throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
-  }
-  if ("contextCard" in patch) {
-    throw new Error(
-      "Task Context Card Node snapshots are frozen; patch contextGeneration only."
-    );
-  }
-  if (!await fs21.exists(path23)) throw new Error(`Task record not found: ${path23}.`);
-  const raw = await fs21.readFile(path23);
-  const { data, body, keyOrder } = parseFrontmatter(raw);
-  assertNoRetiredTaskAuthorityFields(data);
-  if (data.type !== "task") throw new Error(`Invalid Task record format: ${path23}.`);
-  if (patch.state) {
-    data.state = patch.state;
-  }
-  if (typeof patch.executionSessionId === "string") {
-    const executionSessionId2 = patch.executionSessionId.trim();
-    if (!isSessionId(executionSessionId2)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId2}.`);
-    data.executionSessionId = executionSessionId2;
-  }
-  if (patch.wait === null) {
-    delete data.waitReason;
-    delete data.waitSummary;
-    delete data.waitCode;
-  } else if (patch.wait) {
-    data.waitReason = patch.wait.reason;
-    data.waitSummary = patch.wait.summary;
-    const code = patch.wait.code?.trim();
-    if (code) data.waitCode = code;
-    else delete data.waitCode;
-  }
-  if (patch.currentResultId === null) delete data.currentResultId;
-  else if (typeof patch.currentResultId === "string") {
-    if (patch.currentResultId !== patch.currentResultId.trim() || !isTaskResultId(patch.currentResultId)) {
-      throw new Error(`Invalid Task currentResultId: ${patch.currentResultId}.`);
-    }
-    data.currentResultId = patch.currentResultId;
-  }
-  if (patch.requester) {
-    const nextRequester = parseTaskActorRef(patch.requester, "requester");
-    data.requester = serializeTaskActorRef(nextRequester);
-    const derived = deriveIntegrationAuthority({ requester: nextRequester });
-    data.integrationAuthority = {
-      actor: { kind: derived.actor.kind, id: derived.actor.id },
-      mutator: "service"
-    };
-  }
-  if (patch.statusDetail === null) delete data.statusDetail;
-  else if (patch.statusDetail !== void 0) {
-    data.statusDetail = parseTaskStatusDetail(patch.statusDetail);
-  }
-  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
-  for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
-    const value = patch[key2];
-    if (value === null) delete data[key2];
-    else if (typeof value === "string") data[key2] = value;
-  }
-  if (patch.roleBranchBase === null) delete data.roleBranchBase;
-  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
-    data.roleBranchBase = patch.roleBranchBase.trim();
-  }
-  if (patch.baseCommit === null) delete data.baseCommit;
-  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
-    data.baseCommit = patch.baseCommit.trim();
-  }
-  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
-  else if (patch.baseCommitCapture) {
-    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
-  }
-  if (patch.integrationAuthority === null) delete data.integrationAuthority;
-  else if (patch.integrationAuthority) {
-    if (data.requester === void 0 || data.requester === null) {
-      throw new Error(
-        "patchTaskRecord integrationAuthority requires requester on the Task record."
-      );
-    }
-    const parentForAuth = parseTaskActorRef(data.requester, "requester");
-    const validated = assertIntegrationAuthorityMatchesParent(
-      patch.integrationAuthority,
-      parentForAuth
-    );
-    data.integrationAuthority = {
-      actor: { kind: validated.actor.kind, id: validated.actor.id },
-      mutator: "service"
-    };
-  }
-  if (patch.contextGeneration !== void 0) {
-    if (!/^cg-v1-[a-f0-9]{64}$/.test(patch.contextGeneration)) {
-      throw new Error("patchTaskRecord contextGeneration must be a canonical cg-v1 digest.");
-    }
-    const currentCard = loadTaskContextCardFromFrontmatter(data);
-    if (!currentCard) {
-      throw new Error(`Invalid Task record format: ${path23} (missing Task Context Card v2).`);
-    }
-    data.contextCard = serializeTaskContextCardForFrontmatter({
-      ...currentCard,
-      contextGeneration: patch.contextGeneration
-    });
-    delete data.contextGeneration;
-  }
-  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
-  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
-  if (!assigneeRoleId && !executionSessionId) {
-    throw new Error("patchTaskRecord cannot remove the final assigneeRoleId/executionSessionId binding.");
-  }
-  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
-  if (executionSessionId && !isSessionId(executionSessionId)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
-  await fs21.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskRecord(fs21, path23);
-}
-function primaryNodeId(task) {
-  return taskReferencedNodeIds(task)[0];
-}
-function parseTaskState(value) {
-  if (value === "queued" || value === "running" || value === "waiting" || value === "submitted" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
-    return value;
-  }
-  throw new Error(`Invalid task state: ${String(value)}.`);
-}
-function parseWaitFields(data) {
-  const reason = data.waitReason;
-  const summary = data.waitSummary;
-  if ((reason === "user-input" || reason === "review" || reason === "external") && typeof summary === "string") {
-    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
-    return { reason, summary, ...code ? { code } : {} };
-  }
-  return void 0;
-}
-function taskStem(now, claimId) {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
-  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
-}
-async function uniqueMarkdownPath(fs21, dir, stem) {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path23 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs21.exists(path23)) return path23;
-  }
-}
-async function ensureDir(fs21, path23) {
-  if (!await fs21.exists(path23)) await fs21.mkdir(path23);
-}
-
-// src/core/claim.ts
-function taskIsActiveOccupation(task) {
-  return isActiveTaskState(task.state);
-}
-function canClaim(node2, options) {
-  const structural = structuralClaimGate(node2);
-  if (!structural.ok) return structural;
-  const occupied = options?.tasks ? listDirectActiveTasksForNode(node2.id, options.tasks)[0] : void 0;
-  if (occupied) {
-    return {
-      ok: false,
-      blocker: node2,
-      task: occupied,
-      reason: `${node2.name} is occupied by active task ${occupied.id || occupied.path} (${taskExecutionLabel(occupied)}).`
-    };
-  }
-  return structural;
-}
-function structuralClaimGate(node2) {
-  if (node2.invalid) {
-    return { ok: false, blocker: node2, reason: `Invalid subtree: ${node2.invalidReason || "missing type definition"}` };
-  }
-  if (node2.archived) {
-    return { ok: false, blocker: node2, reason: "Archived subtree cannot be claimed." };
-  }
-  return { ok: true };
-}
-function isFrozen(node2) {
-  return node2.invalid || node2.archived;
 }
 
 // src/core/tags.ts
@@ -3341,6 +1608,1679 @@ async function writeJson(fs21, path23, value) {
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/task.ts
+import { Buffer as Buffer2 } from "node:buffer";
+
+// src/core/task-model.ts
+var DEFAULT_ACCEPT_MODE = "review-required";
+var TaskLifecycleError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+};
+function isTaskActorKind(value) {
+  return value === "user" || value === "role";
+}
+function parseTaskActorRef(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} must be an object { kind, id }.`
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!isTaskActorKind(kind)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.kind must be user|role; got ${String(kind)}.`
+    );
+  }
+  if (!id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.id must be a non-empty string.`
+    );
+  }
+  if (kind === "user" && id !== "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=user requires id "user"; got ${id}.`
+    );
+  }
+  if (kind === "role" && id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=role must name a durable role (not user).`
+    );
+  }
+  return { kind, id };
+}
+function allowsNonReviewAcceptMode(input) {
+  const parent = input.requester;
+  return Boolean(parent && parent.kind === "user" && parent.id === "user");
+}
+function parseTaskOutcomeReport(text3) {
+  const raw = typeof text3 === "string" ? text3.replace(/^\uFEFF/, "") : "";
+  if (!raw.trim()) return null;
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i += 1;
+  if (i >= lines.length) return null;
+  let fence = false;
+  if (lines[i].trim() === "---") {
+    fence = true;
+    i += 1;
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+  }
+  if (i >= lines.length) return null;
+  const match = lines[i].trim().match(/^outcome\s*:\s*(blocked)\s*$/i);
+  if (!match) return null;
+  const outcome = match[1].toLowerCase();
+  i += 1;
+  if (fence) {
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+    if (i < lines.length && lines[i].trim() === "---") i += 1;
+  }
+  if (i < lines.length && lines[i].trim() === "") i += 1;
+  const report = lines.slice(i).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  return { outcome, report };
+}
+function isAcceptMode(value) {
+  return value === "review-required" || value === "auto-accept" || value === "agent-decide";
+}
+var ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+  "queued",
+  "running",
+  "waiting",
+  "submitted"
+]);
+var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
+  "accepted",
+  "rejected",
+  "interrupted",
+  "failed"
+]);
+function isActiveTaskState(state) {
+  return ACTIVE_TASK_STATES.has(state);
+}
+function makeTaskId(rand = Math.random, len = 8) {
+  const stem = makeNodeId(rand, len).slice(3);
+  return `tk-${stem}`;
+}
+function makeTaskResultId(rand = Math.random, len = 8) {
+  const stem = makeNodeId(rand, len).slice(3);
+  return `rs-${stem}`;
+}
+function isTaskId(id) {
+  return /^tk-[a-z0-9]+$/.test(id);
+}
+function isTaskResultId(id) {
+  return /^rs-[a-z0-9]+$/.test(id);
+}
+function assertTransition(from, event, to) {
+  const ok2 = allowedTransitions(from).some((t) => t.event === event && t.to === to);
+  if (!ok2) {
+    throw new TaskLifecycleError(
+      "INVALID_TRANSITION",
+      `Invalid task transition: ${from} --${event}\u2192 ${to}`
+    );
+  }
+}
+function allowedTransitions(from) {
+  switch (from) {
+    case "queued":
+      return [
+        { event: "claim", to: "running" },
+        { event: "cancel", to: "interrupted" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "running":
+      return [
+        { event: "wait", to: "waiting" },
+        { event: "submit", to: "submitted" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "waiting":
+      return [
+        { event: "resume", to: "running" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "submitted":
+      return [
+        { event: "accept", to: "accepted" },
+        { event: "reject-resume", to: "running" },
+        { event: "reject-terminal", to: "rejected" }
+      ];
+    case "rejected":
+      return [];
+    default:
+      return [];
+  }
+}
+function resolveSubmitRouting(mode, decision) {
+  if (!isAcceptMode(mode)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACCEPT_MODE",
+      `Invalid acceptMode: ${String(mode)}.`
+    );
+  }
+  if (mode === "auto-accept") {
+    return { autoIntegrate: true, integrationMode: "auto-accept", enterSubmitted: false };
+  }
+  if (mode === "review-required") {
+    if (decision === "integrate") {
+      throw new TaskLifecycleError(
+        "POLICY_FORBIDS_AUTO_INTEGRATE",
+        "acceptMode=review-required forbids decision=integrate; use request-review or change mode."
+      );
+    }
+    return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
+  }
+  if (!decision) {
+    throw new TaskLifecycleError(
+      "DECISION_REQUIRED",
+      "acceptMode=agent-decide requires decision: integrate | request-review."
+    );
+  }
+  if (decision === "integrate") {
+    return {
+      autoIntegrate: true,
+      integrationMode: "agent-decided-integrate",
+      enterSubmitted: false
+    };
+  }
+  return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
+}
+function assertReviewAuthority(input) {
+  const actor = input.actor.trim();
+  const executorRoleId = input.executorRoleId?.trim();
+  const action = input.action ?? "accept";
+  if (!actor) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires a non-empty actor.`
+    );
+  }
+  if (executorRoleId && actor === executorRoleId) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.${action} actor must not equal executing Role (${executorRoleId}).`
+    );
+  }
+  const requester = input.requester;
+  if (!requester) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires an explicit Task.requester.`
+    );
+  }
+  if (requester.kind === "user") {
+    if (actor === requester.id && actor === "user") return;
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} on user-reviewed task requires actor user; got ${actor}.`
+    );
+  }
+  if (actor === requester.id) return;
+  throw new TaskLifecycleError(
+    "REVIEW_FORBIDDEN",
+    `task.${action} requires actor equal to requester role (${requester.id}); got ${actor}.`
+  );
+}
+
+// src/core/canonical-digest.ts
+import { createHash as createHash2 } from "node:crypto";
+function sortForCanonical(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortForCanonical);
+  const object = value;
+  const sorted = {};
+  for (const key2 of Object.keys(object).sort(compareCodeUnits)) {
+    const item = object[key2];
+    if (item === void 0) continue;
+    sorted[key2] = sortForCanonical(item);
+  }
+  return sorted;
+}
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function canonicalJson(value) {
+  return JSON.stringify(sortForCanonical(value));
+}
+function sha256Hex(text3) {
+  return createHash2("sha256").update(text3, "utf8").digest("hex");
+}
+function canonicalSha256(value) {
+  return sha256Hex(canonicalJson(value));
+}
+
+// src/core/task-node-selection.ts
+var TaskNodeSelectionError = class extends Error {
+  constructor(message2) {
+    super(message2);
+    this.name = "TaskNodeSelectionError";
+  }
+};
+function normalizeNodeIds(value, field) {
+  if (!Array.isArray(value)) {
+    throw new TaskNodeSelectionError(`Task ${field} must be an array.`);
+  }
+  const ids = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    if (typeof item !== "string" || item !== item.trim() || item !== item.toLowerCase() || !isNodeId(item)) {
+      throw new TaskNodeSelectionError(
+        `Task ${field} must contain canonical lowercase cx-* Node ids.`
+      );
+    }
+    if (seen.has(item)) {
+      throw new TaskNodeSelectionError(`Task ${field} contains duplicate Node id: ${item}.`);
+    }
+    seen.add(item);
+    ids.push(item);
+  }
+  return ids;
+}
+function normalizeTaskNodeSelection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskNodeSelectionError("Task Node selection must be an object.");
+  }
+  const record = value;
+  const expected = /* @__PURE__ */ new Set(["nodeIds"]);
+  if (Object.keys(record).some((key2) => !expected.has(key2))) {
+    throw new TaskNodeSelectionError("Task Node selection contains unknown fields.");
+  }
+  const nodeIds = normalizeNodeIds(record.nodeIds, "nodeIds");
+  return { nodeIds };
+}
+function orderedTaskNodeIds(selection) {
+  const normalized = normalizeTaskNodeSelection(selection);
+  return [...normalized.nodeIds];
+}
+
+// src/core/task-node-snapshot.ts
+var TaskNodeSnapshotError = class extends Error {
+  constructor(message2) {
+    super(message2);
+    this.name = "TaskNodeSnapshotError";
+  }
+};
+function normalizeNodePath(value) {
+  const path23 = value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!path23 || path23.startsWith("/") || /^[a-zA-Z]:/.test(path23) || path23.split("/").some((segment) => segment === ".." || segment === "")) {
+    throw new TaskNodeSnapshotError("Task Node snapshot path must be a canonical relative Node path.");
+  }
+  return path23;
+}
+function normalizeTags2(value) {
+  if (!Array.isArray(value)) {
+    throw new TaskNodeSnapshotError("Task Node snapshot tags must be an array.");
+  }
+  const tags = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new TaskNodeSnapshotError("Task Node snapshot tags must contain non-empty strings.");
+    }
+    const tag = item.trim();
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+function normalizeTaskNodeSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskNodeSnapshotError("Task Node snapshot must be an object.");
+  }
+  const record = value;
+  const expected = /* @__PURE__ */ new Set(["id", "path", "type", "tags", "archived", "body", "etag"]);
+  if (Object.keys(record).some((key2) => !expected.has(key2))) {
+    throw new TaskNodeSnapshotError("Task Node snapshot contains unknown fields.");
+  }
+  if (typeof record.id !== "string" || record.id !== record.id.trim() || record.id !== record.id.toLowerCase() || !isNodeId(record.id)) {
+    throw new TaskNodeSnapshotError("Task Node snapshot id must be a canonical cx-* Node id.");
+  }
+  if (typeof record.path !== "string") {
+    throw new TaskNodeSnapshotError("Task Node snapshot path must be a string.");
+  }
+  if (typeof record.type !== "string" || !record.type.trim()) {
+    throw new TaskNodeSnapshotError("Task Node snapshot type must be a non-empty string.");
+  }
+  if (typeof record.body !== "string") {
+    throw new TaskNodeSnapshotError("Task Node snapshot body must be a string.");
+  }
+  if (typeof record.archived !== "boolean") {
+    throw new TaskNodeSnapshotError("Task Node snapshot archived must be a boolean.");
+  }
+  if (typeof record.etag !== "string" || !/^[a-f0-9]{24}$/.test(record.etag)) {
+    throw new TaskNodeSnapshotError("Task Node snapshot etag must be a canonical content etag.");
+  }
+  return {
+    id: record.id.trim(),
+    path: normalizeNodePath(record.path),
+    type: record.type.trim(),
+    tags: normalizeTags2(record.tags),
+    archived: record.archived,
+    body: record.body,
+    etag: record.etag
+  };
+}
+function captureTaskNodeSnapshot(node2, etag) {
+  return normalizeTaskNodeSnapshot({
+    id: node2.id,
+    path: node2.path,
+    type: node2.type,
+    tags: node2.tags,
+    archived: node2.archived,
+    body: node2.body,
+    etag
+  });
+}
+function normalizeTaskNodeSnapshots(value, selection) {
+  if (!Array.isArray(value)) {
+    throw new TaskNodeSnapshotError("Task Node snapshots must be an array.");
+  }
+  const snapshots = value.map(normalizeTaskNodeSnapshot);
+  const rootIds = orderedTaskNodeIds(selection);
+  const seen = /* @__PURE__ */ new Set();
+  for (const snapshot of snapshots) {
+    if (seen.has(snapshot.id)) {
+      throw new TaskNodeSnapshotError(`Task Node snapshots contain duplicate Node id: ${snapshot.id}.`);
+    }
+    seen.add(snapshot.id);
+  }
+  if (rootIds.length === 0) {
+    if (snapshots.length !== 0) {
+      throw new TaskNodeSnapshotError(
+        "Prompt-only Task Node snapshots must be empty when nodeIds is empty."
+      );
+    }
+    return snapshots;
+  }
+  const snapshotIndexById = new Map(snapshots.map((snapshot, index2) => [snapshot.id, index2]));
+  const rootPaths = /* @__PURE__ */ new Map();
+  let previousRootIndex = -1;
+  for (const rootId of rootIds) {
+    const index2 = snapshotIndexById.get(rootId);
+    if (index2 === void 0) {
+      throw new TaskNodeSnapshotError(
+        `Task Node snapshots must include every selected root Node id: ${rootId}.`
+      );
+    }
+    if (index2 <= previousRootIndex) {
+      throw new TaskNodeSnapshotError(
+        "Task Node snapshots must preserve the ordered root nodeIds[] sequence."
+      );
+    }
+    rootPaths.set(rootId, snapshots[index2].path);
+    previousRootIndex = index2;
+  }
+  const selectedRootPaths = [...rootPaths.values()];
+  for (const snapshot of snapshots) {
+    const underSelectedRoot = selectedRootPaths.some(
+      (rootPath) => snapshot.path === rootPath || snapshot.path.startsWith(`${rootPath}/`)
+    );
+    if (!underSelectedRoot) {
+      throw new TaskNodeSnapshotError(
+        `Task Node snapshots must stay within the selected root subtrees: ${snapshot.path}.`
+      );
+    }
+  }
+  return snapshots;
+}
+
+// src/core/task-node-context.ts
+var TaskNodeContextError = class extends Error {
+  constructor(message2, cause) {
+    super(message2);
+    this.name = "TaskNodeContextError";
+    this.cause = cause;
+  }
+};
+function normalizeTaskNodeContext(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskNodeContextError("Task Node context must be an object.");
+  }
+  const record = value;
+  const expected = /* @__PURE__ */ new Set(["nodeIds", "nodeSnapshots"]);
+  if (Object.keys(record).some((key2) => !expected.has(key2))) {
+    throw new TaskNodeContextError("Task Node context contains unknown fields.");
+  }
+  try {
+    const selection = normalizeTaskNodeSelection({
+      nodeIds: record.nodeIds
+    });
+    return {
+      ...selection,
+      nodeSnapshots: normalizeTaskNodeSnapshots(record.nodeSnapshots, selection)
+    };
+  } catch (error) {
+    throw new TaskNodeContextError(
+      error instanceof Error ? error.message : "Invalid Task Node context.",
+      error
+    );
+  }
+}
+
+// src/core/task-context-card-schema.ts
+var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v3";
+var TaskContextCardSchemaError = class extends Error {
+  constructor(message2, cause) {
+    super(message2);
+    this.name = "TaskContextCardSchemaError";
+    this.cause = cause;
+  }
+};
+function normalizeTaskContextCard(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskContextCardSchemaError("Task Context Card must be an object.");
+  }
+  const record = value;
+  const expected = /* @__PURE__ */ new Set([
+    "schemaVersion",
+    "nodeIds",
+    "nodeSnapshots",
+    "contextGeneration"
+  ]);
+  if (Object.keys(record).some((key2) => !expected.has(key2))) {
+    throw new TaskContextCardSchemaError("Task Context Card contains retired or unknown fields.");
+  }
+  if (record.schemaVersion !== TASK_CONTEXT_CARD_SCHEMA_VERSION) {
+    throw new TaskContextCardSchemaError(
+      `Task Context Card schemaVersion must be ${TASK_CONTEXT_CARD_SCHEMA_VERSION}.`
+    );
+  }
+  if (record.contextGeneration !== void 0 && (typeof record.contextGeneration !== "string" || !/^cg-v1-[a-f0-9]{64}$/.test(record.contextGeneration))) {
+    throw new TaskContextCardSchemaError(
+      "Task Context Card contextGeneration must be a canonical cg-v1 digest when present."
+    );
+  }
+  try {
+    const nodeContext = normalizeTaskNodeContext({
+      nodeIds: record.nodeIds,
+      nodeSnapshots: record.nodeSnapshots
+    });
+    return {
+      schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+      ...nodeContext,
+      ...record.contextGeneration !== void 0 ? { contextGeneration: record.contextGeneration } : {}
+    };
+  } catch (error) {
+    throw new TaskContextCardSchemaError(
+      error instanceof Error ? error.message : "Invalid Task Node context.",
+      error
+    );
+  }
+}
+function buildTaskContextCardRecord(input) {
+  const nodeContext = normalizeTaskNodeContext({
+    nodeIds: input.nodeIds,
+    nodeSnapshots: input.nodeSnapshots
+  });
+  return normalizeTaskContextCard({
+    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    ...nodeContext,
+    ...input.contextGeneration ? { contextGeneration: input.contextGeneration } : {}
+  });
+}
+function serializeTaskContextCard(card) {
+  const normalized = normalizeTaskContextCard(card);
+  return {
+    schemaVersion: normalized.schemaVersion,
+    nodeIds: [...normalized.nodeIds],
+    nodeSnapshots: normalized.nodeSnapshots.map((snapshot) => ({
+      ...snapshot,
+      tags: [...snapshot.tags]
+    })),
+    ...normalized.contextGeneration ? { contextGeneration: normalized.contextGeneration } : {}
+  };
+}
+function formatTaskContextCardMarkdown(card) {
+  const normalized = normalizeTaskContextCard(card);
+  const lines = [
+    "Tent Task Context Card v3",
+    `nodeIds: ${normalized.nodeIds.join(", ") || "(none)"}`,
+    ...normalized.contextGeneration ? [`contextGeneration: ${normalized.contextGeneration}`] : []
+  ];
+  for (const snapshot of normalized.nodeSnapshots) {
+    lines.push(
+      "",
+      `--- Node ${snapshot.id} ---`,
+      `path: ${snapshot.path}`,
+      `type: ${snapshot.type}`,
+      `archived: ${snapshot.archived ? "true" : "false"}`,
+      `tags: ${snapshot.tags.join(", ") || "(none)"}`,
+      `etag: ${snapshot.etag}`,
+      "body:",
+      snapshot.body
+    );
+  }
+  return lines.join("\n").trimEnd();
+}
+
+// src/core/task-context-card.ts
+var CONTEXT_GENERATION_VERSION = "v1";
+var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, Task authority, Node context, or chat-memory continuity. Final report goes through TaskResult only.";
+var INTEGRATION_MUTATOR_SERVICE = "service";
+var CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
+  "taskId",
+  "taskPath",
+  "objective",
+  "acceptance",
+  "prompt",
+  "taskInputDelta"
+];
+var TaskContextCardError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.name = "TaskContextCardError";
+    this.code = code;
+    this.details = details;
+  }
+};
+function formatContextGeneration(stableCanonicalBytes) {
+  return `cg-${CONTEXT_GENERATION_VERSION}-${sha256Hex(stableCanonicalBytes)}`;
+}
+function isContextGenerationId(value) {
+  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
+}
+function computeContextGeneration(inputs) {
+  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
+  const payload = {
+    v: CONTEXT_GENERATION_VERSION,
+    workspaceIdentity: inputs.workspaceIdentity.trim(),
+    agentsPointerDigest: inputs.agentsPointerDigest.trim(),
+    tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
+    rolePrompt: inputs.rolePrompt?.trim() || "",
+    tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
+    connectionAdapterCompatibility: inputs.connectionAdapterCompatibility?.trim() || "",
+    extraStable
+  };
+  return formatContextGeneration(canonicalJson(payload));
+}
+function sanitizeContextGenerationExtraStable(extra) {
+  const out = {};
+  if (!extra) return out;
+  const forbidden = new Set(
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
+  );
+  for (const key2 of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
+    if (forbidden.has(key2.toLowerCase())) continue;
+    const v = extra[key2];
+    if (v === void 0) continue;
+    out[key2] = v;
+  }
+  return out;
+}
+function agentsBodyCompatibilityDigest(agentsBody) {
+  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
+}
+function skillBodyCompatibilityDigest(input) {
+  return sha256Hex(
+    canonicalJson({
+      name: input.name?.trim() || "",
+      version: input.version?.trim() || "",
+      body: input.body
+    })
+  );
+}
+function computeContextGenerationFromStableFacts(input) {
+  const tentRoleDigest = input.tentRoleBody !== void 0 ? skillBodyCompatibilityDigest({
+    body: input.tentRoleBody,
+    version: input.tentRoleVersion,
+    name: "tent-role"
+  }) : "";
+  const tentTaskDigest = input.tentTaskBody !== void 0 ? skillBodyCompatibilityDigest({
+    body: input.tentTaskBody,
+    version: input.tentTaskVersion,
+    name: "tent-task"
+  }) : "";
+  return computeContextGeneration({
+    workspaceIdentity: input.workspaceIdentity,
+    agentsPointerDigest: input.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(input.agentsBody),
+    tentRoleDigest: tentRoleDigest || void 0,
+    tentRoleVersion: input.tentRoleVersion,
+    rolePrompt: input.rolePrompt,
+    tentTaskDigest: tentTaskDigest || void 0,
+    tentTaskVersion: input.tentTaskVersion,
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: input.connectionId,
+      adapterId: input.adapterId,
+      capabilityFlags: input.capabilityFlags,
+      launchDigest: input.connectionLaunchDigest
+    }),
+    extraStable: {
+      ...input.roleId ? { roleId: input.roleId } : {},
+      ...input.connectionLaunchDigest?.trim() ? { connectionLaunchDigest: input.connectionLaunchDigest.trim() } : {},
+      ...input.extraStable
+    }
+  });
+}
+function buildTaskContextCard(input) {
+  const retired = [
+    "objective",
+    "frozenDecisions",
+    "scope",
+    "acceptance",
+    "refs"
+  ];
+  const record = input;
+  const retiredField = retired.find((field) => field in record);
+  if (retiredField) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      `Task Context Card field ${retiredField} is retired; use frozen Node snapshots.`,
+      { retiredField }
+    );
+  }
+  if (input.contextGeneration && !isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
+  try {
+    return buildTaskContextCardRecord(input);
+  } catch (error) {
+    if (error instanceof TaskContextCardError) throw error;
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      error instanceof Error ? error.message : "Invalid Task Context Card.",
+      { cause: error }
+    );
+  }
+}
+function parseTaskContextCard(data) {
+  try {
+    return normalizeTaskContextCard(data);
+  } catch (error) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      error instanceof Error ? error.message : "Invalid Task Context Card.",
+      { cause: error }
+    );
+  }
+}
+function loadTaskContextCardFromFrontmatter(data) {
+  if (data.contextCard !== void 0 && data.contextCard !== null) {
+    return parseTaskContextCard(data.contextCard);
+  }
+  return null;
+}
+function serializeTaskContextCardForFrontmatter(card) {
+  return serializeTaskContextCard(card);
+}
+function formatTaskContextCardPrompt(card) {
+  return formatTaskContextCardMarkdown(card);
+}
+function formatTaskPackage(input) {
+  const card = parseTaskContextCard(input.contextCard);
+  const packageCard = { ...card };
+  delete packageCard.contextGeneration;
+  const prompt = input.prompt?.trim() || "";
+  if (!prompt) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Task Package requires a non-empty prompt."
+    );
+  }
+  const parts = [
+    "--- Tent Task Package ---",
+    formatTaskContextCardPrompt(packageCard)
+  ];
+  if (input.taskPointers?.trim()) {
+    parts.push("", input.taskPointers.trim());
+  }
+  parts.push(
+    "",
+    "## Prompt",
+    "",
+    prompt
+  );
+  return parts.join("\n");
+}
+function formatStableProjectContext(input) {
+  return [
+    "Tent stable project context v1",
+    `workspaceRoot: ${input.workspaceRoot}`,
+    `systemRoot: ${input.systemRoot}`,
+    `AGENTS: ${input.agentsPointer}`,
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent).",
+    "Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp."
+  ].join("\n");
+}
+function formatDynamicDelta(input) {
+  const taskPackage2 = input.taskPackage ?? "";
+  if (!taskPackage2.trim()) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Managed prompt assembly requires a non-empty canonical Task Package."
+    );
+  }
+  const wrapper = input.dynamicWrapper?.trim();
+  if (!wrapper) {
+    return { taskPackage: taskPackage2, dynamicDelta: taskPackage2 };
+  }
+  return {
+    taskPackage: taskPackage2,
+    dynamicDelta: `${taskPackage2}
+
+${wrapper}`
+  };
+}
+function assembleManagedPrompt(input) {
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
+  const includeStablePrefix = input.includeStablePrefix !== false;
+  const { taskPackage: taskPackage2, dynamicDelta } = formatDynamicDelta(input);
+  if (!includeStablePrefix) {
+    return {
+      text: dynamicDelta + "\n",
+      contextGeneration: input.contextGeneration,
+      includedStablePrefix: false,
+      stablePrefix: "",
+      taskPackage: taskPackage2,
+      dynamicDelta
+    };
+  }
+  const stableParts = [
+    MANAGED_BOOTSTRAP_INVARIANT,
+    formatStableProjectContext(input)
+  ];
+  if (input.tentRoleSection?.trim()) {
+    stableParts.push(input.tentRoleSection.trim());
+  }
+  if (input.rolePromptSection?.trim()) {
+    stableParts.push(input.rolePromptSection.trim());
+  }
+  if (input.tentTaskSection?.trim()) {
+    stableParts.push(input.tentTaskSection.trim());
+  }
+  const stablePrefix = stableParts.join("\n\n");
+  const text3 = `${stablePrefix}
+
+${dynamicDelta}
+`;
+  return {
+    text: text3,
+    contextGeneration: input.contextGeneration,
+    includedStablePrefix: true,
+    stablePrefix,
+    taskPackage: taskPackage2,
+    dynamicDelta
+  };
+}
+function decideStablePrefixInjection(input) {
+  const currentGen = input.currentContextGeneration?.trim() || "";
+  if (!isContextGenerationId(currentGen)) {
+    return {
+      includeStablePrefix: true,
+      reason: "current_context_generation_invalid_or_missing"
+    };
+  }
+  const prior = input.sessionContextGeneration?.trim() || "";
+  if (!prior) {
+    return { includeStablePrefix: true, reason: "session_has_no_context_generation" };
+  }
+  if (!isContextGenerationId(prior)) {
+    return {
+      includeStablePrefix: true,
+      reason: "session_context_generation_invalid"
+    };
+  }
+  if (prior !== currentGen) {
+    return {
+      includeStablePrefix: true,
+      reason: "context_generation_mismatch"
+    };
+  }
+  return {
+    includeStablePrefix: false,
+    reason: "same_context_generation"
+  };
+}
+function shouldInjectStablePrefix(input) {
+  return decideStablePrefixInjection(input).includeStablePrefix;
+}
+function connectionAdapterCompatibilityDigest(input) {
+  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return sha256Hex(
+    canonicalJson({
+      connectionId: input.connectionId.trim(),
+      adapterId: input.adapterId.trim(),
+      flags,
+      launchDigest: input.launchDigest?.trim() || ""
+    })
+  );
+}
+function deriveIntegrationAuthority(input) {
+  try {
+    const requester = parseTaskActorRef(input.requester, "requester");
+    return {
+      actor: { kind: requester.kind, id: requester.id },
+      mutator: INTEGRATION_MUTATOR_SERVICE
+    };
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        requester: input.requester
+      });
+    }
+    throw err;
+  }
+}
+function assertIntegrationAuthorityMatchesParent(authority, requester) {
+  const derived = deriveIntegrationAuthority({ requester });
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      "integrationAuthority must be { actor, mutator: service } derived from requester.",
+      { authority }
+    );
+  }
+  const raw = authority;
+  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
+      { authority }
+    );
+  }
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "requester");
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
+    }
+    throw err;
+  }
+  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.actor must equal Task requester (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      { authority, derived }
+    );
+  }
+  return derived;
+}
+function projectExecutionLaneFromTask(task) {
+  const baseCommit = typeof task.baseCommit === "string" && task.baseCommit.trim() ? task.baseCommit.trim() : "";
+  const targetBranch = typeof task.targetBranch === "string" ? task.targetBranch.trim() : "";
+  const branch = typeof task.branch === "string" ? task.branch.trim() : "";
+  const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
+  let integrationAuthority;
+  if (task.requester) {
+    integrationAuthority = deriveIntegrationAuthority({ requester: task.requester });
+  }
+  if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
+    return void 0;
+  }
+  const out = {};
+  if (baseCommit) out.baseCommit = baseCommit;
+  if (targetBranch) out.targetBranch = targetBranch;
+  if (branch) out.branch = branch;
+  if (worktree) out.worktree = worktree;
+  if (integrationAuthority) out.integrationAuthority = integrationAuthority;
+  return out;
+}
+function formatExecutionLanePrompt(lane) {
+  if (!lane) return "";
+  const lines = ["executionLane (derived projection \u2014 Task workspaceLane is truth):"];
+  if (lane.baseCommit) lines.push(`  baseCommit: ${lane.baseCommit}`);
+  if (lane.targetBranch) lines.push(`  targetBranch: ${lane.targetBranch}`);
+  if (lane.branch) lines.push(`  branch: ${lane.branch}`);
+  if (lane.worktree) lines.push(`  worktree: ${lane.worktree}`);
+  if (lane.integrationAuthority) {
+    const a = lane.integrationAuthority.actor;
+    lines.push(
+      `  integrationAuthority.actor: ${a.kind}:${a.id}`,
+      `  integrationAuthority.mutator: ${lane.integrationAuthority.mutator}`
+    );
+  }
+  return lines.join("\n");
+}
+var ExecutorLaneHistoryError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.name = "ExecutorLaneHistoryError";
+    this.code = code;
+    this.details = details;
+  }
+};
+function assertOrdinaryExecutorLaneHistory(input) {
+  const base = input.baseCommit?.trim() || "";
+  const tip = input.tipCommit?.trim() || "";
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready TaskResult)."
+    );
+  }
+  if (!tip) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_TIP",
+      "Executor lane history gate requires tip commit (fail-loud; no ready TaskResult)."
+    );
+  }
+  const commits = input.commits ?? [];
+  if (commits.length === 0) {
+    if (base !== tip) {
+      throw new ExecutorLaneHistoryError(
+        "TIP_MISMATCH",
+        `Executor lane has no commits in base..tip but tip ${tip} !== base ${base}.`,
+        { base, tip }
+      );
+    }
+    return;
+  }
+  const first = commits[0];
+  if (!first.sha?.trim()) {
+    throw new ExecutorLaneHistoryError(
+      "FOREIGN_ANCESTRY",
+      "Executor lane history contains a commit with empty sha.",
+      { index: 0 }
+    );
+  }
+  if (!first.parents || first.parents.length === 0) {
+    throw new ExecutorLaneHistoryError(
+      "EMPTY_PARENT",
+      `Executor lane commit ${first.sha} has no parents (unexpected root in task range).`,
+      { sha: first.sha }
+    );
+  }
+  if (first.parents.length !== 1) {
+    throw new ExecutorLaneHistoryError(
+      "MERGE_COMMIT",
+      `Unauthorized merge commit on ordinary executor lane: ${first.sha} has ${first.parents.length} parents (no ready TaskResult; lane/audit preserved).`,
+      { sha: first.sha, parents: first.parents }
+    );
+  }
+  if (first.parents[0] !== base) {
+    throw new ExecutorLaneHistoryError(
+      "BASE_NOT_FIRST_PARENT",
+      `Recorded baseCommit ${base} is not the exact first parent of the first Task commit ${first.sha} (parent=${first.parents[0]}). Unauthorized foreign ancestry; no ready TaskResult.`,
+      { base, firstSha: first.sha, firstParent: first.parents[0] }
+    );
+  }
+  let prev = first.sha;
+  for (let i = 0; i < commits.length; i++) {
+    const c = commits[i];
+    const sha = c.sha?.trim() || "";
+    if (!sha) {
+      throw new ExecutorLaneHistoryError(
+        "FOREIGN_ANCESTRY",
+        `Executor lane history contains a commit with empty sha at index ${i}.`,
+        { index: i }
+      );
+    }
+    const parents = c.parents ?? [];
+    if (parents.length === 0) {
+      throw new ExecutorLaneHistoryError(
+        "EMPTY_PARENT",
+        `Executor lane commit ${sha} has no parents.`,
+        { sha, index: i }
+      );
+    }
+    if (parents.length !== 1) {
+      throw new ExecutorLaneHistoryError(
+        "MERGE_COMMIT",
+        `Unauthorized merge commit on ordinary executor lane: ${sha} has ${parents.length} parents (executor must not merge parent/target/dependency; no ready TaskResult).`,
+        { sha, parents, index: i }
+      );
+    }
+    if (i > 0 && parents[0] !== prev) {
+      throw new ExecutorLaneHistoryError(
+        "FOREIGN_ANCESTRY",
+        `Executor lane commit ${sha} first parent ${parents[0]} is not prior tip ${prev} (foreign ancestry / non-linear history; no ready TaskResult).`,
+        { sha, firstParent: parents[0], expectedParent: prev, index: i }
+      );
+    }
+    prev = sha;
+  }
+  if (prev !== tip) {
+    throw new ExecutorLaneHistoryError(
+      "TIP_MISMATCH",
+      `Executor lane tip ${tip} does not match last commit in base..tip range ${prev}.`,
+      { tip, last: prev, base }
+    );
+  }
+}
+
+// src/core/task.ts
+async function loadTaskRecords(fs21) {
+  const tasks = [];
+  if (!await fs21.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs21.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name !== ROLES_TEMP_DIR && entry.name !== SESSIONS_TEMP_DIR) continue;
+    const ownerRoot = join(TEMP_DIR, entry.name);
+    for (const ownerEntry of await fs21.listDir(ownerRoot)) {
+      if (!ownerEntry.isDir) continue;
+      await collectTaskFiles(fs21, join(ownerRoot, ownerEntry.name, "tasks"), tasks);
+    }
+  }
+  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function collectTaskFiles(fs21, taskDir, tasks) {
+  if (!await fs21.exists(taskDir)) return;
+  for (const entry of await fs21.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path23 = join(taskDir, entry.name);
+    tasks.push(await loadTaskRecord(fs21, path23));
+  }
+}
+function taskParentRoleId(task) {
+  return task.requester?.kind === "role" ? task.requester.id : void 0;
+}
+function serializeTaskActorRef(actor) {
+  return { kind: actor.kind, id: actor.id };
+}
+function serializeBaseCommitCapture(capture) {
+  return {
+    source: capture.source,
+    baseCommit: capture.baseCommit,
+    actor: serializeTaskActorRef(capture.actor),
+    capturedAt: capture.capturedAt
+  };
+}
+function assertIsoTimestamp(value, label) {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+var TASK_STATUS_DETAIL_REPORT_MAX_BYTES = 64 * 1024;
+var TASK_STATUS_DETAIL_ERROR_MAX_BYTES = 8 * 1024;
+var TASK_STATUS_DETAIL_CODE_MAX_BYTES = 128;
+function parseTaskStatusDetail(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Task statusDetail must be an object.");
+  }
+  const raw = value;
+  const allowed = /* @__PURE__ */ new Set(["kind", "report", "error", "code", "at", "executionSessionId"]);
+  if (Object.keys(raw).some((key2) => !allowed.has(key2))) {
+    throw new Error("Task statusDetail contains unknown fields.");
+  }
+  const kind = raw.kind;
+  if (kind !== "blocked" && kind !== "failed") {
+    throw new Error("Task statusDetail.kind must be blocked or failed.");
+  }
+  const report = parseBoundedTaskStatusDetailString(
+    raw.report,
+    "report",
+    TASK_STATUS_DETAIL_REPORT_MAX_BYTES
+  );
+  const error = parseBoundedTaskStatusDetailString(
+    raw.error,
+    "error",
+    TASK_STATUS_DETAIL_ERROR_MAX_BYTES
+  );
+  if (!report && !error) {
+    throw new Error("Task statusDetail requires report or error.");
+  }
+  const code = parseBoundedTaskStatusDetailString(
+    raw.code,
+    "code",
+    TASK_STATUS_DETAIL_CODE_MAX_BYTES
+  );
+  if (code && !/^[A-Za-z0-9_.:-]+$/.test(code)) {
+    throw new Error("Task statusDetail.code must be a stable machine identifier.");
+  }
+  const at = raw.at === void 0 ? void 0 : assertIsoTimestamp(String(raw.at), "Task statusDetail.at");
+  const executionSessionId = raw.executionSessionId === void 0 ? void 0 : String(raw.executionSessionId).trim();
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task statusDetail.executionSessionId: ${executionSessionId}.`);
+  }
+  return {
+    kind,
+    ...report ? { report } : {},
+    ...error ? { error } : {},
+    ...code ? { code } : {},
+    ...at ? { at } : {},
+    ...executionSessionId ? { executionSessionId } : {}
+  };
+}
+function parseBoundedTaskStatusDetailString(value, field, maxBytes) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "string") {
+    throw new Error(`Task statusDetail.${field} must be a string.`);
+  }
+  const text3 = value.trim();
+  if (!text3) return void 0;
+  const bytes = Buffer2.byteLength(text3, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`Task statusDetail.${field} exceeds ${maxBytes} UTF-8 bytes.`);
+  }
+  return text3;
+}
+function parseBaseCommitCapture(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value;
+  const source = raw.source;
+  if (source !== "first-claim") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim; got ${String(source)}.`
+    );
+  }
+  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "requester");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task requester/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
+function resolveDispatchRequester(input) {
+  if (!input.requester) {
+    throw new Error(
+      "task.dispatch requires explicit requester { kind, id }."
+    );
+  }
+  return parseTaskActorRef(input.requester, "requester");
+}
+async function loadTaskRecord(fs21, path23) {
+  if (!await fs21.exists(path23)) throw new Error(`Task record not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs21.readFile(path23));
+  assertNoRetiredTaskAuthorityFields(data);
+  if (data.type !== "task" || typeof data.manifest !== "string") {
+    throw new Error(`Invalid task record format: ${path23}.`);
+  }
+  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
+  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error(`Invalid Task record format: ${path23} (assigneeRoleId or executionSessionId is required).`);
+  }
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) {
+    throw new Error(`Invalid Task record format: ${path23} (invalid assigneeRoleId).`);
+  }
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task record format: ${path23} (invalid executionSessionId).`);
+  }
+  const normalizedTaskPath = path23.replace(/\\/g, "/");
+  const authoritativeOwnerDir = assigneeRoleId ? `temp/${ROLES_TEMP_DIR}/${assigneeRoleId}/tasks/` : void 0;
+  const sessionOwnerMatch = normalizedTaskPath.match(
+    new RegExp(`^temp/${SESSIONS_TEMP_DIR}/([^/]+)/tasks/`)
+  );
+  const ownerIsValid = assigneeRoleId ? normalizedTaskPath.startsWith(authoritativeOwnerDir) : !!sessionOwnerMatch && isSessionId(sessionOwnerMatch[1]);
+  if (!ownerIsValid) {
+    throw new Error(
+      `Invalid Task record owner namespace: ${path23}.`
+    );
+  }
+  if (typeof data.id !== "string" || !isTaskId(data.id)) {
+    throw new Error(`Invalid task record format: ${path23} (canonical task id is required).`);
+  }
+  const state = parseTaskState(data.state);
+  const requester = resolveRequesterFromDisk(data);
+  const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
+  if (!contextCard) {
+    throw new Error(
+      `Invalid task record format: ${path23} (missing Task Context Card).`
+    );
+  }
+  if (!isAcceptMode(data.acceptMode)) {
+    throw new Error(
+      `Invalid task record format: ${path23} (acceptMode must be review-required, auto-accept, or agent-decide).`
+    );
+  }
+  const prompt = body.trim();
+  if (!prompt) {
+    throw new Error(`Invalid Task record format: ${path23} (non-empty prompt is required).`);
+  }
+  const task = {
+    path: path23,
+    ...assigneeRoleId ? { assigneeRoleId } : {},
+    ...executionSessionId ? { executionSessionId } : {},
+    manifest: data.manifest,
+    state,
+    id: data.id,
+    requester,
+    prompt,
+    contextCard,
+    nodeIds: contextCard.nodeIds,
+    nodeSnapshots: contextCard.nodeSnapshots,
+    acceptMode: data.acceptMode
+  };
+  if (typeof data.workspace === "string") task.workspace = data.workspace;
+  if (typeof data.worktree === "string") task.worktree = data.worktree;
+  if (typeof data.branch === "string") task.branch = data.branch;
+  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
+  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
+    task.baseCommit = data.baseCommit.trim();
+  }
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task record format: ${path23} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task record format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.requester) {
+    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+      data.integrationAuthority,
+      task.requester
+    );
+  }
+  task.contextGeneration = contextCard.contextGeneration;
+  if (data.currentResultId !== void 0) {
+    if (typeof data.currentResultId !== "string" || data.currentResultId !== data.currentResultId.trim() || !isTaskResultId(data.currentResultId)) {
+      throw new Error(`Invalid Task currentResultId: ${String(data.currentResultId)}.`);
+    }
+    task.currentResultId = data.currentResultId;
+  }
+  const statusDetail = parseTaskStatusDetail(data.statusDetail);
+  if (statusDetail) task.statusDetail = statusDetail;
+  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
+  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
+  const wait = parseWaitFields(data);
+  if (wait) task.wait = wait;
+  return task;
+}
+function resolveRequesterFromDisk(data) {
+  if (data.requester === void 0 || data.requester === null) {
+    throw new Error("Invalid Task record: missing requester.");
+  }
+  return parseTaskActorRef(data.requester, "requester");
+}
+function assertNoRetiredTaskAuthorityFields(data) {
+  for (const field of ["reviewer", "dispatchedBy"]) {
+    if (Object.prototype.hasOwnProperty.call(data, field)) {
+      throw new Error(`Invalid Task record: retired ${field} field; use requester.`);
+    }
+  }
+}
+function resolveTaskPromptRoots(roots) {
+  if (typeof roots !== "string") {
+    return {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot
+    };
+  }
+  const systemRoot = roots;
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base = normalized.split(/[\\/]/).pop() ?? "";
+  const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
+  return { workspaceRoot, systemRoot };
+}
+function formatTaskPackagePointers(task) {
+  const lines = [
+    `Task record: ${task.path}`,
+    `Manifest: ${task.manifest}`
+  ];
+  if (task.id) {
+    lines.push(`Task id: ${task.id}`);
+  }
+  lines.push(`nodeIds: ${task.nodeIds.join(", ") || "(none)"}`);
+  if (task.requester) {
+    lines.push(
+      `requester: ${task.requester.kind}:${task.requester.id}`
+    );
+  }
+  lines.push(`acceptMode: ${task.acceptMode}`);
+  if (task.assigneeRoleId) {
+    lines.push(`assigneeRoleId: ${task.assigneeRoleId}`);
+  }
+  if (!task.assigneeRoleId) lines.push(`Session-only execution (no durable Role responsibility).`);
+  return lines.join("\n");
+}
+function taskPackageForTask(task) {
+  const prompt = extractTaskPrompt(task);
+  if (!prompt) throw new Error(`Task Package requires a non-empty prompt: ${task.path}.`);
+  const pointerSections = [formatTaskPackagePointers(task)];
+  const executionLane = formatExecutionLanePrompt(projectExecutionLaneFromTask(task));
+  if (executionLane) {
+    pointerSections.push(executionLane);
+  }
+  pointerSections.push(
+    "TaskResult contract: a non-empty final report is the normal success path.",
+    "When applicable, include commits, checks, and artifact refs in the same TaskResult.",
+    "Never self-accept."
+  );
+  return formatTaskPackage({
+    contextCard: task.contextCard,
+    taskPointers: pointerSections.join("\n"),
+    prompt
+  });
+}
+function formatExternalPathBlock(task, roots) {
+  const taskFile = join(".tent", task.path);
+  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
+  return [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} \u2014 never <workspaceRoot>/temp.`
+  ].join("\n");
+}
+function relayPromptForTask(task, roots) {
+  const resolved = resolveTaskPromptRoots(roots);
+  const assigneeLine = task.assigneeRoleId ? `A Tent task has been handed to Role ${task.assigneeRoleId}.
+` : `A Tent task is bound to Session ${task.executionSessionId}.
+`;
+  const initStep = task.assigneeRoleId ? `4. If this is a new session for this Role, complete Role init first (read the init file above).` : `4. Read the Task record and task-scoped manifest pointers above; no Role init applies.`;
+  const roleInitBlock = task.assigneeRoleId ? `${join(".tent", "temp", ROLES_TEMP_DIR, task.assigneeRoleId, "init.md")}
+` : "";
+  return assigneeLine + `${formatExternalPathBlock(task, resolved)}
+` + roleInitBlock + `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
+2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the Task record). Resolve current Node state by id only when comparing drift.
+3. When finished, run \`tent task submit ${task.path} --report <text>\` (optional: --commits sha,sha).
+${initStep}
+
+` + taskPackageForTask(task);
+}
+function extractTaskPrompt(task) {
+  const body = task.prompt?.trim() || "";
+  if (!body) return "";
+  const match = body.match(/##\s*Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (match) return match[1].trim();
+  return body;
+}
+async function ensureRoleInit(fs21, role, tentName) {
+  if (!role.id || !isRoleId(role.id)) {
+    throw new Error(`Role init requires a canonical Role id for ${role.name}.`);
+  }
+  const path23 = join(TEMP_DIR, ROLES_TEMP_DIR, role.id, "init.md");
+  const body = `# Role Init
+
+- Tent: ${tentName}
+- Agent rules (workspace file read): AGENTS.md at the workspace root
+- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
+
+## Role Prompt
+
+${role.prompt?.trim() || "(no persistent role prompt)"}
+
+## Operating Model
+
+Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
+`;
+  await fs21.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path23;
+}
+async function writeTaskRecord(fs21, clock, input) {
+  const prompt = input.prompt?.trim() || "";
+  if (!prompt) throw new Error("Dispatch requires a prompt.");
+  const assigneeRoleId = input.assigneeRoleId?.trim() || "";
+  const executionSessionId = input.executionSessionId?.trim() || "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error("Task requires assigneeRoleId or executionSessionId at creation.");
+  }
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
+  if (executionSessionId && !isSessionId(executionSessionId)) {
+    throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
+  }
+  const dir = assigneeRoleId ? roleTasksDir(assigneeRoleId) : sessionTasksDir(executionSessionId);
+  await ensureDir(fs21, dir);
+  const requestedId = input.id?.trim() || "";
+  if (requestedId && !isTaskId(requestedId)) {
+    throw new Error(`Invalid Task id: ${requestedId}.`);
+  }
+  const id = requestedId || makeTaskId();
+  const nodeContext = normalizeTaskNodeContext({
+    nodeIds: input.nodeIds,
+    nodeSnapshots: input.nodeSnapshots
+  });
+  const primaryRef = nodeContext.nodeIds[0] ?? "prompt";
+  const stem = taskStem(clock.now(), primaryRef);
+  const path23 = await uniqueMarkdownPath(fs21, dir, stem);
+  input.onPathAllocated?.(path23);
+  const now = clock.now();
+  const requester = resolveDispatchRequester({ requester: input.requester });
+  const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
+  if (!isAcceptMode(acceptMode)) {
+    throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
+  }
+  if (acceptMode !== "review-required" && !allowsNonReviewAcceptMode({
+    requester
+  })) {
+    throw new Error(
+      `acceptMode=${acceptMode} is only legal for a user-facing Task; downstream Task Agent \u2192 requester must use review-required (requester=${requester.kind}:${requester.id}).`
+    );
+  }
+  const contextCard = buildTaskContextCard({
+    ...nodeContext
+  });
+  const data = {
+    type: "task",
+    id,
+    state: "queued",
+    ...assigneeRoleId ? { assigneeRoleId } : {},
+    ...executionSessionId ? { executionSessionId } : {},
+    requester: serializeTaskActorRef(requester),
+    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
+    manifest: input.manifestPath,
+    acceptMode,
+    createdAt: now,
+    updatedAt: now
+  };
+  if (input.workspace) {
+    data.workspace = input.workspace.workspace;
+    data.worktree = input.workspace.worktree;
+    data.branch = input.workspace.branch;
+    data.targetBranch = input.workspace.targetBranch;
+    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
+    if (tip) {
+      data.baseCommit = tip;
+      data.roleBranchBase = tip;
+    }
+  }
+  const pointers = nodeContext.nodeSnapshots.map((snapshot) => `- ${snapshot.id}: ${snapshot.path}`).join("\n");
+  const body = `# Task
+
+## Context Pointers
+
+${pointers || "(none)"}
+
+- Manifest: ${input.manifestPath}
+` + (input.id || id ? `- Task id: ${id}
+` : "") + `
+## Prompt
+
+${prompt}
+`;
+  await fs21.writeFile(path23, serializeFrontmatter(data, body));
+  return path23;
+}
+async function ackTaskRecord(fs21, path23) {
+  await patchTaskRecord(fs21, path23, {
+    state: "running"
+  });
+}
+async function patchTaskRecord(fs21, path23, patch) {
+  if ("acceptMode" in patch) {
+    throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
+  }
+  if ("contextCard" in patch) {
+    throw new Error(
+      "Task Context Card Node snapshots are frozen; patch contextGeneration only."
+    );
+  }
+  if (!await fs21.exists(path23)) throw new Error(`Task record not found: ${path23}.`);
+  const raw = await fs21.readFile(path23);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  assertNoRetiredTaskAuthorityFields(data);
+  if (data.type !== "task") throw new Error(`Invalid Task record format: ${path23}.`);
+  if (patch.state) {
+    data.state = patch.state;
+  }
+  if (typeof patch.executionSessionId === "string") {
+    const executionSessionId2 = patch.executionSessionId.trim();
+    if (!isSessionId(executionSessionId2)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId2}.`);
+    data.executionSessionId = executionSessionId2;
+  }
+  if (patch.wait === null) {
+    delete data.waitReason;
+    delete data.waitSummary;
+    delete data.waitCode;
+  } else if (patch.wait) {
+    data.waitReason = patch.wait.reason;
+    data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
+  }
+  if (patch.currentResultId === null) delete data.currentResultId;
+  else if (typeof patch.currentResultId === "string") {
+    if (patch.currentResultId !== patch.currentResultId.trim() || !isTaskResultId(patch.currentResultId)) {
+      throw new Error(`Invalid Task currentResultId: ${patch.currentResultId}.`);
+    }
+    data.currentResultId = patch.currentResultId;
+  }
+  if (patch.requester) {
+    const nextRequester = parseTaskActorRef(patch.requester, "requester");
+    data.requester = serializeTaskActorRef(nextRequester);
+    const derived = deriveIntegrationAuthority({ requester: nextRequester });
+    data.integrationAuthority = {
+      actor: { kind: derived.actor.kind, id: derived.actor.id },
+      mutator: "service"
+    };
+  }
+  if (patch.statusDetail === null) delete data.statusDetail;
+  else if (patch.statusDetail !== void 0) {
+    data.statusDetail = parseTaskStatusDetail(patch.statusDetail);
+  }
+  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+  for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
+    const value = patch[key2];
+    if (value === null) delete data[key2];
+    else if (typeof value === "string") data[key2] = value;
+  }
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
+  }
+  if (patch.baseCommit === null) delete data.baseCommit;
+  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    data.baseCommit = patch.baseCommit.trim();
+  }
+  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
+  else if (patch.baseCommitCapture) {
+    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
+  }
+  if (patch.integrationAuthority === null) delete data.integrationAuthority;
+  else if (patch.integrationAuthority) {
+    if (data.requester === void 0 || data.requester === null) {
+      throw new Error(
+        "patchTaskRecord integrationAuthority requires requester on the Task record."
+      );
+    }
+    const parentForAuth = parseTaskActorRef(data.requester, "requester");
+    const validated = assertIntegrationAuthorityMatchesParent(
+      patch.integrationAuthority,
+      parentForAuth
+    );
+    data.integrationAuthority = {
+      actor: { kind: validated.actor.kind, id: validated.actor.id },
+      mutator: "service"
+    };
+  }
+  if (patch.contextGeneration !== void 0) {
+    if (!/^cg-v1-[a-f0-9]{64}$/.test(patch.contextGeneration)) {
+      throw new Error("patchTaskRecord contextGeneration must be a canonical cg-v1 digest.");
+    }
+    const currentCard = loadTaskContextCardFromFrontmatter(data);
+    if (!currentCard) {
+      throw new Error(`Invalid Task record format: ${path23} (missing Task Context Card).`);
+    }
+    data.contextCard = serializeTaskContextCardForFrontmatter({
+      ...currentCard,
+      contextGeneration: patch.contextGeneration
+    });
+    delete data.contextGeneration;
+  }
+  const assigneeRoleId = typeof data.assigneeRoleId === "string" ? data.assigneeRoleId.trim() : "";
+  const executionSessionId = typeof data.executionSessionId === "string" ? data.executionSessionId.trim() : "";
+  if (!assigneeRoleId && !executionSessionId) {
+    throw new Error("patchTaskRecord cannot remove the final assigneeRoleId/executionSessionId binding.");
+  }
+  if (assigneeRoleId && !isRoleId(assigneeRoleId)) throw new Error(`Invalid Task assigneeRoleId: ${assigneeRoleId}.`);
+  if (executionSessionId && !isSessionId(executionSessionId)) throw new Error(`Invalid Task executionSessionId: ${executionSessionId}.`);
+  await fs21.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskRecord(fs21, path23);
+}
+function parseTaskState(value) {
+  if (value === "queued" || value === "running" || value === "waiting" || value === "submitted" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
+    return value;
+  }
+  throw new Error(`Invalid task state: ${String(value)}.`);
+}
+function parseWaitFields(data) {
+  const reason = data.waitReason;
+  const summary = data.waitSummary;
+  if ((reason === "user-input" || reason === "review" || reason === "external") && typeof summary === "string") {
+    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
+    return { reason, summary, ...code ? { code } : {} };
+  }
+  return void 0;
+}
+function taskStem(now, claimId) {
+  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
+  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
+}
+async function uniqueMarkdownPath(fs21, dir, stem) {
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path23 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs21.exists(path23)) return path23;
+  }
+}
+async function ensureDir(fs21, path23) {
+  if (!await fs21.exists(path23)) await fs21.mkdir(path23);
 }
 
 // src/core/scaffold.ts
@@ -3842,17 +3782,6 @@ async function taskClaim(env, taskPath, options = {}) {
       return task;
     }
     assertTransition(task.state, "claim", "running");
-    const tent = await loadTent(env.fs);
-    const claimedNodes = task.workNodeIds.map(
-      (claimId) => requireNodeById(tent, claimId)
-    );
-    const otherTasks = (await loadTaskRecords(env.fs)).filter(
-      (candidate) => candidate.path !== task.path
-    );
-    for (const node2 of claimedNodes) {
-      const claimable = canClaim(node2, { tasks: otherTasks });
-      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
-    }
     const now = env.clock.now();
     if (options.claimWrite) {
       if (options.claimWrite.executionSessionId && !isSessionId(options.claimWrite.executionSessionId)) {
@@ -3927,8 +3856,6 @@ async function prepareTaskSubmit(env, taskPath, options) {
     const recovered = await recoverExistingTaskSubmit(env, taskPath, task, options);
     if (recovered) return recovered;
     assertSubmitPreconditions(task);
-    const nodeId = primaryNodeId(task);
-    if (!nodeId) throw new Error("task.submit requires a non-root work Node.");
     await assertNoReadyResult(env.fs, task);
     const routing = resolveSubmitRouting(task.acceptMode, options.decision);
     const candidateInput = {
@@ -5036,14 +4963,6 @@ async function findCommittedTaskResult(fs21, task) {
   const current = await loadTaskResultById(fs21, task, task.currentResultId);
   return current?.status === "ready" || current?.status === "accepted" ? current : void 0;
 }
-function requireNodeById(tent, nodeId) {
-  if (tent.duplicateIds.has(nodeId)) {
-    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
-  }
-  const node2 = tent.byId.get(nodeId);
-  if (!node2) throw new Error(`Node not found: ${nodeId}.`);
-  return node2;
-}
 function requireCanonicalTaskId(task) {
   const id = task.id?.trim() || "";
   if (!isTaskId(id)) {
@@ -5053,6 +4972,93 @@ function requireCanonicalTaskId(task) {
 }
 async function withMutation(fs21, action) {
   return withTentMutation(fs21, action);
+}
+
+// src/core/forkOps.ts
+async function forkNode(env, nodeId) {
+  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, nodeId));
+}
+async function forkNodeUnlocked(env, nodeId) {
+  const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+  const source = tent.byId.get(nodeId);
+  if (!source) throw new Error(`Node not found: ${nodeId}.`);
+  if (!isUsableNode(source)) throw new Error("Invalid or archived nodes cannot be forked.");
+  assertContentMutable(source, "forked");
+  const parentPath = dirName(source.path);
+  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
+  await copyTree(env.fs, source.path, forkPath);
+  const sourceNodes = collectSubtree(source);
+  const usedIds = new Set(tent.byId.keys());
+  const idMap = /* @__PURE__ */ new Map();
+  for (const node2 of sourceNodes) {
+    const nextId = makeUniqueNodeId(usedIds, env.rand);
+    usedIds.add(nextId);
+    idMap.set(node2.id, nextId);
+  }
+  const forkRootId = idMap.get(source.id);
+  for (const node2 of sourceNodes) {
+    const rel = relativePath(source.path, node2.path);
+    const nextPath = rel ? join(forkPath, rel) : forkPath;
+    const notePath = nodeNotePath(nextPath);
+    await ensureIdentityFileName(env.fs, nextPath, node2.path);
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+    data.id = idMap.get(node2.id);
+    delete data.owner;
+    delete data.status;
+    delete data.forkOf;
+    delete data.forkBase;
+    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
+  }
+  const order = await loadOrder(env.fs);
+  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((node2) => node2.id);
+  const idx = siblings.indexOf(source.id);
+  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
+  order[parentKey] = siblings;
+  for (const node2 of sourceNodes) {
+    const oldChildren = order[node2.id];
+    const newId = idMap.get(node2.id);
+    if (oldChildren && newId) {
+      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
+    }
+  }
+  await saveOrder(env.fs, order);
+  return forkRootId;
+}
+async function uniqueSiblingPath(fs21, parentPath, base) {
+  let n = 1;
+  while (true) {
+    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
+    const candidate = join(parentPath, name);
+    if (!await fs21.exists(candidate)) return candidate;
+    n += 1;
+  }
+}
+async function copyTree(fs21, from, to) {
+  await fs21.mkdir(to);
+  for (const entry of await fs21.listDir(from)) {
+    const src = join(from, entry.name);
+    const dst = join(to, entry.name);
+    if (entry.isDir) await copyTree(fs21, src, dst);
+    else await fs21.writeFile(dst, await fs21.readFile(src));
+  }
+}
+function collectSubtree(node2, out = []) {
+  out.push(node2);
+  for (const child of node2.children) collectSubtree(child, out);
+  return out;
+}
+function relativePath(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName(fs21, newNodePath, oldNodePath) {
+  const expected = nodeNotePath(newNodePath);
+  if (await fs21.exists(expected)) return;
+  const oldName = `${baseName(oldNodePath)}.md`;
+  const copied = join(newNodePath, oldName);
+  if (await fs21.exists(copied)) await fs21.move(copied, expected);
 }
 
 // src/core/okf-index.ts
@@ -5148,10 +5154,9 @@ async function renameNodeUnlocked(env, nodeIdOrPath, newNameRaw) {
     throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   assertContentMutable(target, "renamed");
-  if (isFrozen(target)) {
+  if (target.invalid || target.archived) {
     throw new Error("Invalid or archived nodes cannot be renamed.");
   }
-  await assertNoActiveTaskRefsInSubtree(env, target, "rename");
   const oldPath = target.path;
   const oldName = target.name;
   if (newName === oldName) {
@@ -5175,10 +5180,10 @@ async function renameNodeUnlocked(env, nodeIdOrPath, newNameRaw) {
   if (siblings.some((node2) => node2.id !== target.id && node2.name === newName)) {
     throw new Error(`A sibling Node already uses the name: ${newName}.`);
   }
-  const subtree2 = collectSubtree(target);
+  const subtree2 = collectSubtree2(target);
   const pathMap = /* @__PURE__ */ new Map();
   for (const node2 of subtree2) {
-    const rel = relativePath(oldPath, node2.path);
+    const rel = relativePath2(oldPath, node2.path);
     const nextNodePath = rel ? join(newPath, rel) : newPath;
     pathMap.set(node2.path, nextNodePath);
     pathMap.set(
@@ -5220,7 +5225,7 @@ async function renameNodeUnlocked(env, nodeIdOrPath, newNameRaw) {
   let identityRenamed = false;
   const completedWrites = [];
   try {
-    identityRenamed = await ensureIdentityFileName(env.fs, newPath, oldName);
+    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
     for (const write of plannedWrites) {
       await env.fs.writeFile(write.writePath, write.newContent);
       completedWrites.push(write);
@@ -5297,20 +5302,6 @@ function resolveRenameTarget(tent, nodeIdOrPath) {
   if (byPath) return byPath;
   throw new Error(`Node not found: ${nodeIdOrPath}.`);
 }
-async function assertNoActiveTaskRefsInSubtree(env, root, operation) {
-  const subtreeIds = new Set(collectSubtree(root).map((node2) => node2.id));
-  const blockers = (await loadTaskRecords(env.fs)).filter((task) => {
-    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
-    return task.workNodeIds.some((nodeId) => subtreeIds.has(nodeId));
-  });
-  if (blockers.length === 0) return;
-  const taskLabels = blockers.map((task) => task.id || task.path).sort((a, b) => a.localeCompare(b));
-  throw new Error(
-    `Cannot ${operation} Node subtree ${root.id}: active Task ref(s) ${taskLabels.join(
-      ", "
-    )} must finish first.`
-  );
-}
 function assertNotOperationalPath(path23) {
   if (isOperationalPath(path23) || path23 === "temp" || path23.startsWith("temp/")) {
     throw new Error("temp/ and other system pipelines cannot be renamed as Nodes.");
@@ -5320,16 +5311,16 @@ function assertNotOperationalPath(path23) {
     throw new Error("System directories cannot be renamed as Nodes.");
   }
 }
-function collectSubtree(node2, out = []) {
+function collectSubtree2(node2, out = []) {
   out.push(node2);
-  for (const child of node2.children) collectSubtree(child, out);
+  for (const child of node2.children) collectSubtree2(child, out);
   return out;
 }
-function relativePath(root, child) {
+function relativePath2(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs21, newNodePath, oldName) {
+async function ensureIdentityFileName2(fs21, newNodePath, oldName) {
   const expected = nodeNotePath(newNodePath);
   if (await fs21.exists(expected)) return false;
   const legacy = join(newNodePath, `${oldName}.md`);
@@ -5487,93 +5478,6 @@ function relativeMarkdownPath(fromNotePath, toNotePath) {
   return rel.startsWith(".") ? rel : `./${rel}`;
 }
 
-// src/core/forkOps.ts
-async function forkNode(env, nodeId) {
-  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, nodeId));
-}
-async function forkNodeUnlocked(env, nodeId) {
-  const tent = await loadTent(env.fs);
-  if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
-  const source = tent.byId.get(nodeId);
-  if (!source) throw new Error(`Node not found: ${nodeId}.`);
-  if (!isUsableNode(source)) throw new Error("Invalid or archived nodes cannot be forked.");
-  assertContentMutable(source, "forked");
-  const parentPath = dirName(source.path);
-  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
-  await copyTree(env.fs, source.path, forkPath);
-  const sourceNodes = collectSubtree2(source);
-  const usedIds = new Set(tent.byId.keys());
-  const idMap = /* @__PURE__ */ new Map();
-  for (const node2 of sourceNodes) {
-    const nextId = makeUniqueNodeId(usedIds, env.rand);
-    usedIds.add(nextId);
-    idMap.set(node2.id, nextId);
-  }
-  const forkRootId = idMap.get(source.id);
-  for (const node2 of sourceNodes) {
-    const rel = relativePath2(source.path, node2.path);
-    const nextPath = rel ? join(forkPath, rel) : forkPath;
-    const notePath = nodeNotePath(nextPath);
-    await ensureIdentityFileName2(env.fs, nextPath, node2.path);
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(node2.id);
-    delete data.owner;
-    delete data.status;
-    delete data.forkOf;
-    delete data.forkBase;
-    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
-  }
-  const order = await loadOrder(env.fs);
-  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((node2) => node2.id);
-  const idx = siblings.indexOf(source.id);
-  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
-  order[parentKey] = siblings;
-  for (const node2 of sourceNodes) {
-    const oldChildren = order[node2.id];
-    const newId = idMap.get(node2.id);
-    if (oldChildren && newId) {
-      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
-    }
-  }
-  await saveOrder(env.fs, order);
-  return forkRootId;
-}
-async function uniqueSiblingPath(fs21, parentPath, base) {
-  let n = 1;
-  while (true) {
-    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join(parentPath, name);
-    if (!await fs21.exists(candidate)) return candidate;
-    n += 1;
-  }
-}
-async function copyTree(fs21, from, to) {
-  await fs21.mkdir(to);
-  for (const entry of await fs21.listDir(from)) {
-    const src = join(from, entry.name);
-    const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs21, src, dst);
-    else await fs21.writeFile(dst, await fs21.readFile(src));
-  }
-}
-function collectSubtree2(node2, out = []) {
-  out.push(node2);
-  for (const child of node2.children) collectSubtree2(child, out);
-  return out;
-}
-function relativePath2(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-async function ensureIdentityFileName2(fs21, newNodePath, oldNodePath) {
-  const expected = nodeNotePath(newNodePath);
-  if (await fs21.exists(expected)) return;
-  const oldName = `${baseName(oldNodePath)}.md`;
-  const copied = join(newNodePath, oldName);
-  if (await fs21.exists(copied)) await fs21.move(copied, expected);
-}
-
 // src/core/moveOps.ts
 async function moveNode(env, nodeId, newParentId, position2) {
   return withTentMutation(
@@ -5593,7 +5497,6 @@ async function moveNodeUnlocked(env, nodeId, newParentId, position2) {
     throw new Error("Invalid or archived nodes cannot be moved.");
   }
   assertNotOperationalPath2(moved.path);
-  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const parentNode = resolveNewParent(tent, newParentId);
   if (parentNode) {
     if (!isUsableNode(parentNode)) throw new Error("Target parent node is invalid or archived.");
@@ -5794,32 +5697,13 @@ function relativePath3(root, child) {
 }
 
 // src/core/ops.ts
-function resolveDispatchTaskNodeSelection(input) {
-  const tentName = input.tentName.trim();
-  const selection = normalizeTaskNodeSelection({
-    workNodeIds: input.workNodeIds,
-    contextNodeIds: input.contextNodeIds
-  });
-  for (const id of orderedTaskNodeIds(selection)) {
-    if (isForbiddenRootDispatchToken(id, tentName)) {
-      throw new Error("Task Node selection cannot contain ., root, or the Tent name.");
-    }
-  }
-  return selection;
-}
-function isForbiddenRootDispatchToken(id, tentName) {
-  return id === "." || id === "root" || tentName !== "" && id === tentName;
-}
-async function dispatch(env, primaryNodeId3, options) {
+async function dispatch(env, options) {
   if ("resultPolicy" in options) {
     throw new Error("task.dispatch contains retired resultPolicy; use acceptMode.");
   }
-  return withMutation2(
-    env.fs,
-    async () => dispatchUnlocked(env, primaryNodeId3, options)
-  );
+  return withMutation2(env.fs, async () => dispatchUnlocked(env, options));
 }
-async function dispatchUnlocked(env, primaryNodeId3, options) {
+async function dispatchUnlocked(env, options) {
   const tent = await loadTent(env.fs);
   const prompt = options.prompt?.trim() || "";
   if (!prompt) throw new Error("Dispatch requires a user prompt.");
@@ -5828,16 +5712,7 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
   if (!roleId && !sessionId) throw new Error("Dispatch requires assigneeRoleId or executionSessionId.");
   if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Role id: ${roleId}.`);
   if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}.`);
-  const selection = resolveDispatchTaskNodeSelection({
-    workNodeIds: options.workNodeIds,
-    contextNodeIds: options.contextNodeIds,
-    tentName: env.tentName
-  });
-  if (primaryNodeId3 !== selection.workNodeIds[0]) {
-    throw new Error(
-      `Dispatch primary Node '${primaryNodeId3}' conflicts with workNodeIds[0] '${selection.workNodeIds[0]}'.`
-    );
-  }
+  const selection = normalizeTaskNodeSelection({ nodeIds: options.nodeIds });
   const nodeIds = orderedTaskNodeIds(selection);
   const tasks = await loadTaskRecords(env.fs);
   const createdRoot = roleId ? roleTempRoot(roleId) : sessionTempRoot(sessionId);
@@ -5864,18 +5739,9 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
   }
   const selectedNodes = [];
   for (const id of nodeIds) {
-    const node2 = requireNodeById2(tent, id);
-    if (selection.workNodeIds.includes(id)) {
-      const structural = structuralClaimGate(node2);
-      if (!structural.ok) {
-        throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
-      }
-      const claimable = canClaim(node2, { tasks });
-      if (!claimable.ok) {
-        throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
-      }
-    } else if (node2.invalid) {
-      throw new Error(`Cannot dispatch invalid context Node ${id}: ${node2.invalidReason || "invalid"}.`);
+    const node2 = requireNodeById(tent, id);
+    if (node2.invalid) {
+      throw new Error(`Cannot dispatch: Invalid subtree: ${node2.invalidReason || "missing type definition"}`);
     }
     selectedNodes.push(node2);
   }
@@ -5884,10 +5750,10 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
       tentName: env.tentName,
       ...roleId ? { roleId } : {},
       ...sessionId ? { sessionId } : {},
-      claimNodes: selectedNodes.filter((node2) => selection.workNodeIds.includes(node2.id)),
+      selectedNodes,
       ...options.workspace
     };
-    const manifest = buildManifest(tent, input);
+    const manifest = buildManifest(input);
     const yaml = manifestToYaml(manifest);
     let initPath;
     await ensureDir3(env.fs, dirName(manifestPath));
@@ -5899,15 +5765,23 @@ async function dispatchUnlocked(env, primaryNodeId3, options) {
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
     const nodeSnapshots = [];
-    for (const node2 of selectedNodes) {
+    const seenSnapshotIds = /* @__PURE__ */ new Set();
+    const appendSnapshotSubtree = async (node2) => {
+      if (seenSnapshotIds.has(node2.id)) return;
+      seenSnapshotIds.add(node2.id);
       const raw = await env.fs.readFile(nodeNotePath(node2.path));
       nodeSnapshots.push(captureTaskNodeSnapshot(node2, contentEtag(raw)));
+      for (const child of node2.children) {
+        await appendSnapshotSubtree(child);
+      }
+    };
+    for (const node2 of selectedNodes) {
+      await appendSnapshotSubtree(node2);
     }
     const taskPath = await writeTaskRecord(env.fs, env.clock, {
       ...roleId ? { assigneeRoleId: roleId } : {},
       ...sessionId ? { executionSessionId: sessionId } : {},
-      workNodeIds: selection.workNodeIds,
-      contextNodeIds: selection.contextNodeIds,
+      nodeIds: selection.nodeIds,
       nodeSnapshots,
       manifestPath,
       prompt,
@@ -6068,7 +5942,7 @@ async function setNodeModeUnlocked(env, nodeId, mode) {
     throw new Error('mode must be "editable" or "archived".');
   }
   const tent = await loadTent(env.fs);
-  const node2 = requireNodeById2(tent, nodeId);
+  const node2 = requireNodeById(tent, nodeId);
   if (node2.invalid) throw new Error("Invalid nodes cannot change mode.");
   if (node2.archived && !isExplicitArchiveRoot(node2)) {
     if (next === "archived") {
@@ -6084,14 +5958,6 @@ async function setNodeModeUnlocked(env, nodeId, mode) {
       await patchFrontmatter(env.fs, node2, { mode: "archived", archived: void 0 });
     }
     return;
-  }
-  if (next === "archived") {
-    const tasks = await loadTaskRecords(env.fs);
-    if (hasActiveTaskInSubtree(tent, node2, tasks)) {
-      throw new Error(
-        "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
-      );
-    }
   }
   if (next === "archived") {
     await patchFrontmatter(env.fs, node2, { mode: "archived", archived: void 0 });
@@ -6133,24 +5999,7 @@ function assertNotTempPath(path23) {
     throw new Error("temp/ is a system pipeline; typed nodes cannot be created or moved there.");
   }
 }
-function hasActiveTaskInSubtree(tent, node2, tasks) {
-  const ids = collectSubtreeIds(node2);
-  for (const task of tasks) {
-    if (!taskIsActiveOccupation(task)) continue;
-    if (task.contextCard == null) continue;
-    for (const nodeId of task.workNodeIds) {
-      if (ids.has(nodeId)) return true;
-    }
-  }
-  void tent;
-  return false;
-}
-function collectSubtreeIds(node2, ids = /* @__PURE__ */ new Set()) {
-  ids.add(node2.id);
-  for (const child of node2.children) collectSubtreeIds(child, ids);
-  return ids;
-}
-function requireNodeById2(tent, nodeId) {
+function requireNodeById(tent, nodeId) {
   if (tent.duplicateIds.has(nodeId)) {
     throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
   }
@@ -15438,7 +15287,6 @@ function projectOutputProvenance(node2, indexes) {
     resultId: null,
     result: null,
     task: null,
-    sourceNode: null,
     incomplete: []
   };
   if (!resultId) {
@@ -15468,28 +15316,12 @@ function projectOutputProvenance(node2, indexes) {
     base.task = {
       id: task.id || task.path,
       state: task.state,
-      path: task.path
+      path: task.path,
+      nodeIds: [...task.nodeIds]
     };
     const taskKey = task.id || task.path;
     if (result.taskId && taskKey && result.taskId !== taskKey && result.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
-    }
-    const sourceId = task.workNodeIds[0];
-    if (!sourceId) {
-      base.incomplete.push("source_missing");
-      return base;
-    }
-    const source = indexes.tent.byId.get(sourceId);
-    if (!source) {
-      base.incomplete.push("source_missing");
-      base.sourceNode = { nodeId: sourceId };
-    } else {
-      base.sourceNode = {
-        nodeId: source.id,
-        path: source.path,
-        type: source.type,
-        archived: source.archived || source.mode === "archived"
-      };
     }
   }
   return base;
@@ -18377,6 +18209,46 @@ async function deleteAnnotation(fs21, id) {
   });
 }
 
+// src/core/task-node-refs.ts
+var MISSING_TASK_NODE_SELECTION = "MISSING_TASK_NODE_SELECTION: Task.nodeIds is required.";
+function normalizedSelection(task) {
+  const label = task.id || task.path || "(unknown)";
+  try {
+    return normalizeTaskNodeSelection({
+      nodeIds: task.nodeIds
+    });
+  } catch (error) {
+    const wrapped = new Error(`${MISSING_TASK_NODE_SELECTION} task=${label}`);
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+function taskReferencedNodeIds(task) {
+  const selection = normalizedSelection(task);
+  return [...selection.nodeIds];
+}
+function taskDirectlyReferencesNode(task, nodeId) {
+  if (!nodeId) return false;
+  return normalizedSelection(task).nodeIds.includes(nodeId);
+}
+function listDirectActiveTasksForNode(nodeId, tasks) {
+  const matches = tasks.filter(
+    (task) => isActiveTaskState(task.state) && taskDirectlyReferencesNode(task, nodeId)
+  );
+  return sortTasksDeterministically(matches);
+}
+function sortTasksDeterministically(tasks) {
+  return [...tasks].sort((a, b) => {
+    const ca = a.createdAt || "";
+    const cb = b.createdAt || "";
+    if (ca !== cb) return ca.localeCompare(cb);
+    const ia = a.id || "";
+    const ib = b.id || "";
+    if (ia !== ib) return ia.localeCompare(ib);
+    return (a.path || "").localeCompare(b.path || "");
+  });
+}
+
 // src/runtime/types.ts
 var ACP_PERMISSION_REQUEST_COUNT_MAX = 255;
 var ACP_OBSERVATION_TEXT_BYTES = 256;
@@ -20516,7 +20388,7 @@ async function buildWorkspaceCollaborationProjection(input) {
       kind: "decision",
       requestId: request.id,
       taskId: task.id,
-      nodeIds: [...task.workNodeIds],
+      nodeIds: [...task.nodeIds],
       question: request.question,
       options: request.options.map((option) => ({ ...option })),
       createdAt: request.createdAt
@@ -20525,33 +20397,36 @@ async function buildWorkspaceCollaborationProjection(input) {
   inboxItems.sort(compareWorkspaceUserInboxItem);
   let selectedNode = null;
   if (input.nodeId) {
-    const occupations = listDirectActiveTasksForNode(input.nodeId, input.tasks);
-    if (occupations.length > 1) {
-      throw consistencyError("Node has multiple active Task occupations", {
-        nodeId: input.nodeId,
-        taskIds: occupations.map((task) => task.id ?? null)
-      });
-    }
-    const selectedTask = occupations[0];
-    if (selectedTask?.id) {
+    const selectedTasks = listDirectActiveTasksForNode(input.nodeId, input.tasks);
+    for (const selectedTask of selectedTasks) {
+      if (!selectedTask.id) {
+        throw consistencyError("Selected active Task is missing canonical id", {
+          nodeId: input.nodeId
+        });
+      }
       const sameId = tasksById.get(selectedTask.id) ?? [];
       if (sameId.length !== 1) {
-        throw consistencyError("Selected Task identity is ambiguous", {
+        throw consistencyError("Selected active Task identity is ambiguous", {
           nodeId: input.nodeId,
           taskId: selectedTask.id
         });
       }
     }
-    const activeTask = selectedTask ? await projectActiveTask({
-      ...input,
-      task: selectedTask,
-      resultsById,
-      readyResults: selectedTask.id ? readyResultsByTaskId.get(selectedTask.id) ?? [] : [],
-      decisionByTaskId: decisionsByTaskId
-    }) : null;
+    const activeTasks = [];
+    for (const selectedTask of selectedTasks) {
+      activeTasks.push(
+        await projectActiveTask({
+          ...input,
+          task: selectedTask,
+          resultsById,
+          readyResults: selectedTask.id ? readyResultsByTaskId.get(selectedTask.id) ?? [] : [],
+          decisionByTaskId: decisionsByTaskId
+        })
+      );
+    }
     selectedNode = {
       nodeId: input.nodeId,
-      activeTask,
+      activeTasks,
       statusDetail: selectNodeStatusDetail(input.nodeId, input.tasks)
     };
   }
@@ -20564,7 +20439,7 @@ async function buildWorkspaceCollaborationProjection(input) {
   };
 }
 function selectNodeStatusDetail(nodeId, tasks) {
-  const candidates = tasks.filter((task) => task.workNodeIds.includes(nodeId));
+  const candidates = tasks.filter((task) => task.nodeIds.includes(nodeId));
   const ids = /* @__PURE__ */ new Set();
   for (const task of candidates) {
     if (!task.id || !isTaskId(task.id)) {
@@ -21022,8 +20897,7 @@ var CLIENT_METHODS = [
   "task.dispatch",
   "task.claim",
   /**
-   * Durable Role self-execution: atomically create + claim from exact
-   * workNodeIds[] with optional shared contextNodeIds[].
+   * Durable Role self-execution: atomically create + claim from exact nodeIds[].
    * Service derives parent/review authority from persisted Task/Session responsibility;
    * callers cannot provide actor, target, or Task Result authority fields.
    */
@@ -21068,7 +20942,7 @@ var CLIENT_METHODS = [
   "taskResult.list",
   "taskResult.get",
   /**
-   * V0.2 Output provenance (Output → Task Result → Task → sourceNode).
+   * V0.2 Output provenance (Output → Task Result → Task).
    * Params: workspaceId + canonical nodeId.
    * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
    */
@@ -25579,7 +25453,7 @@ async function workspaceMount(ctx, p) {
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
 }
-var SESSION_UNAVAILABLE_WAIT_SUMMARY = "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; occupation is held.";
+var SESSION_UNAVAILABLE_WAIT_SUMMARY = "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; the Task remains active.";
 var SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable";
 function isSessionUnavailableParkedWait(task) {
   if (task.state !== "waiting" || task.wait?.reason !== "external") return false;
@@ -27202,7 +27076,7 @@ function mapDocsMoveError(err) {
   if (/not found/i.test(message2)) {
     return new RpcError(-32004, message2);
   }
-  if (/already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling node|id drift|immutable|own subtree|relative to itself|destination parent|Node id is required/i.test(
+  if (/already exists|Invalid or archived|Cannot move|System directories|system pipelines|sibling node|id drift|immutable|own subtree|relative to itself|destination parent|Node id is required/i.test(
     message2
   )) {
     return new RpcError(-32602, message2);
@@ -27214,8 +27088,7 @@ async function taskDispatch(ctx, p, callContext) {
     p,
     /* @__PURE__ */ new Set([
       "workspaceId",
-      "workNodeIds",
-      "contextNodeIds",
+      "nodeIds",
       "assigneeRoleId",
       "connectionId",
       "prompt",
@@ -27226,8 +27099,7 @@ async function taskDispatch(ctx, p, callContext) {
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
-  const primaryNodeId3 = dispatchSelection.primaryId;
+  const dispatchSelection = resolveTaskNodeSelection(p);
   const requestedRoleId = optionalString2(p, "assigneeRoleId");
   const connectionId = optionalString2(p, "connectionId");
   if (Boolean(requestedRoleId) === Boolean(connectionId)) {
@@ -27335,15 +27207,14 @@ async function taskDispatch(ctx, p, callContext) {
     }
     let dispatched2;
     try {
-      dispatched2 = await dispatch(mount.env, primaryNodeId3, {
+      dispatched2 = await dispatch(mount.env, {
         prompt,
         requester,
         acceptMode,
         workspace: workspaceLane2,
         ...requestedRoleId ? { assigneeRoleId: requestedRoleId } : {},
         ...reservedSessionId ? { executionSessionId: reservedSessionId } : {},
-        workNodeIds: dispatchSelection.workNodeIds,
-        contextNodeIds: dispatchSelection.contextNodeIds,
+        nodeIds: dispatchSelection.nodeIds,
         ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {}
       });
     } catch (error) {
@@ -27438,8 +27309,7 @@ async function taskDispatch(ctx, p, callContext) {
         state: dispatchedState,
         assigneeRoleId: dispatched2.assigneeRoleId,
         executionSessionId: dispatched2.executionSessionId,
-        workNodeIds: [...dispatchSelection.workNodeIds],
-        contextNodeIds: [...dispatchSelection.contextNodeIds],
+        nodeIds: [...dispatchSelection.nodeIds],
         reason: "task.dispatch"
       },
       "self"
@@ -27539,31 +27409,12 @@ function parseOptionalTaskActor(value, label) {
 function taskIsDownstream(task) {
   return task.requester?.kind === "role" && task.requester.id !== task.assigneeRoleId;
 }
-function resolveTaskNodeSelection(p, tentName, method) {
-  for (const retired of ["nodeId", "nodeIds", "id", "claimId"]) {
-    if (p[retired] !== void 0 && p[retired] !== null) {
-      throw new RpcError(
-        -32602,
-        `${method} ${retired} is retired; pass workNodeIds[] and contextNodeIds[]`,
-        { field: retired }
-      );
-    }
-  }
-  for (const field of ["workNodeIds", "contextNodeIds"]) {
-    if (!Array.isArray(p[field]) || !p[field].every((x) => typeof x === "string")) {
-      throw new RpcError(-32602, `Invalid string[] param: ${field}`);
-    }
-  }
+function resolveTaskNodeSelection(p) {
   try {
-    const selection = resolveDispatchTaskNodeSelection({
-      workNodeIds: p.workNodeIds,
-      contextNodeIds: p.contextNodeIds,
-      tentName
-    });
-    return { ...selection, primaryId: selection.workNodeIds[0] };
+    return { nodeIds: orderedTaskNodeIds(normalizeTaskNodeSelection({ nodeIds: p.nodeIds })) };
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2, { field: "workNodeIds" });
+    throw new RpcError(-32602, message2, { field: "nodeIds" });
   }
 }
 function resolveDispatchRequesterFromRpc(requester) {
@@ -27581,8 +27432,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
     /* @__PURE__ */ new Set([
       "workspaceId",
       "roleId",
-      "workNodeIds",
-      "contextNodeIds",
+      "nodeIds",
       "prompt",
       "sourceTaskPath"
     ]),
@@ -27593,7 +27443,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
   const roleId = requireString(p, "roleId");
   const prompt = requireString(p, "prompt");
   const sourceTaskPath = optionalString2(p, "sourceTaskPath");
-  const selection = resolveTaskNodeSelection(p, mount.env.tentName, "task.claimDirect");
+  const selection = resolveTaskNodeSelection(p);
   return ctx.mutations.run(workspaceId, async () => {
     const registry = await loadRolesRegistry(mount.env.fs);
     const roleDefinition = registry.roles.find((role) => role.id === roleId);
@@ -27634,14 +27484,13 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
     let previousLastTaskId;
     let callerSessionRebound = false;
     try {
-      created = await dispatch(mount.env, selection.primaryId, {
+      created = await dispatch(mount.env, {
         prompt,
         requester,
         acceptMode,
         assigneeRoleId: roleId,
         executionSessionId: callerSession.id,
-        workNodeIds: selection.workNodeIds,
-        contextNodeIds: selection.contextNodeIds
+        nodeIds: selection.nodeIds
       });
       const pre = await loadTaskRecord(mount.env.fs, created.taskPath);
       previousLastTaskId = callerSession.currentTaskId;
@@ -27661,7 +27510,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
         ...claimWrite ? { claimWrite } : {}
       });
       emitTaskState(ctx, workspaceId, task, "task.claimDirect");
-      for (const nodeId of task.workNodeIds) {
+      for (const nodeId of task.nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
           "node.changed",
@@ -27679,8 +27528,7 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
         state: task.state,
         roleId: task.assigneeRoleId,
         sessionId: task.executionSessionId,
-        workNodeIds: [...task.workNodeIds],
-        contextNodeIds: [...task.contextNodeIds]
+        nodeIds: [...task.nodeIds]
       };
     } catch (err) {
       if (callerSessionRebound) {
@@ -27907,7 +27755,7 @@ async function taskClaimRpc(ctx, p, caller = {}) {
         throw error;
       }
       emitTaskState(ctx, workspaceId, task, "task.claim");
-      for (const nodeId of task.workNodeIds) {
+      for (const nodeId of task.nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
           "node.changed",
@@ -27922,8 +27770,7 @@ async function taskClaimRpc(ctx, p, caller = {}) {
         task: projectTask(task),
         state: task.state,
         assigneeRoleId: task.assigneeRoleId,
-        workNodeIds: [...task.workNodeIds],
-        contextNodeIds: [...task.contextNodeIds],
+        nodeIds: [...task.nodeIds],
         executionSessionId: task.executionSessionId
       };
     })
@@ -29585,7 +29432,6 @@ function projectOutputProvenanceWire(workspaceId, core) {
     resultId: core.resultId,
     result: core.result ? { ...core.result, artifactRefs: core.result.artifactRefs.map((ref) => ({ ...ref })) } : null,
     task: core.task,
-    sourceNode: core.sourceNode,
     incomplete: core.incomplete
   };
 }
@@ -30010,8 +29856,7 @@ function captureTaskSessionBindSnapshot(task) {
     updatedAt: task.updatedAt,
     roleId: task.assigneeRoleId,
     nodeContextJson: JSON.stringify({
-      workNodeIds: task.workNodeIds,
-      contextNodeIds: task.contextNodeIds,
+      nodeIds: task.nodeIds,
       nodeSnapshots: task.nodeSnapshots
     }),
     workspace: task.workspace,
@@ -30679,8 +30524,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
   const preserved = {
     taskId: task.id,
     nodeContextJson: JSON.stringify({
-      workNodeIds: task.workNodeIds,
-      contextNodeIds: task.contextNodeIds,
+      nodeIds: task.nodeIds,
       nodeSnapshots: task.nodeSnapshots
     }),
     worktree: task.worktree,
@@ -30975,8 +30819,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionI
     } catch {
     }
     const nodeContextJson = JSON.stringify({
-      workNodeIds: bound.workNodeIds,
-      contextNodeIds: bound.contextNodeIds,
+      nodeIds: bound.nodeIds,
       nodeSnapshots: bound.nodeSnapshots
     });
     if (bound.id !== preserved.taskId || bound.assigneeRoleId !== preserved.roleId || bound.acceptMode !== preserved.acceptMode || bound.worktree !== preserved.worktree || bound.branch !== preserved.branch || nodeContextJson !== preserved.nodeContextJson) {
@@ -34182,8 +34025,8 @@ var beforeTaskAcceptFinalizeForTests = null;
 var afterManagedSessionProviderStartForTests = null;
 var beforeTaskClaimCoreForTests = null;
 var beforeReplaceTaskInputRollbackForTests = null;
-var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F managed Session\u3002\u53EF\u663E\u5F0F replaceSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
-var EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F external Role Session\u3002\u8BF7\u6062\u590D\u540C\u4E00 Session \u540E claim\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F managed Session\u3002\u53EF\u663E\u5F0F replaceSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1B\u4EFB\u52A1\u4FDD\u6301\u6D3B\u52A8\u3002";
+var EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F external Role Session\u3002\u8BF7\u6062\u590D\u540C\u4E00 Session \u540E claim\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1B\u4EFB\u52A1\u4FDD\u6301\u6D3B\u52A8\u3002";
 async function restoreManagedSessionAfterRejectResume(ctx, input) {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskRecord(mount.env.fs, input.taskPath);
@@ -34388,8 +34231,7 @@ function emitTaskState(ctx, workspaceId, task, reason) {
       id: task.id,
       state: task.state,
       roleId: task.assigneeRoleId,
-      workNodeIds: [...task.workNodeIds],
-      contextNodeIds: [...task.contextNodeIds],
+      nodeIds: [...task.nodeIds],
       sessionId: task.executionSessionId,
       reason
     },
@@ -34886,8 +34728,7 @@ function projectTask(task) {
     path: task.path,
     id: task.id,
     assigneeRoleId: task.assigneeRoleId,
-    workNodeIds: [...task.workNodeIds],
-    contextNodeIds: [...task.contextNodeIds],
+    nodeIds: [...task.nodeIds],
     state: task.state,
     manifest: task.manifest,
     requester,
@@ -36078,7 +35919,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 9;
+var TENT_SERVICE_PROTOCOL_VERSION = 10;
 
 // src/service/tool-approval-store.ts
 import * as fs18 from "node:fs/promises";

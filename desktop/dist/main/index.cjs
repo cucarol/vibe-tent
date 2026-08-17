@@ -168,7 +168,7 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 9;
+var TENT_SERVICE_PROTOCOL_VERSION = 10;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -1066,12 +1066,11 @@ function normalizeRequest(raw) {
   if (raw.operation === "dispatch" && exactKeys(raw, [
     "operation",
     "workspaceId",
-    "workNodeIds",
-    "contextNodeIds",
+    "nodeIds",
     "prompt",
     "target",
     "acceptMode"
-  ]) && uniqueStrings(raw.workNodeIds, false) && uniqueStrings(raw.contextNodeIds, true) && raw.workNodeIds.every((id) => !raw.contextNodeIds.includes(id)) && nonEmpty(raw.prompt) && isRecord2(raw.target) && exactKeys(raw.target, ["kind", "id"]) && (raw.target.kind === "role" || raw.target.kind === "connection") && nonEmpty(raw.target.id) && (raw.acceptMode === "review-required" || raw.acceptMode === "auto-accept" || raw.acceptMode === "agent-decide")) return raw;
+  ]) && uniqueStrings(raw.nodeIds, true) && nonEmpty(raw.prompt) && isRecord2(raw.target) && exactKeys(raw.target, ["kind", "id"]) && (raw.target.kind === "role" || raw.target.kind === "connection") && nonEmpty(raw.target.id) && (raw.acceptMode === "review-required" || raw.acceptMode === "auto-accept" || raw.acceptMode === "agent-decide")) return raw;
   if (raw.operation === "acceptTaskResult" && exactKeys(raw, ["operation", "workspaceId", "resultId"]) && nonEmpty(raw.resultId)) return raw;
   if (raw.operation === "rejectTaskResult" && exactKeys(raw, ["operation", "workspaceId", "resultId", "note", "resume"]) && nonEmpty(raw.resultId) && nonEmpty(raw.note) && raw.resume === true) return raw;
   if (raw.operation === "respondDecision" && exactKeys(raw, ["operation", "workspaceId", "requestId", "response"]) && nonEmpty(raw.requestId) && isRecord2(raw.response)) {
@@ -1122,8 +1121,7 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
       const target = request.target.kind === "role" ? { assigneeRoleId: request.target.id } : { connectionId: request.target.id };
       const result = await client.call("task.dispatch", {
         workspaceId: request.workspaceId,
-        workNodeIds: request.workNodeIds,
-        contextNodeIds: request.contextNodeIds,
+        nodeIds: request.nodeIds,
         prompt: request.prompt,
         requester: { kind: "user", id: "user" },
         acceptMode: request.acceptMode,

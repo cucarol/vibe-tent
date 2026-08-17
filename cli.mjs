@@ -1989,27 +1989,16 @@ function normalizeTaskNodeSelection(value) {
     throw new TaskNodeSelectionError("Task Node selection must be an object.");
   }
   const record = value;
-  const expected = /* @__PURE__ */ new Set(["workNodeIds", "contextNodeIds"]);
+  const expected = /* @__PURE__ */ new Set(["nodeIds"]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskNodeSelectionError("Task Node selection contains unknown fields.");
   }
-  const workNodeIds = normalizeNodeIds(record.workNodeIds, "workNodeIds");
-  const contextNodeIds = normalizeNodeIds(record.contextNodeIds, "contextNodeIds");
-  if (workNodeIds.length === 0) {
-    throw new TaskNodeSelectionError("Task workNodeIds requires at least one Node.");
-  }
-  const work = new Set(workNodeIds);
-  const overlap = contextNodeIds.find((id) => work.has(id));
-  if (overlap) {
-    throw new TaskNodeSelectionError(
-      `Task Node cannot be both writable work and read-only context: ${overlap}.`
-    );
-  }
-  return { workNodeIds, contextNodeIds };
+  const nodeIds = normalizeNodeIds(record.nodeIds, "nodeIds");
+  return { nodeIds };
 }
 function orderedTaskNodeIds(selection) {
   const normalized = normalizeTaskNodeSelection(selection);
-  return [...normalized.workNodeIds, ...normalized.contextNodeIds];
+  return [...normalized.nodeIds];
 }
 
 // src/core/task-node-snapshot.ts
@@ -2048,7 +2037,7 @@ function normalizeTaskNodeSnapshot(value) {
     throw new TaskNodeSnapshotError("Task Node snapshot must be an object.");
   }
   const record = value;
-  const expected = /* @__PURE__ */ new Set(["id", "path", "type", "tags", "body", "etag"]);
+  const expected = /* @__PURE__ */ new Set(["id", "path", "type", "tags", "archived", "body", "etag"]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskNodeSnapshotError("Task Node snapshot contains unknown fields.");
   }
@@ -2064,6 +2053,9 @@ function normalizeTaskNodeSnapshot(value) {
   if (typeof record.body !== "string") {
     throw new TaskNodeSnapshotError("Task Node snapshot body must be a string.");
   }
+  if (typeof record.archived !== "boolean") {
+    throw new TaskNodeSnapshotError("Task Node snapshot archived must be a boolean.");
+  }
   if (typeof record.etag !== "string" || !/^[a-f0-9]{24}$/.test(record.etag)) {
     throw new TaskNodeSnapshotError("Task Node snapshot etag must be a canonical content etag.");
   }
@@ -2072,6 +2064,7 @@ function normalizeTaskNodeSnapshot(value) {
     path: normalizeNodePath(record.path),
     type: record.type.trim(),
     tags: normalizeTags2(record.tags),
+    archived: record.archived,
     body: record.body,
     etag: record.etag
   };
@@ -2081,11 +2074,50 @@ function normalizeTaskNodeSnapshots(value, selection) {
     throw new TaskNodeSnapshotError("Task Node snapshots must be an array.");
   }
   const snapshots = value.map(normalizeTaskNodeSnapshot);
-  const orderedNodeIds = orderedTaskNodeIds(normalizeTaskNodeSelection(selection));
-  if (snapshots.length !== orderedNodeIds.length || snapshots.some((snapshot, index) => snapshot.id !== orderedNodeIds[index])) {
-    throw new TaskNodeSnapshotError(
-      "Task Node snapshots must exactly match the ordered work/context Node refs."
+  const rootIds = orderedTaskNodeIds(selection);
+  const seen = /* @__PURE__ */ new Set();
+  for (const snapshot of snapshots) {
+    if (seen.has(snapshot.id)) {
+      throw new TaskNodeSnapshotError(`Task Node snapshots contain duplicate Node id: ${snapshot.id}.`);
+    }
+    seen.add(snapshot.id);
+  }
+  if (rootIds.length === 0) {
+    if (snapshots.length !== 0) {
+      throw new TaskNodeSnapshotError(
+        "Prompt-only Task Node snapshots must be empty when nodeIds is empty."
+      );
+    }
+    return snapshots;
+  }
+  const snapshotIndexById = new Map(snapshots.map((snapshot, index) => [snapshot.id, index]));
+  const rootPaths = /* @__PURE__ */ new Map();
+  let previousRootIndex = -1;
+  for (const rootId of rootIds) {
+    const index = snapshotIndexById.get(rootId);
+    if (index === void 0) {
+      throw new TaskNodeSnapshotError(
+        `Task Node snapshots must include every selected root Node id: ${rootId}.`
+      );
+    }
+    if (index <= previousRootIndex) {
+      throw new TaskNodeSnapshotError(
+        "Task Node snapshots must preserve the ordered root nodeIds[] sequence."
+      );
+    }
+    rootPaths.set(rootId, snapshots[index].path);
+    previousRootIndex = index;
+  }
+  const selectedRootPaths = [...rootPaths.values()];
+  for (const snapshot of snapshots) {
+    const underSelectedRoot = selectedRootPaths.some(
+      (rootPath) => snapshot.path === rootPath || snapshot.path.startsWith(`${rootPath}/`)
     );
+    if (!underSelectedRoot) {
+      throw new TaskNodeSnapshotError(
+        `Task Node snapshots must stay within the selected root subtrees: ${snapshot.path}.`
+      );
+    }
   }
   return snapshots;
 }
@@ -2103,14 +2135,13 @@ function normalizeTaskNodeContext(value) {
     throw new TaskNodeContextError("Task Node context must be an object.");
   }
   const record = value;
-  const expected = /* @__PURE__ */ new Set(["workNodeIds", "contextNodeIds", "nodeSnapshots"]);
+  const expected = /* @__PURE__ */ new Set(["nodeIds", "nodeSnapshots"]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskNodeContextError("Task Node context contains unknown fields.");
   }
   try {
     const selection = normalizeTaskNodeSelection({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds
+      nodeIds: record.nodeIds
     });
     return {
       ...selection,
@@ -2125,7 +2156,7 @@ function normalizeTaskNodeContext(value) {
 }
 
 // src/core/task-context-card-schema.ts
-var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v2";
+var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v3";
 var TaskContextCardSchemaError = class extends Error {
   constructor(message, cause) {
     super(message);
@@ -2140,8 +2171,7 @@ function normalizeTaskContextCard(value) {
   const record = value;
   const expected = /* @__PURE__ */ new Set([
     "schemaVersion",
-    "workNodeIds",
-    "contextNodeIds",
+    "nodeIds",
     "nodeSnapshots",
     "contextGeneration"
   ]);
@@ -2160,8 +2190,7 @@ function normalizeTaskContextCard(value) {
   }
   try {
     const nodeContext = normalizeTaskNodeContext({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds,
+      nodeIds: record.nodeIds,
       nodeSnapshots: record.nodeSnapshots
     });
     return {
@@ -2254,26 +2283,6 @@ function assertIntegrationAuthorityMatchesParent(authority, requester) {
     );
   }
   return derived;
-}
-
-// src/core/task-node-refs.ts
-var MISSING_TASK_NODE_SELECTION = "MISSING_TASK_NODE_SELECTION: Task.workNodeIds and Task.contextNodeIds are required.";
-function normalizedSelection(task) {
-  const label = task.id || task.path || "(unknown)";
-  try {
-    return normalizeTaskNodeSelection({
-      workNodeIds: task.workNodeIds,
-      contextNodeIds: task.contextNodeIds
-    });
-  } catch (error) {
-    const wrapped = new Error(`${MISSING_TASK_NODE_SELECTION} task=${label}`);
-    wrapped.cause = error;
-    throw wrapped;
-  }
-}
-function taskReferencedNodeIds(task) {
-  const selection = normalizedSelection(task);
-  return [...selection.workNodeIds, ...selection.contextNodeIds];
 }
 
 // src/core/task.ts
@@ -2452,7 +2461,7 @@ async function loadTaskRecord(fs10, path9) {
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
   if (!contextCard) {
     throw new Error(
-      `Invalid task record format: ${path9} (missing Task Context Card v2).`
+      `Invalid task record format: ${path9} (missing Task Context Card).`
     );
   }
   if (!isAcceptMode(data.acceptMode)) {
@@ -2474,8 +2483,7 @@ async function loadTaskRecord(fs10, path9) {
     requester,
     prompt,
     contextCard,
-    workNodeIds: contextCard.workNodeIds,
-    contextNodeIds: contextCard.contextNodeIds,
+    nodeIds: contextCard.nodeIds,
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode
   };
@@ -2745,9 +2753,23 @@ function normalizeProposalPath(input) {
   return path9;
 }
 
-// src/core/claim.ts
-function taskIsActiveOccupation(task) {
-  return isActiveTaskState(task.state);
+// src/core/task-node-refs.ts
+var MISSING_TASK_NODE_SELECTION = "MISSING_TASK_NODE_SELECTION: Task.nodeIds is required.";
+function normalizedSelection(task) {
+  const label = task.id || task.path || "(unknown)";
+  try {
+    return normalizeTaskNodeSelection({
+      nodeIds: task.nodeIds
+    });
+  } catch (error) {
+    const wrapped = new Error(`${MISSING_TASK_NODE_SELECTION} task=${label}`);
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+function taskReferencedNodeIds(task) {
+  const selection = normalizedSelection(task);
+  return [...selection.nodeIds];
 }
 
 // src/core/workspace.ts
@@ -2805,7 +2827,7 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
       );
     }
   }
-  const activeTasks = allTasks.filter((task) => taskIsActiveOccupation(task)).filter((task) => task.state !== "queued").filter((task) => !role || task.assigneeRoleId === roleId);
+  const activeTasks = allTasks.filter((task) => isActiveTaskState(task.state)).filter((task) => task.state !== "queued").filter((task) => !role || task.assigneeRoleId === roleId);
   lines.push("");
   if (activeTasks.length === 0) {
     lines.push("Active tasks: none");
@@ -3198,7 +3220,7 @@ async function readBoundedEndpointFile(file) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 9;
+var TENT_SERVICE_PROTOCOL_VERSION = 10;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -3870,7 +3892,7 @@ var ServiceClient = class {
     );
   }
   /**
-   * V0.2 Output provenance: Output → Task Result → Task → sourceNode by id.
+   * V0.2 Output provenance: Output → Task Result → Task.
    * Unbound type=output returns bound:false; never infers by path/name/time.
    */
   outputProvenance(workspaceId, nodeId) {
@@ -4385,10 +4407,16 @@ async function runTaskCommand(sub, args, globals = {}) {
       }
       case "claim": {
         const taskPath = positionals[0];
-        const hasDirectClaimInput = (repeatable["work-node"]?.length ?? 0) > 0 || (repeatable["context-node"]?.length ?? 0) > 0 || Object.prototype.hasOwnProperty.call(flags, "prompt") || Object.prototype.hasOwnProperty.call(flags, "from-task");
+        const hasRetiredDirectNodeFlags = Object.prototype.hasOwnProperty.call(flags, "work-node") || Object.prototype.hasOwnProperty.call(flags, "context-node");
+        const hasDirectClaimInput = (repeatable["node"]?.length ?? 0) > 0 || Object.prototype.hasOwnProperty.call(flags, "prompt") || Object.prototype.hasOwnProperty.call(flags, "from-task");
+        if (hasRetiredDirectNodeFlags) {
+          return failUsage(
+            "tent task claim: --work-node/--context-node are retired; use --node <nodeId> ..."
+          );
+        }
         if (taskPath && hasDirectClaimInput) {
           return failUsage(
-            "tent task claim: <taskPath> cannot be combined with --work-node, --context-node, --prompt, or --from-task"
+            "tent task claim: <taskPath> cannot be combined with --node, --prompt, or --from-task"
           );
         }
         if (taskPath) {
@@ -4409,19 +4437,14 @@ state: ${row.state ?? "running"}
         }
         if (!hasDirectClaimInput || positionals.length > 0) {
           return failUsage(
-            "Usage: tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
+            "Usage: tent task claim [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
           );
         }
-        const rawWorkNodes = repeatable["work-node"] ?? [];
-        const rawContextNodes = repeatable["context-node"] ?? [];
-        if ([...rawWorkNodes, ...rawContextNodes].some((value) => !String(value ?? "").trim())) {
+        const rawNodes = repeatable["node"] ?? [];
+        if (rawNodes.some((value) => !String(value ?? "").trim())) {
           return failUsage("tent task claim: every Node value must be a non-empty nodeId");
         }
-        const workNodeIds = collectTaskNodeIds(rawWorkNodes);
-        const contextNodeIds = collectTaskNodeIds(rawContextNodes);
-        if (workNodeIds.length === 0) {
-          return failUsage("tent task claim: direct Role claim requires at least one --work-node");
-        }
+        const nodeIds = collectTaskNodeIds(rawNodes);
         if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
           return failUsage("tent task claim: direct Role claim requires --prompt <text> or --prompt -");
         }
@@ -4448,10 +4471,9 @@ state: ${row.state ?? "running"}
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || void 0;
         const result = await client.taskClaimDirect(workspaceId, {
           roleId,
-          workNodeIds,
-          contextNodeIds,
+          nodeIds,
           prompt,
-          sourceTaskPath
+          ...sourceTaskPath ? { sourceTaskPath } : {}
         });
         return okPrint(result, json, (r) => {
           const row = r;
@@ -4500,7 +4522,7 @@ state: ${row.state ?? "submitted"}
         });
       }
       case "dispatch": {
-        const usage2 = "Usage: tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+        const usage2 = "Usage: tent task dispatch --target role:<roleId>|connection:<connectionId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
         const unknownFlag = findUnknownFlag(flags, DISPATCH_FLAGS);
         if (unknownFlag) {
           return failUsage(`Unknown option --${unknownFlag}
@@ -4508,7 +4530,7 @@ ${usage2}`);
         }
         if (positionals.length > 0) {
           return failUsage(
-            "Public ordinary dispatch no longer accepts positional <nodeId> <role> grammar; use --target, --work-node, and optional --context-node.\n" + usage2
+            "Public ordinary dispatch no longer accepts positional <nodeId> <role> grammar; use --target and optional --node.\n" + usage2
           );
         }
         const targetRaw = String(flags.target ?? "").trim();
@@ -4531,9 +4553,8 @@ ${usage2}`);
 ${usage2}`
           );
         }
-        const rawWorkNodes = repeatable["work-node"] ?? [];
-        const rawContextNodes = repeatable["context-node"] ?? [];
-        for (const value of [...rawWorkNodes, ...rawContextNodes]) {
+        const rawNodes = repeatable["node"] ?? [];
+        for (const value of rawNodes) {
           if (!String(value ?? "").trim()) {
             return failUsage(
               `Every Node value must be a non-empty nodeId (got empty/whitespace)
@@ -4541,14 +4562,7 @@ ${usage2}`
             );
           }
         }
-        const workNodeIds = collectTaskNodeIds(rawWorkNodes);
-        const contextNodeIds = collectTaskNodeIds(rawContextNodes);
-        if (workNodeIds.length === 0) {
-          return failUsage(
-            `At least one --work-node <nodeId> is required in this batch
-${usage2}`
-          );
-        }
+        const nodeIds = collectTaskNodeIds(rawNodes);
         if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
           return failUsage(`--prompt is required (<text> or -)
 ${usage2}`);
@@ -4564,8 +4578,7 @@ ${usage2}`);
         const roleCaller = Boolean(envRole && envRole !== "user");
         const requester = roleCaller ? { kind: "role", id: envRole } : { kind: "user", id: "user" };
         const common = {
-          workNodeIds,
-          contextNodeIds,
+          nodeIds,
           prompt,
           requester
         };
@@ -4973,7 +4986,7 @@ tasks: (none)
   const lines = [`workspaceId: ${row.workspaceId ?? "?"}`, `tasks: ${tasks.length}`, ""];
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}` + (t.assigneeRoleId ? `	assigneeRole=${t.assigneeRoleId}` : "") + `	work=${(t.workNodeIds ?? []).join(",") || "-"}	context=${(t.contextNodeIds ?? []).join(",") || "-"}` + (t.executionSessionId ? `	executionSession=${t.executionSessionId}` : "") + (t.statusDetail?.kind ? `	return=${t.statusDetail.kind}` : "")
+      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}` + (t.assigneeRoleId ? `	assigneeRole=${t.assigneeRoleId}` : "") + `	nodes=${(t.nodeIds ?? []).join(",") || "-"}` + (t.executionSessionId ? `	executionSession=${t.executionSessionId}` : "") + (t.statusDetail?.kind ? `	return=${t.statusDetail.kind}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -4986,8 +4999,7 @@ function formatTaskGet(result) {
     `assigneeRoleId: ${t.assigneeRoleId ?? "-"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
-    `workNodeIds: ${(t.workNodeIds ?? []).join(", ") || "-"}`,
-    `contextNodeIds: ${(t.contextNodeIds ?? []).join(", ") || "-"}`
+    `nodeIds: ${(t.nodeIds ?? []).join(", ") || "-"}`
   ];
   if (t.executionSessionId) lines.push(`executionSessionId: ${t.executionSessionId}`);
   if (t.statusDetail?.kind) {
@@ -5139,11 +5151,10 @@ var BOOLEAN_FLAGS = /* @__PURE__ */ new Set([
   "as-sub",
   "deny"
 ]);
-var REPEATABLE_FLAGS = /* @__PURE__ */ new Set(["work-node", "context-node", "output-node"]);
+var REPEATABLE_FLAGS = /* @__PURE__ */ new Set(["node", "output-node"]);
 var DISPATCH_FLAGS = /* @__PURE__ */ new Set([
   "target",
-  "work-node",
-  "context-node",
+  "node",
   "prompt",
   "workspace",
   "json",
@@ -5166,11 +5177,9 @@ function findUnknownFlag(flags, allowed) {
 }
 function collectTaskNodeIds(raw) {
   const nodes = [];
-  const seen = /* @__PURE__ */ new Set();
   for (const value of raw ?? []) {
     const id = String(value ?? "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
+    if (!id) continue;
     nodes.push(id);
   }
   return nodes;
@@ -5221,16 +5230,15 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task package <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--workspace <path>] [--json]
-  tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
+  tent task claim [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
       # requires canonical TENT_ROLE_ID plus the current trusted Role Session capability
       # Service derives requester/review authority from durable facts
   tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review] [--workspace <path>] [--json]
-  tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+  tent task dispatch --target role:<roleId>|connection:<connectionId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target connection:* machine Settings Connection + exact managed Session
-      # --work-node      repeatable writable Nodes (at least one; exact occupation)
-      # --context-node   repeatable shared read-only context Nodes
+      # --node           repeatable ordered root Nodes; omit for a prompt-only Task
       # requester derives from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <resultId> --actor <user|roleId> [--workspace <path>] [--json]
