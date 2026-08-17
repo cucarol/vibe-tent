@@ -5,7 +5,7 @@ import { loadProposals } from "./proposal.js";
 import { loadTaskRecords, taskExecutionLabel } from "./task.js";
 import { loadRolesRegistry, resolveRole } from "./skillRoleRegistry.js";
 import { loadTent, type LoadedTent } from "./tree.js";
-import { taskIsActiveOccupation } from "./claim.js";
+import { isActiveTaskState } from "./task-model.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { resolveTentWorkspace } from "./workspace.js";
 import { INDEX_PATH } from "./paths.js";
@@ -69,9 +69,9 @@ export async function renderTentStatus(
     }
   }
 
-  // Claimed occupation only (running/waiting/submitted). Queued stays under Pending tasks.
+  // In-flight Tasks only (running/waiting/submitted). Queued stays under Pending tasks.
   const activeTasks = allTasks
-    .filter((task) => taskIsActiveOccupation(task))
+    .filter((task) => isActiveTaskState(task.state))
     .filter((task) => task.state !== "queued")
     .filter((task) => !role || task.assigneeRoleId === roleId);
   lines.push("");

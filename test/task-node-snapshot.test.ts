@@ -17,10 +17,15 @@ function snapshot(id = A) {
     id,
     path: `Goals/${id}`,
     type: "goal-reference",
+    archived: false,
     tags: ["release", "review"],
     body: "Frozen body\n",
     etag: "a".repeat(24),
   };
+}
+
+function snapshotAt(id: string, path: string) {
+  return { ...snapshot(id), path };
 }
 
 test("Task Node snapshots preserve semantic content and canonicalize identity metadata", () => {
@@ -49,21 +54,32 @@ test("Task Node snapshots reject partial, extensible, and non-canonical records"
   }
 });
 
-test("Task Node snapshots exactly cover ordered work then context refs", () => {
+test("Task Node snapshots include selected roots in order and reject duplicate or unrelated snapshots", () => {
   const snapshots = [snapshot(A), snapshot(B)];
-  const selection = { workNodeIds: [A], contextNodeIds: [B] };
+  const selection = { nodeIds: [A, B] };
   assert.deepEqual(normalizeTaskNodeSnapshots(snapshots, selection), snapshots);
   assert.throws(
-    () => normalizeTaskNodeSnapshots(snapshots, { workNodeIds: [B], contextNodeIds: [A] }),
+    () => normalizeTaskNodeSnapshots(snapshots, { nodeIds: [B, A] }),
     TaskNodeSnapshotError
   );
   assert.throws(
-    () => normalizeTaskNodeSnapshots(snapshots, { workNodeIds: [A], contextNodeIds: [] }),
-    TaskNodeSnapshotError
-  );
-  assert.throws(
-    () => normalizeTaskNodeSnapshots(snapshots, { workNodeIds: [A], contextNodeIds: [A] }),
+    () => normalizeTaskNodeSnapshots(snapshots, { nodeIds: [A, A] }),
     Error
+  );
+  assert.deepEqual(
+    normalizeTaskNodeSnapshots(
+      [snapshotAt(A, "Goals/root"), snapshotAt(B, "Goals/root/child")],
+      { nodeIds: [A] }
+    ),
+    [snapshotAt(A, "Goals/root"), snapshotAt(B, "Goals/root/child")]
+  );
+  assert.throws(
+    () =>
+      normalizeTaskNodeSnapshots(
+        [snapshotAt(A, "Goals/root"), snapshotAt(B, "Goals/other")],
+        { nodeIds: [A] }
+      ),
+    TaskNodeSnapshotError
   );
 });
 

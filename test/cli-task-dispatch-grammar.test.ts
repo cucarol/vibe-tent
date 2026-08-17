@@ -1,17 +1,10 @@
-/**
- * Public ordinary Task dispatch grammar (cx-b9bf58 / tk-vnb8vesj):
- *   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId>… [--context-node <nodeId>…] --prompt <text>|-
- *
- * Fake Service/client only — no paid/live provider, no real Local Service.
- */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { runTaskCommand, taskHelpText, parseTaskFlags } from "../src/cli/task-rpc.js";
+import { parseTaskFlags, runTaskCommand, taskHelpText } from "../src/cli/task-rpc.js";
 
-/** Minimal in-workspace Tent marker so ensureMountedWorkspace can resolve paths. */
 async function makeFakeTentCwd(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-dispatch-"));
   await fs.mkdir(path.join(root, ".tent"), { recursive: true });
@@ -39,653 +32,145 @@ function capturingDispatchClient() {
         assigneeRoleId: args.assigneeRoleId,
         executionSessionId: isConnection ? "ss-capture" : undefined,
         requester: args.requester,
-        session: isConnection
-            ? {
-                session: {
-                  sessionId: "ss-capture",
-                  state: "live",
-                  connectionId: String(args.connectionId),
-                },
-              }
-            : undefined,
       };
     },
   };
   return { client, calls };
 }
 
-async function withTentRoleId<T>(
-  roleId: string | undefined,
-  fn: () => Promise<T>
-): Promise<T> {
-  const previous = process.env.TENT_ROLE_ID;
-  try {
-    if (roleId === undefined) delete process.env.TENT_ROLE_ID;
-    else process.env.TENT_ROLE_ID = roleId;
-    return await fn();
-  } finally {
-    if (previous === undefined) delete process.env.TENT_ROLE_ID;
-    else process.env.TENT_ROLE_ID = previous;
-  }
-}
-
-test("CLI help documents only the canonical target and work/context Node grammar", () => {
+test("CLI help documents canonical dispatch grammar only", () => {
   const help = taskHelpText();
   assert.match(help, /tent task dispatch --target role:<roleId>\|connection:<connectionId>/);
-  assert.match(help, /--work-node <nodeId>/);
-  assert.match(help, /--context-node <nodeId>/);
-  assert.match(help, /queued; never starts managed ACP/);
-  assert.match(help, /Settings Connection/);
-  assert.match(help, /Any flag outside this command's canonical grammar is rejected/);
-  assert.doesNotMatch(help, /tent task dispatch <nodeId>/);
-  const usageLine = help
-    .split("\n")
-    .find((l) => l.includes("tent task dispatch --target"));
-  assert.ok(usageLine);
-  assert.equal(usageLine!.includes("--target"), true);
-  assert.match(help, /task request-decision/);
-  assert.match(help, /task decision list\|get\|respond\|escalate/);
-  assert.doesNotMatch(help, /ask-user|user-ask/i);
+  assert.match(help, /\[--node <nodeId> \.\.\.\]/);
+  assert.match(help, /--prompt <text>\|-/);
+  assert.doesNotMatch(help, /--work-node|--context-node/);
 });
 
-test("CLI task get/list show bounded formal return while JSON keeps the typed projection", async () => {
-  const cwd = await makeFakeTentCwd();
-  const report = `${"中".repeat(2_100)}END_MARKER`;
-  const task = {
-    path: "temp/roles/rl-test/tasks/task-return.md",
-    id: "tk-return",
-    state: "failed",
-    workNodeIds: ["cx-work"],
-    contextNodeIds: [],
-    statusDetail: {
-      kind: "failed",
-      report,
-      error: "formal failure",
-      code: "TASK_FAILED",
-    },
-  };
-  const client = {
-    listWorkspaces: async () => ({ workspaces: [] }),
-    mount: async (workspaceRoot: string) => ({
-      workspaceId: "ws-return",
-      workspaceRoot,
-      systemRoot: path.join(workspaceRoot, ".tent"),
-    }),
-    taskGet: async () => ({ workspaceId: "ws-return", task }),
-    taskList: async () => ({ workspaceId: "ws-return", tasks: [task] }),
-  };
-
-  const human = await runTaskCommand("get", [task.path], { cwd, client: client as never });
-  assert.equal(human.exitCode, 0);
-  assert.match(human.stdout, /--- last return ---[\s\S]*kind: failed/);
-  assert.match(human.stdout, /\[truncated\]/);
-  assert.doesNotMatch(human.stdout, /END_MARKER/);
-
-  const listed = await runTaskCommand("list", [], { cwd, client: client as never });
-  assert.match(listed.stdout, /return=failed/);
-
-  const json = await runTaskCommand("get", [task.path], {
-    cwd,
-    client: client as never,
-    json: true,
-  });
-  assert.match(json.stdout, /END_MARKER/);
-});
-
-test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias knobs", async () => {
-  const cwd = await makeFakeTentCwd();
-  const calls: Array<{ method: string; args: unknown[] }> = [];
-  const client = {
-    listWorkspaces: async () => ({ workspaces: [] }),
-    mount: async (workspaceRoot: string) => ({
-      workspaceId: "ws-decision",
-      workspaceRoot,
-      systemRoot: path.join(workspaceRoot, ".tent"),
-    }),
-    taskRequestDecision: async (...args: unknown[]) => {
-      calls.push({ method: "request", args });
-      return { taskPath: args[1], state: "waiting", request: { id: "dr-0000000000" } };
-    },
-    decisionRequestRespond: async (...args: unknown[]) => {
-      calls.push({ method: "respond", args });
-      return { request: { id: args[1], status: "answered" }, state: "running" };
-    },
-  };
-
-  const requested = await runTaskCommand(
-    "request-decision",
-    [
-      "temp/role/tasks/task.md",
-      "--question",
-      "Choose?",
-      "--options",
-      "a=Alpha,b=Beta",
-    ],
-    { client: client as never, cwd }
-  );
-  assert.equal(requested.exitCode, 0, requested.stderr);
-  assert.deepEqual(calls[0], {
-    method: "request",
-    args: [
-      "ws-decision",
-      "temp/role/tasks/task.md",
-      {
-        question: "Choose?",
-        options: [
-          { id: "a", label: "Alpha" },
-          { id: "b", label: "Beta" },
-        ],
-      },
-    ],
-  });
-
-  const denied = await runTaskCommand(
-    "decision",
-    ["respond", "dr-0000000000", "--deny"],
-    { client: client as never, cwd }
-  );
-  assert.equal(denied.exitCode, 0, denied.stderr);
-  assert.deepEqual(calls[1], {
-    method: "respond",
-    args: [
-      "ws-decision",
-      "dr-0000000000",
-      { kind: "deny" },
-    ],
-  });
-
-  const actor = await runTaskCommand(
-    "decision",
-    [
-      "respond",
-      "dr-0000000000",
-      "--deny",
-      "--actor",
-      "rl-forged",
-    ],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(actor.exitCode, 0);
-  assert.match(actor.stderr, /Unknown option --actor/);
-  assert.equal(calls.length, 2, "rejected actor selector must not call mutation RPC");
-
-  for (const alias of ["requestDecision", "decision-request", "decisionRequest"]) {
-    const rejected = await runTaskCommand(alias, [], { client: client as never, cwd });
-    assert.notEqual(rejected.exitCode, 0);
-  }
-  assert.equal(calls.length, 2);
-});
-
-test("parseTaskFlags collects repeatable work/context Node values in order", () => {
+test("parseTaskFlags preserves exact repeated --node order and duplicates", () => {
   const parsed = parseTaskFlags([
     "--target",
     "role:rl-planner",
-    "--work-node",
+    "--node",
     "cx-a",
-    "--context-node",
-    "cx-context",
-    "--work-node",
+    "--node",
     "cx-b",
-    "--context-node",
-    "cx-context-2",
-    "--work-node",
+    "--node",
     "cx-a",
     "--prompt",
     "hi",
   ]);
-  assert.deepEqual(parsed.repeatable["work-node"], ["cx-a", "cx-b", "cx-a"]);
-  assert.deepEqual(parsed.repeatable["context-node"], ["cx-context", "cx-context-2"]);
+  assert.deepEqual(parsed.repeatable.node, ["cx-a", "cx-b", "cx-a"]);
   assert.equal(parsed.flags.target, "role:rl-planner");
   assert.equal(parsed.flags.prompt, "hi");
-  assert.deepEqual(parsed.positionals, []);
 });
 
-test("role target: queued durable handoff; work/context Nodes; no startSession", async () => {
+test("role target forwards exact ordered nodeIds and never starts managed ACP", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
-  await withTentRoleId(undefined, async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "role:rl-executor",
-        "--work-node",
-        "cx-one",
-        "--work-node",
-        "cx-two",
-        "--work-node",
-        "cx-one",
-        "--context-node",
-        "cx-context",
-        "--prompt",
-        "role handoff work",
-        "--json",
-      ],
-      { client: client as never, cwd, json: true }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    assert.equal(calls.length, 1);
-    const args = calls[0]!;
-    assert.equal(args.assigneeRoleId, "rl-executor");
-    assert.equal(args.connectionId, undefined);
-    assert.deepEqual(args.workNodeIds, ["cx-one", "cx-two"]);
-    assert.deepEqual(args.contextNodeIds, ["cx-context"]);
-    assert.equal(args.prompt, "role handoff work");
-    assert.deepEqual(args.requester, { kind: "user", id: "user" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-    assert.equal(args.acceptMode, undefined);
-
-    const parsed = JSON.parse(r.stdout) as {
-      state?: string;
-      assigneeRoleId?: string;
-      session?: unknown;
-    };
-    assert.equal(parsed.state, "queued");
-    assert.equal(parsed.assigneeRoleId, "rl-executor");
-    assert.equal(parsed.session, undefined);
-  });
-});
-
-test("Connection target: managed ACP exact Session; work/context Nodes", async () => {
-  const cwd = await makeFakeTentCwd();
-  const { client, calls } = capturingDispatchClient();
-  await withTentRoleId(undefined, async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "connection:connection-a",
-        "--work-node",
-        "cx-alpha",
-        "--work-node",
-        "cx-beta",
-        "--context-node",
-        "cx-context",
-        "--prompt",
-        "managed agent work",
-        "--json",
-      ],
-      { client: client as never, cwd, json: true }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    assert.equal(calls.length, 1);
-    const args = calls[0]!;
-    assert.equal(args.connectionId, "connection-a");
-    assert.equal(args.assigneeRoleId, undefined);
-    assert.deepEqual(args.workNodeIds, ["cx-alpha", "cx-beta"]);
-    assert.deepEqual(args.contextNodeIds, ["cx-context"]);
-    assert.deepEqual(args.requester, { kind: "user", id: "user" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-
-    const parsed = JSON.parse(r.stdout) as {
-      state?: string;
-      executionSessionId?: string;
-      session?: { session?: { sessionId?: string } };
-    };
-    assert.equal(parsed.state, "running");
-    assert.equal(parsed.executionSessionId, "ss-capture");
-    assert.ok(parsed.session?.session?.sessionId || parsed.session);
-  });
-});
-
-test("requester is the single parent relation for Role and user callers", async () => {
-  const cwd = await makeFakeTentCwd();
-  const { client, calls } = capturingDispatchClient();
-
-  // Role caller → role:* : requester=Role, no startSession
-  await withTentRoleId("rl-planning", async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "role:rl-executor",
-        "--work-node",
-        "cx-n1",
-        "--prompt",
-        "from role to role",
-        "--json",
-      ],
-      {
-        client: client as never,
-        cwd,
-        json: true,
-        env: { ...process.env, TENT_ROLE_ID: "rl-planning" },
-      }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.requester, { kind: "role", id: "rl-planning" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-    assert.equal(args.assigneeRoleId, "rl-executor");
-    assert.equal(args.connectionId, undefined);
-  });
-
-  // Role caller → connection:* : requester=Role, exact Session
-  await withTentRoleId("rl-planning", async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "connection:connection-a",
-        "--work-node",
-        "cx-n1b",
-        "--prompt",
-        "from role to agent",
-        "--json",
-      ],
-      {
-        client: client as never,
-        cwd,
-        json: true,
-        env: { ...process.env, TENT_ROLE_ID: "rl-planning" },
-      }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.requester, { kind: "role", id: "rl-planning" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-    assert.equal(args.connectionId, "connection-a");
-    assert.equal(args.assigneeRoleId, undefined);
-  });
-
-  // User-direct → connection:*
-  await withTentRoleId(undefined, async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "connection:connection-b",
-        "--work-node",
-        "cx-n2",
-        "--prompt",
-        "from user",
-        "--json",
-      ],
-      { client: client as never, cwd, json: true }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.requester, { kind: "user", id: "user" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-    assert.equal(args.connectionId, "connection-b");
-    assert.equal(args.assigneeRoleId, undefined);
-  });
-
-  // User-direct → role:*
-  await withTentRoleId(undefined, async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "role:rl-executor",
-        "--work-node",
-        "cx-n2b",
-        "--prompt",
-        "user to role",
-        "--json",
-      ],
-      { client: client as never, cwd, json: true }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.requester, { kind: "user", id: "user" });
-    assert.equal(args.reviewer, undefined);
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-    assert.equal(args.startSession, undefined);
-  });
-
-  // Missing TENT_ROLE_ID is the plain user-direct path.
-  await withTentRoleId(undefined, async () => {
-    const r = await runTaskCommand(
-      "dispatch",
-      [
-        "--target",
-        "role:rl-executor",
-        "--work-node",
-        "cx-n3",
-        "--prompt",
-        "tent role user token",
-        "--json",
-      ],
-      {
-        client: client as never,
-        cwd,
-        json: true,
-        env: { ...process.env, TENT_ROLE_ID: "" },
-      }
-    );
-    assert.equal(r.exitCode, 0, r.stderr + r.stdout);
-    const args = calls[calls.length - 1]!;
-    assert.deepEqual(args.requester, { kind: "user", id: "user" });
-    assert.equal(args.callerKind, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(args, "as" + "Sub"), false);
-  });
-});
-
-test("unknown flags and positional dispatch input fail before mutation", async () => {
-  const cwd = await makeFakeTentCwd();
-  const { client, calls } = capturingDispatchClient();
-  const unknown = await runTaskCommand(
-    "dispatch",
-    ["--target", "role:x", "--work-node", "cx-1", "--prompt", "p", "--unknown-option", "x"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(unknown.exitCode, 0);
-  assert.match(unknown.stderr, /Unknown option --unknown-option/);
-
-  const positional = await runTaskCommand(
-    "dispatch",
-    ["cx-1", "executor", "positional prompt"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(positional.exitCode, 0);
-  assert.match(positional.stderr + positional.stdout, /--target|--work-node/i);
-  assert.equal(calls.length, 0);
-});
-
-test("task accept rejects --commits before workspace or client access", async () => {
-  const accessed: string[] = [];
-  const client = new Proxy(
-    {},
-    {
-      get(_target, property) {
-        accessed.push(String(property));
-        return async () => {
-          throw new Error("client must not be called");
-        };
-      },
-    }
-  );
   const result = await runTaskCommand(
-    "accept",
-    ["temp/规划/tasks/task-example.md", "--actor", "user", "--commits", "abc1234"],
-    { client: client as never, cwd: "C:\\path-that-must-not-be-read" }
-  );
-  assert.notEqual(result.exitCode, 0);
-  assert.match(result.stderr, /does not accept --commits/);
-  assert.deepEqual(accessed, []);
-  const acceptUsage = taskHelpText()
-    .split("\n")
-    .find((line) => line.includes("tent task accept"));
-  assert.ok(acceptUsage);
-  assert.doesNotMatch(acceptUsage!, /--commits/);
-});
-
-test("task accept/reject reject retired taskPath and --result-id forms before client access", async () => {
-  const accessed: string[] = [];
-  const client = new Proxy(
-    {},
-    {
-      get(_target, property) {
-        accessed.push(String(property));
-        return async () => {
-          throw new Error("client must not be called");
-        };
-      },
-    }
-  );
-  for (const [sub, args] of [
-    ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user"]],
-    ["reject", ["temp/规划/tasks/task-example.md", "rs-current", "--actor", "user", "--note", "no"]],
-    ["accept", ["rs-current", "--result-id", "rs-old", "--actor", "user"]],
-  ] as const) {
-    const result = await runTaskCommand(sub, [...args], {
-      client: client as never,
-      cwd: "C:\\path-that-must-not-be-read",
-    });
-    assert.notEqual(result.exitCode, 0);
-    assert.match(result.stderr, /Usage|Unknown option/);
-  }
-  assert.deepEqual(accessed, []);
-});
-
-test("task accept/reject forward exact positional TaskResult identity", async () => {
-  const cwd = await makeFakeTentCwd();
-  const calls: Array<{ method: string; args: unknown[] }> = [];
-  const client = {
-    listWorkspaces: async () => ({ workspaces: [] }),
-    mount: async (workspaceRoot: string) => ({
-      workspaceId: "ws-review",
-      workspaceRoot,
-      systemRoot: path.join(workspaceRoot, ".tent"),
-    }),
-    taskAccept: async (...args: unknown[]) => {
-      calls.push({ method: "accept", args });
-      return { state: "accepted" };
-    },
-    taskReject: async (...args: unknown[]) => {
-      calls.push({ method: "reject", args });
-      return { state: "running", result: { status: "rejected" } };
-    },
-  };
-  const accepted = await runTaskCommand(
-    "accept",
-    ["rs-current", "--actor", "user"],
-    { client: client as never, cwd }
-  );
-  assert.equal(accepted.exitCode, 0, accepted.stderr);
-  const rejected = await runTaskCommand(
-    "reject",
-    ["rs-next", "--actor", "user", "--note", "retry", "--resume"],
-    { client: client as never, cwd }
-  );
-  assert.equal(rejected.exitCode, 0, rejected.stderr);
-  assert.deepEqual(calls, [
-    {
-      method: "accept",
-      args: ["ws-review", "rs-current", "user"],
-    },
-    {
-      method: "reject",
-      args: ["ws-review", "rs-next", "user", { note: "retry", resume: true }],
-    },
-  ]);
-});
-
-test("missing --target / --work-node / --prompt and invalid target fail loud", async () => {
-  const cwd = await makeFakeTentCwd();
-  const { client, calls } = capturingDispatchClient();
-
-  const missingTarget = await runTaskCommand(
-    "dispatch",
-    ["--work-node", "cx-1", "--prompt", "p"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(missingTarget.exitCode, 0);
-  assert.match(missingTarget.stderr, /--target/i);
-
-  const badTarget = await runTaskCommand(
-    "dispatch",
-    ["--target", "worker:fake", "--work-node", "cx-1", "--prompt", "p"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(badTarget.exitCode, 0);
-  assert.match(badTarget.stderr, /role:|connection:/i);
-
-  const missingWorkNode = await runTaskCommand(
-    "dispatch",
-    ["--target", "role:rl-executor", "--prompt", "p"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(missingWorkNode.exitCode, 0);
-  assert.match(missingWorkNode.stderr, /--work-node/i);
-
-  const missingPrompt = await runTaskCommand(
-    "dispatch",
-    ["--target", "role:rl-executor", "--work-node", "cx-1"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(missingPrompt.exitCode, 0);
-  assert.match(missingPrompt.stderr, /--prompt/i);
-
-  const emptyPrompt = await runTaskCommand(
-    "dispatch",
-    ["--target", "role:rl-executor", "--work-node", "cx-1", "--prompt", "   "],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(emptyPrompt.exitCode, 0);
-
-  // Empty/whitespace --work-node must fail even when another --work-node is valid.
-  const emptyNodeAmongValid = await runTaskCommand(
     "dispatch",
     [
       "--target",
       "role:rl-executor",
-      "--work-node",
-      "cx-valid",
-      "--work-node",
-      "   ",
+      "--node",
+      "cx-one",
+      "--node",
+      "cx-two",
       "--prompt",
-      "p",
+      "role handoff work",
+      "--json",
     ],
-    { client: client as never, cwd }
+    { client: client as never, cwd, json: true }
   );
-  assert.notEqual(emptyNodeAmongValid.exitCode, 0);
-  assert.match(
-    emptyNodeAmongValid.stderr + emptyNodeAmongValid.stdout,
-    /--work-node|non-empty|empty|whitespace/i
-  );
-
-  const bareEmptyNode = await runTaskCommand(
-    "dispatch",
-    ["--target", "role:rl-executor", "--work-node", "", "--prompt", "p"],
-    { client: client as never, cwd }
-  );
-  assert.notEqual(bareEmptyNode.exitCode, 0);
-
-  assert.equal(calls.length, 0, "validation failures must not call taskDispatch");
+  assert.equal(result.exitCode, 0, result.stderr + result.stdout);
+  assert.deepEqual(calls, [
+    {
+      assigneeRoleId: "rl-executor",
+      nodeIds: ["cx-one", "cx-two"],
+      prompt: "role handoff work",
+      requester: { kind: "user", id: "user" },
+    },
+  ]);
+  const parsed = JSON.parse(result.stdout) as { state?: string; executionSessionId?: string };
+  assert.equal(parsed.state, "queued");
+  assert.equal(parsed.executionSessionId, undefined);
 });
 
-test("unknown target kind is rejected", async () => {
+test("connection target forwards exact ordered nodeIds on the managed path", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   const result = await runTaskCommand(
     "dispatch",
-    ["--target", "worker:one", "--work-node", "cx-1", "--prompt", "p"],
-    { client: client as never, cwd }
+    [
+      "--target",
+      "connection:connection-a",
+      "--node",
+      "cx-alpha",
+      "--node",
+      "cx-beta",
+      "--prompt",
+      "managed agent work",
+      "--json",
+    ],
+    { client: client as never, cwd, json: true }
   );
-  assert.notEqual(result.exitCode, 0);
-  assert.match(result.stderr, /role:<roleId> or connection:<connectionId>/i);
+  assert.equal(result.exitCode, 0, result.stderr + result.stdout);
+  assert.deepEqual(calls, [
+    {
+      connectionId: "connection-a",
+      nodeIds: ["cx-alpha", "cx-beta"],
+      prompt: "managed agent work",
+      requester: { kind: "user", id: "user" },
+    },
+  ]);
+  const parsed = JSON.parse(result.stdout) as { state?: string; executionSessionId?: string };
+  assert.equal(parsed.state, "running");
+  assert.equal(parsed.executionSessionId, "ss-capture");
+});
+
+test("prompt-only dispatch omits --node and sends nodeIds=[]", async () => {
+  const cwd = await makeFakeTentCwd();
+  const { client, calls } = capturingDispatchClient();
+  const result = await runTaskCommand(
+    "dispatch",
+    [
+      "--target",
+      "connection:connection-a",
+      "--prompt",
+      "prompt-only work",
+      "--json",
+    ],
+    { client: client as never, cwd, json: true }
+  );
+  assert.equal(result.exitCode, 0, result.stderr + result.stdout);
+  assert.deepEqual(calls[0]?.nodeIds, []);
+});
+
+test("retired work/context flags fail before client access", async () => {
+  const cwd = await makeFakeTentCwd();
+  const { client, calls } = capturingDispatchClient();
+  for (const args of [
+    ["--target", "role:rl-executor", "--work-node", "cx-one", "--prompt", "p"],
+    ["--target", "role:rl-executor", "--context-node", "cx-one", "--prompt", "p"],
+  ]) {
+    const result = await runTaskCommand("dispatch", args, { client: client as never, cwd });
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /Unknown option --work-node|Unknown option --context-node/);
+  }
   assert.equal(calls.length, 0);
 });
 
-test("non-dispatch task commands remain available (help lists claim/get/submit)", () => {
-  const help = taskHelpText();
-  assert.match(help, /tent task claim/);
-  assert.match(help, /tent task get/);
-  assert.match(help, /tent task submit/);
-  assert.match(help, /tent task list/);
-  assert.match(help, /tent task accept/);
-  assert.match(help, /tent task interrupt/);
+test("dispatch validates missing target/prompt, invalid target, and empty node before mutation", async () => {
+  const cwd = await makeFakeTentCwd();
+  const { client, calls } = capturingDispatchClient();
+  for (const args of [
+    ["--node", "cx-1", "--prompt", "p"],
+    ["--target", "worker:bad", "--node", "cx-1", "--prompt", "p"],
+    ["--target", "role:rl-executor", "--node", "cx-1"],
+    ["--target", "role:rl-executor", "--node", "   ", "--prompt", "p"],
+  ]) {
+    const result = await runTaskCommand("dispatch", args, { client: client as never, cwd });
+    assert.notEqual(result.exitCode, 0);
+  }
+  assert.equal(calls.length, 0);
 });

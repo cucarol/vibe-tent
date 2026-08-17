@@ -123,7 +123,6 @@ test("removed legacy and migration commands are not part of the CLI", async () =
     "tag-rm",
     "fork",
     "clean-temp",
-    "force-release",
     "okf-sync",
   ];
   for (const command of removed) {

@@ -132,7 +132,7 @@ test("same-URL Service replacement discards the stale token and coalesces recove
     url: "http://127.0.0.1:4510",
     async health() {
       // Open health already sees Service B and therefore cannot prove token A.
-      return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
+      return { status: "ok", ...endpointB, protocolVersion: 10, workspaceCount: 0 };
     },
     async call() {
       oldAuthenticatedCalls += 1;
@@ -150,11 +150,11 @@ test("same-URL Service replacement discards the stale token and coalesces recove
     token: endpointB.token,
     url: "http://127.0.0.1:4510",
     async health() {
-      return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
+      return { status: "ok", ...endpointB, protocolVersion: 10, workspaceCount: 0 };
     },
     async call(method: string) {
       if (method === "service.health") {
-        return { status: "ok", ...endpointB, protocolVersion: 9, workspaceCount: 0 };
+        return { status: "ok", ...endpointB, protocolVersion: 10, workspaceCount: 0 };
       }
       if (method === "workspace.list") {
         return {

@@ -1187,8 +1187,8 @@ export class AcpClient {
       );
       // Spontaneous child exit (no intentional stop / already-reported terminal):
       // always emit a managed terminal event even when no JSON-RPC request is pending,
-      // so service can taskFail / release occupation. Dedupe against prompt failure.
-      // Non-zero / abnormal signal → failed (occupation release). Clean 0 → exited.
+      // so service can taskFail / end the active Task. Dedupe against prompt failure.
+      // Non-zero / abnormal signal → failed. Clean 0 → exited.
       if (!this.stopRequested && !this.terminalEmitted) {
         this.emitAcpObservation({
           spontaneousChildExit: true,

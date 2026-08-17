@@ -2,16 +2,12 @@
 // On any post-move failure: restore every completed note write, then restore the tree.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildNodeIndex, resolveNode, type OkfNode } from "./okf.js";
 import { normalizeTarget } from "./link-target.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateNodeName } from "./scaffold.js";
-import { ACTIVE_TASK_STATES } from "./task-model.js";
-import { loadTaskRecords } from "./task.js";
-
 import type { Node } from "./types.js";
 import {
   nodeNotePath,
@@ -50,7 +46,7 @@ type PlannedWrite = {
  * - entire directory tree moves; child relative structure preserved
  * - path-based Markdown / wiki links rewritten in the same mutation
  * - unqualified wiki/name targets rewrite only when Tent resolution uniquely hits this node
- * - refuses target collision, illegal names, operational paths, occupancy
+ * - refuses target collision, illegal names, operational paths
  * - on post-move failure: restore every touched note + tree
  */
 export async function renameNode(
@@ -73,11 +69,9 @@ async function renameNodeUnlocked(
     throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   assertContentMutable(target, "renamed");
-  if (isFrozen(target)) {
+  if (target.invalid || target.archived) {
     throw new Error("Invalid or archived nodes cannot be renamed.");
   }
-  await assertNoActiveTaskRefsInSubtree(env, target, "rename");
-
   const oldPath = target.path;
   const oldName = target.name;
   if (newName === oldName) {
@@ -261,33 +255,6 @@ function resolveRenameTarget(tent: LoadedTent, nodeIdOrPath: string): Node {
   const byPath = tent.byPath.get(key);
   if (byPath) return byPath;
   throw new Error(`Node not found: ${nodeIdOrPath}.`);
-}
-
-/**
- * Structural mutations cannot invalidate the Node refs of an active Task.
- * Ancestors outside the affected subtree and destination parents are not
- * considered, so parent/child work can continue concurrently.
- */
-export async function assertNoActiveTaskRefsInSubtree(
-  env: OpsEnv,
-  root: Node,
-  operation: "move" | "rename"
-): Promise<void> {
-  const subtreeIds = new Set(collectSubtree(root).map((node) => node.id));
-  const blockers = (await loadTaskRecords(env.fs)).filter((task) => {
-    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
-    return task.workNodeIds.some((nodeId) => subtreeIds.has(nodeId));
-  });
-  if (blockers.length === 0) return;
-
-  const taskLabels = blockers
-    .map((task) => task.id || task.path)
-    .sort((a, b) => a.localeCompare(b));
-  throw new Error(
-    `Cannot ${operation} Node subtree ${root.id}: active Task ref(s) ${taskLabels.join(
-      ", "
-    )} must finish first.`
-  );
 }
 
 function assertNotOperationalPath(path: string): void {

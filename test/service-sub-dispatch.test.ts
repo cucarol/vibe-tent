@@ -34,8 +34,7 @@ test("task.dispatch persists requester and assignee as the canonical responsibil
     const { workspaceId } = await client.mount(workspace) as { workspaceId: string };
     const node = await client.docsCreateNote(workspaceId, { name: "extra" });
     const dispatched = await client.taskDispatch(workspaceId, {
-      workNodeIds: [node.nodeId],
-      contextNodeIds: [],
+      nodeIds: [node.nodeId],
       assigneeRoleId: "rl-helper",
       prompt: "delegate this work",
       requester: { kind: "user", id: "user" },
@@ -80,8 +79,7 @@ test("task.dispatch binds only Role requester authority to the exact Role Sessio
 
     await assert.rejects(
       () => local.taskDispatch(workspaceId, {
-        workNodeIds: [created.nodeId],
-        contextNodeIds: [],
+        nodeIds: [created.nodeId],
         assigneeRoleId: "rl-helper",
         prompt: "impersonate helper",
         requester: { kind: "role", id: "rl-helper" },
@@ -106,8 +104,7 @@ test("task.dispatch binds only Role requester authority to the exact Role Sessio
     const userNode = await local.docsCreateNote(workspaceId, { name: "user-requested-work" });
     const roleNode = await local.docsCreateNote(workspaceId, { name: "role-requested-work" });
     const userRequested = await helper.taskDispatch(workspaceId, {
-      workNodeIds: [userNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [userNode.nodeId],
       assigneeRoleId: "rl-helper",
       prompt: "ordinary attached Session may create a user-requested Task",
       requester: { kind: "user", id: "user" },
@@ -116,8 +113,7 @@ test("task.dispatch binds only Role requester authority to the exact Role Sessio
     const beforeFailures = await taskCount();
     await assert.rejects(
       () => helper.taskDispatch(workspaceId, {
-        workNodeIds: [roleNode.nodeId],
-        contextNodeIds: [],
+        nodeIds: [roleNode.nodeId],
         assigneeRoleId: "rl-other",
         prompt: "impersonate another role",
         requester: { kind: "role", id: "rl-other" },
@@ -128,8 +124,7 @@ test("task.dispatch binds only Role requester authority to the exact Role Sessio
     assert.equal(await registryCount(), 1);
 
     const dispatched = await helper.taskDispatch(workspaceId, {
-      workNodeIds: [roleNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [roleNode.nodeId],
       assigneeRoleId: "rl-helper",
       prompt: "authorized self dispatch",
       requester: { kind: "role", id: "rl-helper" },

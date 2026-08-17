@@ -156,8 +156,7 @@ async function setupManagedTask(
   const dispatched = await rpc(svc, "task.dispatch", {
     requester: { kind: "user", id: "user" },
     workspaceId,
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt: "managed TaskResult WAL recovery",
     acceptMode,
@@ -438,8 +437,7 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "preserve draft on dirty refuse",
       acceptMode: "review-required",
@@ -539,8 +537,7 @@ test("malformed outcome text is submitted intact instead of discarding the repor
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "deliver malformed control text intact",
       acceptMode: "review-required",
@@ -595,8 +592,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [mounted.nodeId],
-        contextNodeIds: [],
+        nodeIds: [mounted.nodeId],
         connectionId: "fake-default",
         prompt: "restart must keep draft",
         acceptMode: "review-required",
@@ -651,7 +647,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
   // Phase 2: new service process on same dataDir + remount workspace.
   // workspaceId is path-stable (hash of root); draft key survives restart.
   // Mount reconciliation parks the task waiting(external) when the managed
-  // process is gone — resume occupation, then retry deliver from draft only.
+  // process is gone — resume the same Task path, then retry submit from draft only.
   resetManagedAutoSubmitFlightsForTests();
   await withService(
     async (svc) => {
@@ -671,7 +667,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
       const got = await rpc(svc, "task.get", { workspaceId: liveWorkspaceId, taskPath });
       assert.ok(!got.error, JSON.stringify(got.error));
       const task = (got.result as { task: { state: string; executionSessionId?: string } }).task;
-      // Dead managed process after restart → waiting(external); occupation held.
+      // Dead managed process after restart → waiting(external); exact Task recovery facts remain.
       assert.ok(
         task.state === "waiting" || task.state === "running",
         `expected waiting/running after restart remount, got ${task.state}`
@@ -790,8 +786,7 @@ test("P0: publish preparation failure preserves draft; retry publishes without r
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "integrate fail keeps draft",
       acceptMode: "review-required",
@@ -1848,8 +1843,7 @@ for (const cleanupFails of [false, true] as const) {
       const dispatched = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId],
-        contextNodeIds: [],
+        nodeIds: [nodeId],
         assigneeRoleId: roleId,
         prompt: "queued stale draft cleanup",
       });

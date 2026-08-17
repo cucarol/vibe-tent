@@ -35,23 +35,20 @@ function progressLabel(state: string): string {
 
 export function canSubmitDispatchDraft(input: {
   canMutate: boolean; busy: boolean; targetId: string; prompt: string;
-  primaryNodeId?: string; additionalWorkNodeIds?: readonly string[]; contextNodeIds?: readonly string[];
+  selectedNodeId?: string; additionalNodeIds?: readonly string[];
 }): boolean {
-  const work = input.additionalWorkNodeIds ?? [];
-  const context = input.contextNodeIds ?? [];
-  const primary = input.primaryNodeId;
+  const nodes = input.additionalNodeIds ?? [];
+  const primary = input.selectedNodeId;
   return input.canMutate && !input.busy && Boolean(input.targetId && input.prompt.trim()) &&
-    new Set(work).size === work.length && new Set(context).size === context.length &&
-    work.every((id) => id !== primary && !context.includes(id));
+    new Set(nodes).size === nodes.length &&
+    nodes.every((id) => id !== primary);
 }
 
-export type OrderedDispatchNodeDraft = { additionalWorkNodeIds: string[]; contextNodeIds: string[] };
-export function updateOrderedDispatchNodes(draft: OrderedDispatchNodeDraft, nodeId: string, destination: "work" | "context" | "none"): OrderedDispatchNodeDraft {
-  const additionalWorkNodeIds = draft.additionalWorkNodeIds.filter((id) => id !== nodeId);
-  const contextNodeIds = draft.contextNodeIds.filter((id) => id !== nodeId);
-  if (destination === "work") additionalWorkNodeIds.push(nodeId);
-  if (destination === "context") contextNodeIds.push(nodeId);
-  return { additionalWorkNodeIds, contextNodeIds };
+export type OrderedDispatchNodeDraft = { additionalNodeIds: string[] };
+export function updateOrderedDispatchNodes(draft: OrderedDispatchNodeDraft, nodeId: string, include: boolean): OrderedDispatchNodeDraft {
+  const additionalNodeIds = draft.additionalNodeIds.filter((id) => id !== nodeId);
+  if (include) additionalNodeIds.push(nodeId);
+  return { additionalNodeIds };
 }
 
 export function decisionResponseFromDraft(input: { customMode: boolean; optionId: string; custom: string }): DecisionResponse | null {
@@ -78,8 +75,9 @@ function ActiveTaskSection({ task }: { task: CollaborationActiveTask }) {
         ? "内容已返回，等待接纳"
         : `内容已返回，等待${owner}接纳`
       : "工作正在推进";
-  return <section className="tn-collaboration-section" aria-labelledby="tn-active-task-title">
-    <div className="tn-section-heading"><h2 id="tn-active-task-title">委托进展</h2><StatusBadge tone="running">{progressLabel(task.state)}</StatusBadge></div>
+  const titleId = `tn-active-task-title-${task.taskId}`;
+  return <section className="tn-collaboration-section" aria-labelledby={titleId}>
+    <div className="tn-section-heading"><h2 id={titleId}>委托进展</h2><StatusBadge tone="running">{progressLabel(task.state)}</StatusBadge></div>
     <div className="tn-active-task"><strong>{owner}</strong>{execution ? <span>执行：{execution}</span> : null}<span>{progress}</span></div>
   </section>;
 }
@@ -90,17 +88,17 @@ function DispatchSection({ node, allNodes, view, actions }: CollaborationPanelPr
   const [targetId, setTargetId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [acceptMode, setAcceptMode] = useState<AcceptMode>("review-required");
-  const [nodeDraft, setNodeDraft] = useState<OrderedDispatchNodeDraft>({ additionalWorkNodeIds: [], contextNodeIds: [] });
+  const [nodeDraft, setNodeDraft] = useState<OrderedDispatchNodeDraft>({ additionalNodeIds: [] });
   const [error, setError] = useState<string | null>(null);
   const targets = view.targets.filter((target) => target.kind === targetKind);
   const exactTargetId = targets.some((target) => target.id === targetId) ? targetId : "";
   const busy = view.busyKey === "dispatch";
-  const disabled = !view.targetsReady || !canSubmitDispatchDraft({ canMutate: view.canMutate, busy, targetId: exactTargetId, prompt, primaryNodeId: node.nodeId, ...nodeDraft });
+  const disabled = !view.targetsReady || !canSubmitDispatchDraft({ canMutate: view.canMutate, busy, targetId: exactTargetId, prompt, selectedNodeId: node.nodeId, ...nodeDraft });
   const submit = async () => {
     if (disabled) return;
     setError(null);
-    const ok = await actions.dispatch({ workNodeIds: [node.nodeId, ...nodeDraft.additionalWorkNodeIds], contextNodeIds: nodeDraft.contextNodeIds, prompt: prompt.trim(), acceptMode, target: { kind: targetKind, id: exactTargetId } });
-    if (ok) { setPrompt(""); setNodeDraft({ additionalWorkNodeIds: [], contextNodeIds: [] }); }
+    const ok = await actions.dispatch({ nodeIds: [node.nodeId, ...nodeDraft.additionalNodeIds], prompt: prompt.trim(), acceptMode, target: { kind: targetKind, id: exactTargetId } });
+    if (ok) { setPrompt(""); setNodeDraft({ additionalNodeIds: [] }); }
     else setError("委托未完成；已重新读取当前状态。");
   };
   if (!open) return <section className="tn-collaboration-section tn-dispatch-entry"><div><h2>委托</h2><p>告诉 Tent 要做什么，再选择负责角色。</p></div><Button variant="primary" size="compact" disabled={!view.canMutate} onClick={() => setOpen(true)}>开始委托</Button></section>;
@@ -113,10 +111,10 @@ function DispatchSection({ node, allNodes, view, actions }: CollaborationPanelPr
       <Select label={targetKind === "role" ? "责任角色" : "执行连接"} value={exactTargetId} disabled={!view.canMutate || !view.targetsReady || targets.length === 0} onChange={(event) => setTargetId(event.target.value)} options={targets.map((target) => ({ value: target.id, label: target.label }))} placeholder={view.targetsReady ? "请选择" : "正在读取"} />
     </div>
     <Select label="完成后" value={acceptMode} disabled={!view.canMutate} onChange={(event) => setAcceptMode(event.target.value as AcceptMode)} options={[{ value: "review-required", label: "由我接纳" }, { value: "auto-accept", label: "符合条件时自动接纳" }, { value: "agent-decide", label: "由负责角色判断" }]} />
-    {(["work", "context"] as const).map((kind) => <details className="tn-context-picker" key={kind}><summary>{kind === "work" ? "共同工作节点" : "参考上下文"}</summary><div>{readyNodes.map((item) => {
-      const checked = (kind === "work" ? nodeDraft.additionalWorkNodeIds : nodeDraft.contextNodeIds).includes(item.nodeId);
-      return <Checkbox key={item.nodeId} checked={checked} disabled={!view.canMutate} label={nodeTitle(item)} onChange={() => setNodeDraft((current) => updateOrderedDispatchNodes(current, item.nodeId, checked ? "none" : kind))} />;
-    })}</div></details>)}
+    <details className="tn-context-picker"><summary>额外节点</summary><div>{readyNodes.map((item) => {
+      const checked = nodeDraft.additionalNodeIds.includes(item.nodeId);
+      return <Checkbox key={item.nodeId} checked={checked} disabled={!view.canMutate} label={nodeTitle(item)} onChange={() => setNodeDraft((current) => updateOrderedDispatchNodes(current, item.nodeId, !checked))} />;
+    })}</div></details>
     {error || view.actionIssue || view.targetIssue ? <p className="tn-action-error" role="alert">{error ?? view.actionIssue?.message ?? view.targetIssue?.message}</p> : null}
     <Button variant="primary" loading={busy} disabled={disabled} onClick={() => void submit()}>交给对方</Button>
   </section>;
@@ -153,10 +151,10 @@ function DecisionItem({ request, view, actions }: { request: CollaborationDecisi
 export function CollaborationPanel(props: CollaborationPanelProps) {
   const selected = props.view.snapshot?.selectedNode;
   const exactSelected = selected?.nodeId === props.node.nodeId ? selected : null;
-  const task = exactSelected?.activeTask ?? null;
+  const tasks = exactSelected?.activeTasks ?? [];
   return <div className="tn-collaboration-panel" data-collaboration-status={props.view.status} data-collaboration-identity={collaborationPanelIdentity(props.view)}>
     <ResourceNotice view={props.view} />
-    {exactSelected ? <>{task ? <ActiveTaskSection task={task} /> : <DispatchSection {...props} />}{task?.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task?.readyResult ? <section className="tn-collaboration-section tn-inbox">{task.responsibility.kind === "user" ? <TaskResultItem result={task.readyResult} view={props.view} actions={props.actions} /> : <RoleTaskResultNotice result={task.readyResult} owner={task.responsibility.label} />}</section> : null}</> : null}
+    {exactSelected ? <>{tasks.map((task) => <div key={task.taskId}><ActiveTaskSection task={task} />{task.pendingDecision ? <section className="tn-collaboration-section tn-inbox"><DecisionItem request={task.pendingDecision} view={props.view} actions={props.actions} /></section> : null}{task.readyResult ? <section className="tn-collaboration-section tn-inbox">{task.responsibility.kind === "user" ? <TaskResultItem result={task.readyResult} view={props.view} actions={props.actions} /> : <RoleTaskResultNotice result={task.readyResult} owner={task.responsibility.label} />}</section> : null}</div>)}<DispatchSection {...props} /></> : null}
     {(props.view.status === "error" || props.view.status === "stale") ? <Button variant="quiet" size="compact" onClick={() => void props.actions.retry()}>重新读取</Button> : null}
   </div>;
 }

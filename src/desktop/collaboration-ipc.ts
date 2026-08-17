@@ -25,8 +25,7 @@ export type DesktopCollaborationRequest =
   | {
       operation: "dispatch";
       workspaceId: string;
-      workNodeIds: string[];
-      contextNodeIds: string[];
+      nodeIds: string[];
       prompt: string;
       target: DesktopDispatchTarget;
       acceptMode: DesktopAcceptMode;

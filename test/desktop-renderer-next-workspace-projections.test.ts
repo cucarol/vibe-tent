@@ -96,8 +96,7 @@ function provenance() {
         { kind: "url", target: "https://example.test/artifact" },
       ],
     },
-    task: { id: "tk-1", state: "accepted" },
-    sourceNode: { nodeId: "cx-source", type: "goal", archived: false },
+    task: { id: "tk-1", state: "accepted", nodeIds: ["cx-source"] },
     incomplete: [],
   };
 }
@@ -224,31 +223,17 @@ test("output provenance validates explicit wire records without inventing a sour
   assert.equal(ready.state, "ready");
   if (ready.state === "ready") {
     assert.deepEqual(ready.value.result?.artifactRefs, provenance().result.artifactRefs);
+    assert.deepEqual(ready.value.task?.nodeIds, ["cx-source"]);
   }
 
-  const independentSource = provenance();
-  independentSource.sourceNode.nodeId = "cx-explicit-source";
-  assert.equal(
-    normalizeOutputProvenance(independentSource, workspaceId, "cx-output").state,
-    "ready",
-    "the renderer cannot reconstruct Task workNodeIds from this wire"
-  );
-
-  const malformedSource = provenance() as unknown as { sourceNode: Record<string, unknown> };
-  malformedSource.sourceNode = { nodeId: "cx-source", path: 42 };
+  const malformedSource = provenance() as unknown as {
+    task: { id: string; state: string; nodeIds: unknown };
+  };
+  malformedSource.task.nodeIds = ["cx-source", 42];
   assert.equal(
     normalizeOutputProvenance(malformedSource, workspaceId, "cx-output").state,
     "error"
   );
-
-  const missingSource = provenance() as unknown as Record<string, unknown>;
-  missingSource.sourceNode = null;
-  missingSource.incomplete = ["source_missing"];
-  const incomplete = normalizeOutputProvenance(missingSource, workspaceId, "cx-output");
-  assert.equal(incomplete.state, "ready");
-  if (incomplete.state === "ready") {
-    assert.deepEqual(incomplete.value.incomplete, ["source_missing"]);
-  }
 });
 
 test("output provenance fails closed on non-canonical artifact refs", () => {

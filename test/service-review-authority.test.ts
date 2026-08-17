@@ -85,11 +85,10 @@ async function makeReadyFixture(
     type: "prompt",
   })) as { nodeId: string };
   const mount = svc.hostApi.require(workspaceId);
-  const task = await dispatch(mount.env, created.nodeId, {
+  const task = await dispatch(mount.env, {
     assigneeRoleId: "rl-executor",
     requester,
-    workNodeIds: [created.nodeId],
-    contextNodeIds: [],
+    nodeIds: [created.nodeId],
     prompt: `review authority ${label}`,
   });
   await taskClaim(mount.env, task.taskPath);

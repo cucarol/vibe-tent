@@ -58,12 +58,12 @@ test("retired raw Task and TaskResult outcome keys remain inert typed data", asy
   await adapter.mkdir("temp/roles/rl-test/tasks");
   const taskPath = await writeTaskRecord(adapter, clock, {
     assigneeRoleId: "rl-test",
-    workNodeIds: ["cx-work"],
-    contextNodeIds: [],
+    nodeIds: ["cx-work"],
     nodeSnapshots: [{
       id: "cx-work",
       path: "work.md",
       type: "prompt",
+      archived: false,
       tags: [],
       body: "# work\n",
       etag: contentEtag("# work\n"),

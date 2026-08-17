@@ -931,7 +931,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy protocol 8 fails after the protocol 9 hard cut and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 9 fails after the protocol 10 hard cut and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;

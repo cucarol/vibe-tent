@@ -5,13 +5,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
-import {
-  canClaim,
-  findActiveOccupation,
-  findAnyActiveTask,
-  isFrozen,
-  occupiedNodesFromTasks,
-} from "../src/core/claim.js";
+import { listDirectActiveTasksForNode } from "../src/core/task-node-refs.js";
 import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
@@ -24,10 +18,17 @@ import {
 } from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
 import { contentEtag } from "../src/core/etag.js";
-// loadTaskRecords used by occupation tests
 
 function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
-  return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
+  return {
+    id,
+    path: nodePath,
+    type,
+    tags: [],
+    body,
+    etag: contentEtag(body),
+    archived: false,
+  };
 }
 
 async function dispatchToRole(env: any, nodeId: string, roleName: string, input: string | Record<string, unknown>) {
@@ -40,13 +41,12 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
     await env.fs.writeFile("roles.json", JSON.stringify(registry, null, 2) + "\n");
   }
   const { dispatch } = await import("../src/core/ops.js");
-  return dispatch(env, nodeId, {
-      assigneeRoleId: roleId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
-      requester: { kind: "user", id: "user" },
-      ...(typeof input === "string" ? { prompt: input } : input),
-    });
+  return dispatch(env, {
+    assigneeRoleId: roleId,
+    nodeIds: [nodeId],
+    requester: { kind: "user", id: "user" },
+    ...(typeof input === "string" ? { prompt: input } : input),
+  });
 }
 
 test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
@@ -128,64 +128,13 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-test("Node occupation: exact Node exclusive; parent, child, and sibling remain independent", async () => {
-  const dir = await makeTent();
-  await fs.mkdir(path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
-    "---\nid: cx-g3\ntype: goal\n---\n",
-  );
-  // Seed active task via full Context Card (runtime never loads residual claims[]).
-  const fsa = new NodeFs(dir);
-  const g2Path = await writeTaskRecord(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
-    assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-g2"],
-    contextNodeIds: [],
-    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
-    manifestPath: "temp/roles/rl-executor/manifests/tk-activeg2.yml",
-    prompt: "hold g2",
-    id: "tk-activeg2",
-    requester: { kind: "user", id: "user" },
-  });
-  const g2Raw = await fsa.readFile(g2Path);
-  await fsa.writeFile(
-    g2Path,
-    g2Raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
-  );
-  const tent = await loadTent(fsa);
-  const tasks = await loadTaskRecords(fsa);
-
-  const g1 = tent.byId.get("cx-g1")!;
-  // An active Task on a parent does not occupy its descendants.
-  assert.equal(canClaim(g1, { tasks }).ok, true);
-  assert.equal(isFrozen(g1), false, "valid non-archived is not structurally frozen");
-
-  const g2 = tent.byId.get("cx-g2")!;
-  const exact = canClaim(g2, { tasks });
-  assert.equal(exact.ok, false, "同一 Node 同时只能被一个 active Task 占用");
-  assert.match(exact.reason || "", /occupied by active task tk-activeg2/);
-
-  const g3 = tent.byId.get("cx-g3")!;
-  assert.equal(canClaim(g3, { tasks }).ok, true, "子 Node 可与父 Node 并发");
-  assert.equal(isFrozen(g3), false);
-  assert.equal(canClaim(tent.byId.get("cx-o1")!, { tasks }).ok, true, "兄弟 Node 可并发");
-
-  // Without active task, claim remains free (no owner lock projection).
-  await fsa.remove(g2Path);
-  const tent2 = await loadTent(fsa);
-  const tasks2 = await loadTaskRecords(fsa);
-  assert.equal(canClaim(tent2.byId.get("cx-g2")!, { tasks: tasks2 }).ok, true);
-});
-
-test("active Task occupation projects only its exact Node refs", async () => {
+test("active Task refs project only exact nodeIds", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  const tent = await loadTent(fsa);
 
   await writeTaskRecord(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     assigneeRoleId: "rl-reviewer",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/x")],
     manifestPath: "temp/roles/rl-reviewer/manifests/tk-boxocc.yml",
     prompt: "Node ref",
@@ -193,12 +142,11 @@ test("active Task occupation projects only its exact Node refs", async () => {
     requester: { kind: "user", id: "user" },
   });
   const tasks = await loadTaskRecords(fsa);
-  const anyTask = findAnyActiveTask(tasks);
-  assert.ok(anyTask);
-  assert.equal(anyTask!.assigneeRoleId, "rl-reviewer");
-  assert.equal(anyTask!.executionSessionId, undefined);
-  assert.ok(anyTask!.contextCard?.workNodeIds.includes("cx-p1"));
-  assert.equal(occupiedNodesFromTasks(tent, tasks).map((node) => node.id).join(","), "cx-p1");
+  const active = listDirectActiveTasksForNode("cx-p1", tasks);
+  assert.equal(active.length, 1);
+  assert.equal(active[0]!.assigneeRoleId, "rl-reviewer");
+  assert.equal(active[0]!.executionSessionId, undefined);
+  assert.deepEqual(active[0]!.nodeIds, ["cx-p1"]);
 });
 
 test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () => {
@@ -238,10 +186,10 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
   const claim = tent.byId.get("cx-p1")!; // prompt/表达式任务书
-  const m = buildManifest(tent, {
+  const m = buildManifest({
     tentName: "wqb",
     roleId: "rl-executor",
-    claimNodes: [claim],
+    selectedNodes: [claim],
   });
 
   // V0.2: manifest readable/writable are Task context pointers, not Node domain R/W axes.
@@ -281,11 +229,15 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   );
 });
 
-test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", async () => {
+test("manifest: selected subtree grants structural write access", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
   const claim = tent.byId.get("cx-p1")!;
-  const leafManifest = buildManifest(tent, { tentName: "wqb", roleId: "rl-executor", claimNodes: [claim] });
+  const leafManifest = buildManifest({
+    tentName: "wqb",
+    roleId: "rl-executor",
+    selectedNodes: [claim],
+  });
   assert.ok(
     leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structural permission/.test(e.note || "")),
     "认领框本身有创建/移动/删除子框的结构权",
@@ -295,14 +247,18 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
     "认领子树里的子框也有结构权",
   );
 
-  const rootManifest = buildManifest(tent, { tentName: "wqb", roleId: "rl-architect", claimRoot: true });
+  const rootManifest = buildManifest({
+    tentName: "wqb",
+    roleId: "rl-architect",
+    selectedNodes: tent.roots,
+  });
   assert.ok(!("claims" in rootManifest), "root selection is not a persisted claims field");
   assert.doesNotMatch(manifestToYaml(rootManifest), /^claims:/m);
-  assert.ok(rootManifest.writable.some((e) => e.path === "./"), "帐根 claim 有顶层结构权");
-  assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
+  assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "所选根保留子树结构权");
+  assert.ok(rootManifest.writable.some((e) => e.path === "prompt/"), "所选根覆盖完整所选子树");
 });
 
-test("dispatch:只写 pending envelope + frozen Node Context Card；exact Node 占用且 manifest 按 Task 隔离", async () => {
+test("dispatch:只写 pending envelope + frozen Node Context Card；manifest 按 Task 隔离", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -337,17 +293,14 @@ test("dispatch:只写 pending envelope + frozen Node Context Card；exact Node �
   assert.equal(claimed.fm.status, undefined, "dispatch 不写 Node owner/status");
   assert.equal((await loadTaskRecord(env.fs, result.taskPath)).state, "queued");
 
-  // The exact Node is occupied even while the first Task is only queued.
-  await assert.rejects(
-    () => dispatchToRole(env as any, "cx-p1", "executor", "同 Node 并发"),
-    /occupied by active task/,
-  );
+  const concurrent = await dispatchToRole(env as any, "cx-p1", "executor", "同 Node 并发");
+  assert.notEqual(concurrent.taskPath, result.taskPath);
 
   const firstTask = await loadTaskRecord(env.fs, result.taskPath);
   assert.equal(firstTask.manifest, result.manifestPath);
   assert.match(result.manifestPath, new RegExp(`^temp/roles/rl-analyst/manifests/${firstTask.id}\\.yml$`));
 
-  // Parent and child refs remain independent from the occupied exact Node.
+  // Parent and child refs remain independent from the same frozen Node selection.
   const onChild = await dispatchToRole(env as any, "cx-p2", "analyst", "子孙并发");
   assert.ok(onChild.taskPath);
   const onAncestor = await dispatchToRole(env as any, "cx-promptzone", "planner", "祖先并发");
@@ -390,10 +343,9 @@ test("dispatch: corrupt Role registry is quarantined and exact missing roleId fa
   const { dispatch } = await import("../src/core/ops.js");
 
   await assert.rejects(
-    () => dispatch(env as any, "cx-p1", {
+    () => dispatch(env as any, {
       assigneeRoleId: "rl-analyst",
-      workNodeIds: ["cx-p1"],
-      contextNodeIds: [],
+      nodeIds: ["cx-p1"],
       prompt: "请只处理表达式任务书。",
       requester: { kind: "user", id: "user" },
     }),
@@ -427,7 +379,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].executionSessionId, undefined);
   assert.deepEqual(
     tasks[0].contextCard?.nodeSnapshots.map((n) => n.id) ?? [],
-    ["cx-p1"]
+    ["cx-p1", "cx-p2"]
   );
   assert.equal(tasks[0].manifest, first.manifestPath);
   assert.match(tasks[0].manifest, new RegExp(`^temp/roles/rl-analyst/manifests/${tasks[0].id}\\.yml$`));
@@ -452,8 +404,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
   );
   assert.match(relay, /Task Context Card/);
-  assert.match(relay, /workNodeIds:/);
-  assert.match(relay, /workNodeIds:/);
+  assert.match(relay, /nodeIds:/);
+  assert.doesNotMatch(relay, /workNodeIds:|contextNodeIds:/);
   assert.match(
     relay,
     new RegExp(
@@ -513,7 +465,7 @@ test("dispatch:必须提供 user prompt", async () => {
   );
 });
 
-test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
+test("dispatch:拒绝退役根选择 token，具体 Node 仍可派活", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -521,7 +473,7 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const message = /Task workNodeIds must contain canonical lowercase cx-\* Node ids/;
+  const message = /Task nodeIds must contain canonical lowercase cx-\* Node ids/;
   await assert.rejects(() => dispatchToRole(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatchToRole(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatchToRole(env as any, "wqb", "architect", "接管全帐"), message);
@@ -595,113 +547,6 @@ test("placeNode 换序:before/after/inside 重排 order", async () => {
     p1.children.some((c) => c.id === "cx-a1"),
     "旧站资料 成为表达式任务书子框",
   );
-});
-
-test("moveNode: active Task refs freeze the affected Node subtree", async () => {
-  const dir = await makeTent();
-  // Active direct ref on g2 blocks moving g2 and its containing subtree.
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  const fsa = new NodeFs(dir);
-  const movePath = await writeTaskRecord(fsa, { now: () => "t" }, {
-    assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-g2"],
-    contextNodeIds: [],
-    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
-    manifestPath: "temp/roles/rl-executor/manifests/tk-moveg2.yml",
-    prompt: "hold",
-    id: "tk-moveg2",
-    requester: { kind: "user", id: "user" },
-  });
-  const moveRaw = await fsa.readFile(movePath);
-  await fsa.writeFile(
-    movePath,
-    moveRaw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
-  );
-  const env = {
-    fs: fsa,
-    git: { run: async () => "" },
-    clock: { now: () => "t" },
-    tentName: "wqb",
-  };
-  const { moveNode } = await import("../src/core/ops.js");
-  await assert.rejects(
-    () => moveNode(env as any, "cx-g2", "cx-promptzone", { mode: "inside" }),
-    /active Task ref.*tk-moveg2/i,
-    "移动 active Task 直接引用的 Node 必须拒绝",
-  );
-  await assert.rejects(
-    () => moveNode(env as any, "cx-g1", "cx-promptzone", { mode: "inside" }),
-    /active Task ref.*tk-moveg2/i,
-    "移动包含 active Task 的父 Node 子树必须拒绝",
-  );
-});
-
-test("中断认领:force-release 不扫描无当前 Task 指针的 Result（不写 Node owner/status）", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    clock: { now: () => "2026-07-28T15:00:00.000Z" },
-    tentName: "wqb",
-  };
-  const result = await createTaskResult(fsa, env.clock, {
-    taskId: "tk-forcerelease",
-    resultsDir: "temp/roles/rl-executor/results",
-    report: "未完成的正式结果",
-    commits: [],
-    status: "ready",
-  });
-  const { forceRelease } = await import("../src/core/ops.js");
-  await forceRelease(env as any, "cx-g2");
-  const tent = await loadTent(fsa);
-  const box = tent.byId.get("cx-g2")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, undefined);
-  assert.equal(await fsa.exists(result.path), true);
-});
-
-test("force-release: canonical Node selection ends occupation without scanning unrelated Results", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const clock = { now: () => "2026-07-28T15:00:00.000Z" };
-  const env = { fs: fsa, clock, tentName: "wqb", tentRoot: dir };
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  const taskPath = await writeTaskRecord(fsa, clock, {
-    assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-g2"],
-    contextNodeIds: [],
-    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
-    manifestPath: "temp/roles/rl-executor/manifests/tk-frcard.yml",
-    prompt: "hold g2 for force-release",
-    id: "tk-frcard01",
-    requester: { kind: "user", id: "user" },
-  });
-  const raw = await fsa.readFile(taskPath);
-  // Canonical writes persist the frozen Node selection, never claims[].
-  assert.doesNotMatch(raw, /^claims:/m);
-  assert.match(raw, /contextCard:/);
-  await fsa.writeFile(
-    taskPath,
-    raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
-  );
-  const result = await createTaskResult(fsa, clock, {
-    taskId: "tk-frcard",
-    resultsDir: "temp/roles/rl-executor/results",
-    report: "stray ready",
-    status: "ready",
-  });
-  const { forceRelease } = await import("../src/core/ops.js");
-  const { findActiveTaskForNode } = await import("../src/core/task-lifecycle.js");
-  assert.ok(await findActiveTaskForNode(fsa, "cx-g2"));
-  await forceRelease(env as any, "cx-g2");
-  assert.equal(await findActiveTaskForNode(fsa, "cx-g2"), undefined);
-  assert.equal(await fsa.exists(result.path), true);
-  const after = await loadTaskRecord(fsa, taskPath);
-  assert.ok(
-    after.state === "interrupted" || after.state === "failed" || after.state === "accepted",
-    `expected terminal occupation end, got ${after.state}`
-  );
-  assert.ok(!("claims" in after));
 });
 
 test("orphan Node:同名 md 缺 id 时进入 invalid 态且不进 byId", async () => {
@@ -873,11 +718,11 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
   assert.equal("writable" in rootFm, false);
   const childFm = parseFrontmatter(await fsa.readFile(nodeNotePath(child.path))).data;
   assert.equal("mode" in childFm, false);
-  assert.equal(canClaim(root).ok, false);
-  const manifest = buildManifest(tent, {
+  assert.equal(root.invalid || root.archived, true);
+  const manifest = buildManifest({
     tentName: "x",
     roleId: "rl-executor",
-    claimNodes: [tent.byId.get("cx-a1")!],
+    selectedNodes: [tent.byId.get("cx-a1")!],
   });
   // Manifest readable is context-pointer set of usable nodes — archived subtree excluded
   assert.ok(

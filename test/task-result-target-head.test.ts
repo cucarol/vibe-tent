@@ -25,8 +25,11 @@ test("Result targetHead round-trips only with commit-bearing payload", async () 
 test("exact ready Result keeps immutable targetHead through acceptance", async () => {
   const root = await makeTent();
   const e = { fs: new NodeFs(root), clock, tentName: "target", tentRoot: root };
-  const d = await dispatch(e as any, "cx-p1", {
-    workNodeIds:["cx-p1"], contextNodeIds:[], prompt:"git authority", requester:{kind:"user",id:"user"}, executionSessionId:"ss-executor",
+  const d = await dispatch(e as any, {
+    nodeIds: ["cx-p1"],
+    prompt: "git authority",
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
   });
   await taskClaim(e as any, d.taskPath);
   const submitted = await taskSubmit(e as any, d.taskPath, { report:"commit", commits:["a".repeat(40)], targetHead:"b".repeat(40) });

@@ -5,7 +5,9 @@ import {
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import type { TaskRecord } from "../core/task.js";
 import { isTaskId } from "../core/task-model.js";
-import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
+import {
+  listDirectActiveTasksForNode,
+} from "../core/task-node-refs.js";
 import type { DecisionRequestRecord } from "./decision-request-store.js";
 import { RpcError } from "./rpc-error.js";
 import type {
@@ -57,7 +59,7 @@ export async function buildWorkspaceCollaborationProjection(
       kind: "decision",
       requestId: request.id,
       taskId: task.id!,
-      nodeIds: [...task.workNodeIds],
+      nodeIds: [...task.nodeIds],
       question: request.question,
       options: request.options.map((option) => ({ ...option })),
       createdAt: request.createdAt,
@@ -67,25 +69,25 @@ export async function buildWorkspaceCollaborationProjection(
 
   let selectedNode: WorkspaceCollaborationProjection["selectedNode"] = null;
   if (input.nodeId) {
-    const occupations = listDirectActiveTasksForNode(input.nodeId, input.tasks);
-    if (occupations.length > 1) {
-      throw consistencyError("Node has multiple active Task occupations", {
-        nodeId: input.nodeId,
-        taskIds: occupations.map((task) => task.id ?? null),
-      });
-    }
-    const selectedTask = occupations[0];
-    if (selectedTask?.id) {
+    const selectedTasks = listDirectActiveTasksForNode(input.nodeId, input.tasks);
+    for (const selectedTask of selectedTasks) {
+      if (!selectedTask.id) {
+        throw consistencyError("Selected active Task is missing canonical id", {
+          nodeId: input.nodeId,
+        });
+      }
       const sameId = tasksById.get(selectedTask.id) ?? [];
       if (sameId.length !== 1) {
-        throw consistencyError("Selected Task identity is ambiguous", {
+        throw consistencyError("Selected active Task identity is ambiguous", {
           nodeId: input.nodeId,
           taskId: selectedTask.id,
         });
       }
     }
-    const activeTask = selectedTask
-      ? await projectActiveTask({
+    const activeTasks = [];
+    for (const selectedTask of selectedTasks) {
+      activeTasks.push(
+        await projectActiveTask({
           ...input,
           task: selectedTask,
           resultsById,
@@ -94,10 +96,11 @@ export async function buildWorkspaceCollaborationProjection(
             : [],
           decisionByTaskId: decisionsByTaskId,
         })
-      : null;
+      );
+    }
     selectedNode = {
       nodeId: input.nodeId,
-      activeTask,
+      activeTasks,
       statusDetail: selectNodeStatusDetail(input.nodeId, input.tasks),
     };
   }
@@ -115,7 +118,7 @@ function selectNodeStatusDetail(
   nodeId: string,
   tasks: readonly TaskRecord[]
 ): NonNullable<WorkspaceCollaborationProjection["selectedNode"]>["statusDetail"] {
-  const candidates = tasks.filter((task) => task.workNodeIds.includes(nodeId));
+  const candidates = tasks.filter((task) => task.nodeIds.includes(nodeId));
   const ids = new Set<string>();
   for (const task of candidates) {
     if (!task.id || !isTaskId(task.id)) {

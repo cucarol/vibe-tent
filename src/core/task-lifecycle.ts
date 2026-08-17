@@ -1,13 +1,9 @@
 // Task lifecycle API — claim / wait / submit / accept / reject / interrupt.
 // Uses Task records under temp/<owner>/tasks and Result records under results.
-// Runtime occupation oracle = active Task record only.
+// Runtime in-flight oracle = active Task record only.
 // Node frontmatter is not dual-written for owner/status; collaboration truth is Task/TaskResult.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { canClaim, taskIsActiveOccupation } from "./claim.js";
-import {
-  listDirectActiveTasksForNode,
-} from "./task-node-refs.js";
 import {
   buildTaskResultRecord,
   createTaskResultUnlocked,
@@ -20,16 +16,13 @@ import {
 } from "./task-result.js";
 import { normalizeArtifactRefs } from "./artifact.js";
 import type { OpsEnv } from "./ops-context.js";
-import { join, loadTent, type LoadedTent } from "./tree.js";
-import type { Node } from "./types.js";
+import { join } from "./tree.js";
 import {
   ackTaskRecord,
   assertIsoTimestamp,
   loadTaskRecord,
-  loadTaskRecords,
   patchTaskRecord,
   parseTaskStatusDetail,
-  primaryNodeId,
   type TaskRecord,
   type TaskRecordPatch,
 } from "./task.js";
@@ -126,20 +119,8 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     }
     assertTransition(task.state, "claim", "running");
 
-    const tent = await loadTent(env.fs);
-    const claimedNodes = task.workNodeIds.map((claimId) =>
-      requireNodeById(tent, claimId)
-    );
-
-    // Re-check exact Node occupation at claim. Exclude this queued Task itself;
-    // another active Task on any requested Node blocks the all-or-none claim.
-    const otherTasks = (await loadTaskRecords(env.fs)).filter(
-      (candidate) => candidate.path !== task.path
-    );
-    for (const node of claimedNodes) {
-      const claimable = canClaim(node, { tasks: otherTasks });
-      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
-    }
+    // Claim trusts the frozen Task snapshots. Later Node changes do not rewrite
+    // or invalidate existing Task context.
 
     // Single Task write: running + optional lane/base/audit together.
     // No intermediate lane-only patch; failed prepare must not reach this path.
@@ -305,8 +286,6 @@ export async function prepareTaskSubmit(
     const recovered = await recoverExistingTaskSubmit(env, taskPath, task, options);
     if (recovered) return recovered;
     assertSubmitPreconditions(task);
-    const nodeId = primaryNodeId(task);
-    if (!nodeId) throw new Error("task.submit requires a non-root work Node.");
     await assertNoReadyResult(env.fs, task);
 
     const routing = resolveSubmitRouting(task.acceptMode, options.decision);
@@ -501,7 +480,7 @@ export async function finalizeTaskSubmitAuto(
     }
     await writeTaskResult(env.fs, result);
     // The requester authorized the frozen auto-integration policy at dispatch.
-    // Occupation ends via task state=accepted; no Node frontmatter write.
+    // Task becomes accepted; no Node frontmatter write.
 
     const next = await patchTaskRecord(env.fs, taskPath, {
       state: "accepted",
@@ -895,7 +874,7 @@ export async function taskRecordFailedReturn(
 
 /**
  * Unrecoverable failure: running|waiting → failed.
- * Releases Node occupation via terminal Task state. Task Results are retained.
+ * Terminal Task state ends in-flight work. Task Results are retained.
  * so the same node can be re-dispatched. No Node frontmatter dual-write.
  * Idempotent when already failed.
  */
@@ -955,24 +934,13 @@ function assertTaskFailureSession(
   return requested ?? task.executionSessionId;
 }
 
-/** Results are immutable history; occupation ends solely through Task state. */
-async function releaseOccupationForTask(env: OpsEnv, task: TaskRecord): Promise<void> {
-  void env;
-  void task;
-}
-
+/** Results are immutable history; in-flight work ends solely through Task state. */
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
   return withMutation(env.fs, async () => {
     const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "cancel", "interrupted");
     await env.fs.remove(taskPath);
   });
-}
-
-/** Find the active operational Task for a Node. */
-export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Promise<TaskRecord | undefined> {
-  const tasks = await loadTaskRecords(fs);
-  return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
 /** TaskResult storage stays in the Task's immutable owner namespace across Session replacement. */
@@ -2027,15 +1995,6 @@ async function findCommittedTaskResult(
   return current?.status === "ready" || current?.status === "accepted"
     ? current
     : undefined;
-}
-
-function requireNodeById(tent: LoadedTent, nodeId: string): Node {
-  if (tent.duplicateIds.has(nodeId)) {
-    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
-  }
-  const node = tent.byId.get(nodeId);
-  if (!node) throw new Error(`Node not found: ${nodeId}.`);
-  return node;
 }
 
 function requireCanonicalTaskId(task: TaskRecord): string {

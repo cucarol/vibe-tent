@@ -57,8 +57,8 @@ export function normalizeDesktopBootstrap(raw: unknown): DesktopBootstrap {
     throw new Error("桌面服务状态不可用");
   }
   const health = raw.health;
-  if (health.status !== "ok" || health.protocolVersion !== 9) {
-    throw new Error("桌面服务未连接到协议 9");
+  if (health.status !== "ok" || health.protocolVersion !== 10) {
+    throw new Error("桌面服务未连接到协议 10");
   }
   if (!Array.isArray(raw.workspaces)) {
     throw new Error("工作区列表不可用");
@@ -79,7 +79,7 @@ export function normalizeDesktopBootstrap(raw: unknown): DesktopBootstrap {
     throw new Error("前台工作区不在工作区列表中");
   }
   return {
-    protocolVersion: 9,
+    protocolVersion: 10,
     workspaces: exact,
     foregroundWorkspace,
   };

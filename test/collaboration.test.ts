@@ -8,7 +8,7 @@ import {
   loadTaskResult,
   writeTaskResult,
 } from "../src/core/task-result.js";
-import { dispatch, forceRelease } from "../src/core/ops.js";
+import { dispatch } from "../src/core/ops.js";
 import { loadTaskRecord } from "../src/core/task.js";
 import {
   taskAccept,
@@ -31,10 +31,9 @@ test("result:驳回后 task 仍 running,重新交付后 accept 保留 accepted �
     tentRoot: dir,
   };
 
-  const result = await dispatch(env as any, "cx-p1", {
+  const result = await dispatch(env as any, {
     executionSessionId: "ss-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "Implement result single-track",
     requester: { kind: "user", id: "user" },
   });
@@ -100,10 +99,9 @@ test("result:单轨写入 results，不创建 legacy reports 路径", async () =
     tentName: "wqb",
     tentRoot: dir,
   };
-  const result = await dispatch(env as any, "cx-p1", {
+  const result = await dispatch(env as any, {
     executionSessionId: "ss-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "TaskResult-only formal record",
     requester: { kind: "user", id: "user" },
   });
@@ -128,64 +126,21 @@ test("result:单轨写入 results，不创建 legacy reports 路径", async () =
   assert.match(raw, /User-facing report body via TaskResult\.report/);
 });
 
-test("result:force-release preserves immutable Result history", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const clock = { now: () => "2026-07-01T02:00:00.000Z" };
-  const ready = await createTaskResult(fsa, clock, {
-    taskId: "tk-ready",
-    resultsDir: "temp/sessions/ss-executor/results",
-    report: "ready history",
-    status: "ready",
-  });
-  const accepted = await createTaskResult(fsa, clock, {
-    taskId: "tk-accepted",
-    resultsDir: "temp/sessions/ss-executor/results",
-    report: "accepted history",
-    status: "ready",
-  });
-  accepted.status = "accepted";
-  accepted.review = { reviewer: "user", at: clock.now() };
-  await writeTaskResult(fsa, accepted);
-  assert.equal(await fsa.exists(ready.path), true);
-  assert.equal(await fsa.exists(accepted.path), true);
-  assert.equal((await loadTaskResult(fsa, accepted.path)).status, "accepted");
-
-  // Force release changes occupation only and never rewrites Result history.
-  const ready2 = await createTaskResult(fsa, clock, {
-    taskId: "tk-ready2",
-    resultsDir: "temp/sessions/ss-executor/results",
-    report: "ready again",
-    status: "ready",
-  });
-  await forceRelease(
-    { fs: fsa, clock, tentName: "wqb", tentRoot: dir } as any,
-    "cx-g2"
-  );
-  assert.equal(await fsa.exists(ready2.path), true);
-  assert.equal(await fsa.exists(accepted.path), true);
-  const box = (await loadTent(fsa)).byId.get("cx-g2")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, undefined);
-});
-
 test("task interrupt/fail preserve immutable Task Result history", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-01T02:30:00.000Z" };
   const env = { fs: fsa, clock, tentName: "demo", tentRoot: dir };
 
-  const first = await dispatch(env as any, "cx-g2", {
+  const first = await dispatch(env as any, {
     executionSessionId: "ss-workera",
-    workNodeIds: ["cx-g2"],
-    contextNodeIds: [],
+    nodeIds: ["cx-g2"],
     prompt: "first task",
     requester: { kind: "user", id: "user" },
   });
-  const second = await dispatch(env as any, "cx-p1", {
+  const second = await dispatch(env as any, {
     executionSessionId: "ss-workerb",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "second task on an independent Node",
     requester: { kind: "user", id: "user" },
   });
@@ -214,10 +169,9 @@ test("task interrupt/fail preserve immutable Task Result history", async () => {
   assert.equal(await fsa.exists(firstTaskResult.path), true);
   assert.equal(await fsa.exists(secondTaskResult.path), true);
 
-  const third = await dispatch(env as any, "cx-g2", {
+  const third = await dispatch(env as any, {
     executionSessionId: "ss-workerc",
-    workNodeIds: ["cx-g2"],
-    contextNodeIds: [],
+    nodeIds: ["cx-g2"],
     prompt: "third task after exact Node release",
     requester: { kind: "user", id: "user" },
   });

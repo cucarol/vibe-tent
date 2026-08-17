@@ -5,39 +5,31 @@ import {
   TaskNodeSelectionError,
   normalizeTaskNodeSelection,
   orderedTaskNodeIds,
-  taskCanWriteNode,
   taskReferencesNode,
 } from "../src/core/task-node-selection.js";
 
-const WORK_A = "cx-worka";
-const WORK_B = "cx-workb";
-const CONTEXT = "cx-context";
+const NODE_A = "cx-worka";
+const NODE_B = "cx-workb";
+const NODE_C = "cx-context";
 
-test("Task Node selection preserves ordered work then context refs", () => {
+test("Task Node selection preserves ordered Node refs", () => {
   const selection = normalizeTaskNodeSelection({
-    workNodeIds: [WORK_A, WORK_B],
-    contextNodeIds: [CONTEXT],
+    nodeIds: [NODE_A, NODE_B, NODE_C],
   });
-  assert.deepEqual(orderedTaskNodeIds(selection), [WORK_A, WORK_B, CONTEXT]);
-  assert.equal(taskCanWriteNode(selection, WORK_B), true);
-  assert.equal(taskCanWriteNode(selection, CONTEXT), false);
-  assert.equal(taskReferencesNode(selection, CONTEXT), true);
+  assert.deepEqual(orderedTaskNodeIds(selection), [NODE_A, NODE_B, NODE_C]);
+  assert.equal(taskReferencesNode(selection, NODE_C), true);
 });
 
-test("Task Node selection requires at least one writable Node", () => {
-  assert.throws(
-    () => normalizeTaskNodeSelection({ workNodeIds: [], contextNodeIds: [CONTEXT] }),
-    TaskNodeSelectionError
-  );
+test("Task Node selection allows prompt-only empty refs", () => {
+  assert.deepEqual(orderedTaskNodeIds(normalizeTaskNodeSelection({ nodeIds: [] })), []);
 });
 
-test("Task Node selection rejects duplicates, overlap, aliases, and unknown fields", () => {
+test("Task Node selection rejects duplicates, noncanonical ids, and unknown fields", () => {
   const invalid: unknown[] = [
-    { workNodeIds: [WORK_A, WORK_A], contextNodeIds: [] },
-    { workNodeIds: [WORK_A], contextNodeIds: [WORK_A] },
-    { workNodeIds: ["CX-WORKA"], contextNodeIds: [] },
-    { workNodeIds: [` ${WORK_A}`], contextNodeIds: [] },
-    { workNodeIds: [WORK_A], contextNodeIds: [], nodes: [WORK_B] },
+    { nodeIds: [NODE_A, NODE_A] },
+    { nodeIds: ["CX-WORKA"] },
+    { nodeIds: [` ${NODE_A}`] },
+    { nodeIds: [NODE_A], nodes: [NODE_B] },
   ];
   for (const value of invalid) {
     assert.throws(() => normalizeTaskNodeSelection(value), TaskNodeSelectionError);

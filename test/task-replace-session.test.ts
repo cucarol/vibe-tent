@@ -34,10 +34,9 @@ const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtur
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 type TaskSnap = {
   id?: string; state: string; executionSessionId?: string; currentResultId?: string;
-  workNodeIds?: string[]; contextNodeIds?: string[];
+  nodeIds?: string[];
   contextCard?: {
-    workNodeIds: string[];
-    contextNodeIds: string[];
+    nodeIds: string[];
     nodeSnapshots: Array<{ id: string }>;
   };
   worktree?: string; branch?: string; acceptMode?: string;
@@ -126,7 +125,7 @@ async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string,
   const connectionId = opts?.connectionId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
     requester: { kind: "user", id: "user" },
-    workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
+    workspaceId, nodeIds: [nodeId], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -175,8 +174,7 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "strict start and replace params",
       acceptMode: "review-required",
@@ -233,7 +231,7 @@ test("managed start refuses a Role Task; only an exact Connection Task owns a Se
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], assigneeRoleId: "rl-executor",
+      workspaceId, nodeIds: [nodeId], assigneeRoleId: "rl-executor",
       prompt: "Role Task must never receive a Connection-managed Session", acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -263,8 +261,7 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
     const dispatching = rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "held start race",
       acceptMode: "review-required",
@@ -412,8 +409,7 @@ test("replaceSession: success preserves Task + providerContextRestored=false + a
     assert.equal(replaced.task.id, before.id);
     assert.equal(replaced.task.state, "running");
     assert.equal(replaced.task.executionSessionId, replaced.session.sessionId);
-    assert.deepEqual(replaced.task.workNodeIds ?? [], before.workNodeIds ?? []);
-    assert.deepEqual(replaced.task.contextNodeIds ?? [], before.contextNodeIds ?? []);
+    assert.deepEqual(replaced.task.nodeIds ?? [], before.nodeIds ?? []);
     assert.deepEqual(
       replaced.task.contextCard?.nodeSnapshots.map((snapshot) => snapshot.id) ?? [],
       before.contextCard?.nodeSnapshots.map((snapshot) => snapshot.id) ?? []
@@ -481,7 +477,7 @@ test("replaceSession recovery tail keeps only continuity facts outside the canon
     assert.doesNotMatch(recoveryTail, /Task record:/);
     assert.doesNotMatch(recoveryTail, /Task id:/);
     assert.doesNotMatch(recoveryTail, /Manifest:/);
-    assert.doesNotMatch(recoveryTail, /workNodeIds:|contextNodeIds:|Node refs:/);
+    assert.doesNotMatch(recoveryTail, /nodeIds:|Node refs:/);
   });
 });
 
@@ -495,7 +491,7 @@ test("replaceSession: eligibility - isTurnActive, waitCode, force refused", asyn
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
-        workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
+        workspaceId, nodeIds: [nodeId], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -905,8 +901,7 @@ test("startSession rejects a changed exact Task/Session identity before flight j
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "identity must fail before provider flight",
       acceptMode: "review-required",
@@ -1055,8 +1050,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const otherDispatch = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [otherNodeId],
-      contextNodeIds: [],
+      nodeIds: [otherNodeId],
       connectionId: "fake-default",
       prompt: "unrelated concurrent replace",
       acceptMode: "review-required",

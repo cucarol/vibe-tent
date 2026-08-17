@@ -727,7 +727,7 @@ test("docs.importAttachment rejects legacy and unknown fields before any write",
   });
 });
 
-test("task.dispatch projects exact Node occupation; docs.write blocks collab fields", async () => {
+test("task.dispatch projects active Tasks; docs.write blocks collab fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -743,8 +743,7 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "implement the thing",
     });
@@ -752,7 +751,7 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     assert.match(taskPath, /^temp\//);
 
-    // pending task occupies — cannot patch status via docs.write (still requires baseEtag)
+    // Pending Task still cannot patch reserved frontmatter via docs.write (still requires baseEtag).
     const editPending = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editPending.error, JSON.stringify(editPending.error));
     const pendingEtag = (editPending.result as { etag: string }).etag;
@@ -778,13 +777,13 @@ test("task.dispatch projects exact Node occupation; docs.write blocks collab fie
     assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
     const projection = collaboration.result as {
       selectedNode: null | {
-        activeTask: null | {
+        activeTasks: Array<{
           execution: null | { kind: string; roleId?: string };
-        };
+        }>;
       };
     };
-    assert.equal(projection.selectedNode?.activeTask?.execution?.kind, "role");
-    assert.equal(projection.selectedNode?.activeTask?.execution?.roleId, "rl-executor");
+    assert.equal(projection.selectedNode?.activeTasks[0]?.execution?.kind, "role");
+    assert.equal(projection.selectedNode?.activeTasks[0]?.execution?.roleId, "rl-executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
@@ -1149,8 +1148,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "seed dead session reconciliation",
       requester: { kind: "user", id: "user" },

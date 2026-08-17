@@ -1,4 +1,4 @@
-// Local Service Protocol 9 wire types.
+// Local Service Protocol 10 wire types.
 
 import type { AcceptMode, TaskState, TaskStatusDetail } from "../core/task-model.js";
 export type { ArtifactRef } from "../core/artifact.js";
@@ -86,7 +86,7 @@ export type WorkspaceCollaborationStatusDetail = TaskStatusDetail & {
 
 export type WorkspaceCollaborationSelectedNode = {
   nodeId: string;
-  activeTask: WorkspaceCollaborationActiveTask | null;
+  activeTasks: WorkspaceCollaborationActiveTask[];
   statusDetail: WorkspaceCollaborationStatusDetail | null;
 };
 
@@ -133,7 +133,6 @@ export type WorkspaceCollaborationProjection = {
 export type OutputProvenanceIncompleteReason =
   | "result_missing"
   | "task_missing"
-  | "source_missing"
   | "mismatch";
 
 export type OutputProvenance = {
@@ -152,12 +151,7 @@ export type OutputProvenance = {
     id: string;
     state: string;
     path?: string;
-  } | null;
-  sourceNode: {
-    nodeId: string;
-    path?: string;
-    type?: string;
-    archived?: boolean;
+    nodeIds: string[];
   } | null;
   incomplete: OutputProvenanceIncompleteReason[];
 };
@@ -296,10 +290,8 @@ export type TaskProjection = {
   id?: string;
   /** Durable Role responsibility/handoff, when the Task belongs to a Role. */
   assigneeRoleId?: string;
-  /** Exact writable Nodes occupied by this Task. */
-  workNodeIds: string[];
-  /** Shared read-only context Nodes. */
-  contextNodeIds: string[];
+  /** Exact ordered root Node selection frozen onto this Task. */
+  nodeIds: string[];
   /** Full lifecycle state (task-api §2). */
   state: string;
   manifest: string;
@@ -337,7 +329,7 @@ export type TaskProjection = {
   createdAt?: string;
   updatedAt?: string;
   prompt?: string;
-  /** Authoritative frozen Task Context Card v2. */
+  /** Authoritative frozen Task Context Card v3. */
   contextCard: import("../core/task-context-card.js").TaskContextCard;
   /** `cg-v1-<sha256>` stable-prefix generation when projected. */
   contextGeneration?: string;
@@ -788,8 +780,7 @@ export const CLIENT_METHODS = [
   "task.dispatch",
   "task.claim",
   /**
-   * Durable Role self-execution: atomically create + claim from exact
-   * workNodeIds[] with optional shared contextNodeIds[].
+   * Durable Role self-execution: atomically create + claim from exact nodeIds[].
    * Service derives parent/review authority from persisted Task/Session responsibility;
    * callers cannot provide actor, target, or Task Result authority fields.
    */
@@ -834,7 +825,7 @@ export const CLIENT_METHODS = [
   "taskResult.list",
   "taskResult.get",
   /**
-   * V0.2 Output provenance (Output → Task Result → Task → sourceNode).
+   * V0.2 Output provenance (Output → Task Result → Task).
    * Params: workspaceId + canonical nodeId.
    * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
    */
@@ -924,7 +915,7 @@ export function isClientMethod(method: string): method is ClientMethod {
   return (CLIENT_METHODS as readonly string[]).includes(method);
 }
 
-/** Collaboration projection fields protected while a Node has an active Task. */
+/** Collaboration projection fields are always reserved from raw/docs.write. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
 
 /** Fields that raw/docs.write may never set; use dedicated APIs (setMode / task.* / type-tag RPCs). */

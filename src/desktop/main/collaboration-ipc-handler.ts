@@ -37,15 +37,12 @@ function normalizeRequest(raw: unknown): DesktopCollaborationRequest | null {
     exactKeys(raw, [
       "operation",
       "workspaceId",
-      "workNodeIds",
-      "contextNodeIds",
+      "nodeIds",
       "prompt",
       "target",
       "acceptMode",
     ]) &&
-    uniqueStrings(raw.workNodeIds, false) &&
-    uniqueStrings(raw.contextNodeIds, true) &&
-    raw.workNodeIds.every((id) => !(raw.contextNodeIds as string[]).includes(id)) &&
+    uniqueStrings(raw.nodeIds, true) &&
     nonEmpty(raw.prompt) &&
     isRecord(raw.target) &&
     exactKeys(raw.target, ["kind", "id"]) &&
@@ -148,8 +145,7 @@ export async function handleDesktopCollaborationRequest(
         : { connectionId: request.target.id };
       const result = await client.call("task.dispatch", {
         workspaceId: request.workspaceId,
-        workNodeIds: request.workNodeIds,
-        contextNodeIds: request.contextNodeIds,
+        nodeIds: request.nodeIds,
         prompt: request.prompt,
         requester: { kind: "user", id: "user" },
         acceptMode: request.acceptMode,

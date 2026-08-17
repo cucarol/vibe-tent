@@ -19,7 +19,7 @@ test("workspace collaboration strips Task identity and accepts workspace-level n
 test("workspace collaboration validates exact selected identity and minimal action DTOs", () => {
   const raw = {
     workspaceId: "ws-a",
-    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "submitted", responsibility: { kind: "role", roleId: "rl-ui", displayName: "界面" }, execution: { kind: "connection", connectionId: "cn-a", displayName: "本机" }, readyResult: { resultId: "rs-a", summary: "完成", createdAt: "2026-08-12T00:00:00Z" }, pendingDecision: null }, statusDetail: { taskId: "tk-a", kind: "failed", error: "失败", executionSessionId: "SS-A" } },
+    selectedNode: { nodeId: "cx-a", activeTasks: [{ taskId: "tk-a", state: "submitted", responsibility: { kind: "role", roleId: "rl-ui", displayName: "界面" }, execution: { kind: "connection", connectionId: "cn-a", displayName: "本机" }, readyResult: { resultId: "rs-a", summary: "完成", createdAt: "2026-08-12T00:00:00Z" }, pendingDecision: null }], statusDetail: { taskId: "tk-a", kind: "failed", error: "失败", executionSessionId: "SS-A" } },
     inbox: { items: [{ kind: "decision", requestId: "dr-a", taskId: "tk-a", nodeIds: ["cx-a"], question: "继续？", options: [{ id: "yes", label: "继续" }], createdAt: "2026-08-12T00:00:00Z" }], counts: { result: 0, decision: 1, total: 1 } },
   };
   const normalized = normalizeWorkspaceCollaboration(raw, "ws-a", "cx-a");
@@ -42,7 +42,7 @@ test("workspace collaboration validates exact selected identity and minimal acti
   ]) {
     assert.equal(serialized.includes(`\"${forbidden}\"`), false, forbidden);
   }
-  assert.equal(normalized.value.selectedNode?.activeTask?.readyResult?.resultId, "rs-a");
+  assert.equal(normalized.value.selectedNode?.activeTasks[0]?.readyResult?.resultId, "rs-a");
   assert.equal(normalized.value.selectedNode?.statusDetail?.taskId, "tk-a");
   assert.equal(normalized.value.selectedNode?.statusDetail?.error, "失败");
   assert.equal(normalized.value.selectedNode?.statusDetail?.executionSessionId, "SS-A");
@@ -50,7 +50,7 @@ test("workspace collaboration validates exact selected identity and minimal acti
 
 test("workspace collaboration fails closed on mismatch, extra infrastructure and corrupt counts", () => {
   const base = { workspaceId: "ws-a", selectedNode: null, inbox: { items: [], counts: { result: 0, decision: 0, total: 0 } } };
-  assert.equal(normalizeWorkspaceCollaboration({ ...base, selectedNode: { nodeId: "cx-a", activeTask: null } }, "ws-a", null).ok, false);
+  assert.equal(normalizeWorkspaceCollaboration({ ...base, selectedNode: { nodeId: "cx-a", activeTasks: [] } }, "ws-a", null).ok, false);
   assert.equal(normalizeWorkspaceCollaboration({ ...base, sessionId: "ss-no" }, "ws-a", null).ok, false);
   assert.equal(normalizeWorkspaceCollaboration({ ...base, inbox: { items: [], counts: { result: 0, decision: 0, total: 1 } } }, "ws-a", null).ok, false);
 });

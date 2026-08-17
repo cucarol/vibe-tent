@@ -125,8 +125,7 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const claimed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      workNodeIds: [first, second],
-      contextNodeIds: [],
+      nodeIds: [first, second],
       prompt: "own both Nodes",
     });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
@@ -139,16 +138,14 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     assert.equal(("as" + "Sub") in task, false);
     assert.deepEqual(task.requester, { kind: "user", id: "user" });
     assert.doesNotMatch(await tentFs.readFile(task.path), /^reviewer:/m);
-    assert.deepEqual(task.workNodeIds, [first, second]);
-    assert.deepEqual(task.contextNodeIds, []);
+    assert.deepEqual(task.nodeIds, [first, second]);
     assert.deepEqual(task.contextCard.nodeSnapshots.map((snapshot) => snapshot.id), [first, second]);
     assert.deepEqual(taskReferencedNodeIds(task), [first, second]);
 
     const forbidden = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      workNodeIds: [second],
-      contextNodeIds: [],
+      nodeIds: [second],
       prompt: "bad authority",
       requester: { kind: "role", id: "rl-planner" },
     });
@@ -175,8 +172,7 @@ test("Role direct claim carries one requester and task.dispatch rejects the reti
     const direct = await continuationSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      workNodeIds: [ownNode],
-      contextNodeIds: [],
+      nodeIds: [ownNode],
       prompt: "executor owns this attempt",
     });
     assert.ok(!direct.error, JSON.stringify(direct.error));
@@ -190,8 +186,7 @@ test("Role direct claim carries one requester and task.dispatch rejects the reti
 
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      workNodeIds: [downstreamNode],
-      contextNodeIds: [],
+      nodeIds: [downstreamNode],
       assigneeRoleId: "rl-executor",
       prompt: "not a direct claim",
       requester: { kind: "role", id: "rl-executor" },
@@ -214,8 +209,7 @@ test("Role task.claim trusts only exact live transport Session binding", async (
     const dispatchTask = async (nodeId: string) => {
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
-        workNodeIds: [nodeId],
-        contextNodeIds: [],
+        nodeIds: [nodeId],
         assigneeRoleId: "rl-executor",
         prompt: `execute ${nodeId}`,
         requester: { kind: "user", id: "user" },
@@ -338,8 +332,7 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     const failed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       prompt: "must not strand queued state",
     });
     assert.ok(failed.error);
@@ -367,8 +360,7 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     const secondFailure = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      workNodeIds: [secondNodeId],
-      contextNodeIds: [],
+      nodeIds: [secondNodeId],
       prompt: "restore existing init on failure",
     });
     assert.ok(secondFailure.error);
@@ -399,8 +391,7 @@ test("open Role Session tolerates terminal or missing current Task history", asy
     const priorClaim = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      workNodeIds: [priorNode],
-      contextNodeIds: [],
+      nodeIds: [priorNode],
       prompt: "prior work",
     });
     assert.ok(!priorClaim.error, JSON.stringify(priorClaim.error));
@@ -420,8 +411,7 @@ test("open Role Session tolerates terminal or missing current Task history", asy
     const next = await nextExecutorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      workNodeIds: [nextNode],
-      contextNodeIds: [],
+      nodeIds: [nextNode],
       prompt: "new root responsibility after terminal Task",
     });
     assert.ok(!next.error, JSON.stringify(next.error));
@@ -441,8 +431,7 @@ test("open Role Session tolerates terminal or missing current Task history", asy
     const afterMissing = await missingSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      workNodeIds: [missingNode],
-      contextNodeIds: [],
+      nodeIds: [missingNode],
       prompt: "new root responsibility after retained pointer was purged",
     });
     assert.ok(!afterMissing.error, JSON.stringify(afterMissing.error));

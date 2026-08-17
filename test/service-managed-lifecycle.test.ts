@@ -290,11 +290,11 @@ type NodeCollabProjection = {
   workspaceId: string;
   selectedNode: null | {
     nodeId: string;
-    activeTask: null | {
+    activeTasks: Array<{
       taskId: string;
       responsibility: { kind: "user" } | { kind: "role"; roleId: string };
       execution: null | { kind: "role"; roleId: string } | { kind: "connection"; connectionId: string };
-    };
+    }>;
   };
 };
 
@@ -308,28 +308,33 @@ async function nodeCollabProjection(
   return res.result as NodeCollabProjection;
 }
 
-/** Occupation released: no active task; accepted history may still project done. */
-function assertOccupationReleased(
+/** No active Task projection remains on this Node. */
+function assertNoActiveTasks(
   proj: NodeCollabProjection,
-  label = "occupation",
+  label = "active tasks",
   _expectedStatus: "todo" | "done" = "todo"
 ): void {
-  assert.equal(proj.selectedNode?.activeTask, null, `${label}: activeTask must be clear`);
+  assert.deepEqual(proj.selectedNode?.activeTasks ?? [], [], `${label}: activeTasks must be clear`);
 }
 
-/** Occupation held by an active task (doing + assignee + activeTaskId). */
-function assertOccupationHeld(
+/** At least one active Task projects on this Node. */
+function assertHasActiveTask(
   proj: NodeCollabProjection,
-  opts?: { roleId?: string; sessionId?: string; label?: string }
+  opts?: { roleId?: string; label?: string }
 ): void {
-  const label = opts?.label ?? "occupation";
-  const task = proj.selectedNode?.activeTask;
+  const label = opts?.label ?? "active task";
+  const task =
+    opts?.roleId === undefined
+      ? proj.selectedNode?.activeTasks[0]
+      : proj.selectedNode?.activeTasks.find(
+          (candidate) =>
+            candidate.execution?.kind === "role" && candidate.execution.roleId === opts.roleId
+        );
   assert.ok(task, `${label}: expected active Task`);
   if (opts?.roleId !== undefined) {
     assert.equal(task.execution?.kind, "role", `${label}: role execution`);
     if (task.execution?.kind === "role") assert.equal(task.execution.roleId, opts.roleId, `${label}: roleId`);
   }
-  if (opts?.sessionId !== undefined) assert.ok(task.taskId, `${label}: Session-backed Task remains active`);
 }
 
 async function mountWorkItem(svc: Awaited<ReturnType<typeof startLocalTentService>>, ws: string) {
@@ -401,7 +406,7 @@ test("Connection dispatch → submit → accept (manual) via ServiceClient", asy
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "Ship managed lifecycle wiring",
       requester: { kind: "user", id: "user" },
@@ -467,13 +472,13 @@ test("Connection dispatch → submit → accept (manual) via ServiceClient", asy
     assert.equal(accepted.result.status, "accepted");
     assert.equal(accepted.result.integrationMode, null);
 
-    // After accept: Task/TaskResult are authoritative; occupation is released.
+    // After accept: Task/TaskResult are authoritative; no active Task projection remains.
     // Accepted Task history remains in Task/TaskResult facts, not Node frontmatter.
     const finalTask = (await client.taskGet(workspaceId, taskPath)) as {
       task: { state: string };
     };
     assert.equal(finalTask.task.state, "accepted");
-    assertOccupationReleased(
+    assertNoActiveTasks(
       await nodeCollabProjection(svc, workspaceId, nodeId),
       "manual accept",
       "done"
@@ -500,7 +505,7 @@ test("acceptMode=auto-accept integrates without reviewer action", async () => {
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto path",
       acceptMode: "auto-accept",
@@ -527,7 +532,7 @@ test("agent-decide integrate vs request-review", async () => {
     const d1 = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "agent decide",
       acceptMode: "agent-decide",
@@ -559,7 +564,7 @@ test("agent-decide integrate vs request-review", async () => {
     const d1 = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "review me",
       acceptMode: "agent-decide",
@@ -596,7 +601,7 @@ test("explicit fake-default route runs its assigned Task", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "explicit fake",
     });
@@ -622,7 +627,7 @@ test("available Connection permits role startSession for an exact reserved bindi
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "machine route path",
     });
@@ -650,7 +655,7 @@ test("user callerKind starts an available exact reserved Connection binding", as
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "user root",
     });
@@ -678,7 +683,7 @@ test("dispatch relayPrompt uses Task claim/submit (not task-ack)", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "relay text",
     });
@@ -700,7 +705,7 @@ test("startSession bootstrap is managed (Context Card + user prompt); relay stil
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "bootstrap path semantics",
     });
@@ -740,7 +745,7 @@ test("startSession bootstrap is managed (Context Card + user prompt); relay stil
     assert.match(bootstrap!, /non-empty final assistant reply is submitted as a Result/i);
     assert.match(bootstrap!, /Task record:/);
     assert.match(bootstrap!, /Manifest:/);
-    assert.match(bootstrap!, /workNodeIds:/);
+    assert.match(bootstrap!, /nodeIds:/);
     assert.match(bootstrap!, /acceptMode:/);
     // Path tutorial once (stable project context), not repeated by legacy Context Card prelude.
     const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];
@@ -781,7 +786,7 @@ test("managed ACP: user prompt enters ACP; final response → one manual result"
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-managed",
         prompt: prompt,
         acceptMode: "review-required",
@@ -880,7 +885,7 @@ test("P0: TaskResult only after turn seal — post-response tail write cannot la
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-seal",
         prompt: "prove post-response worktree mutation cannot race TaskResult",
         acceptMode: "review-required",
@@ -974,7 +979,7 @@ test("P0: public task.submit/requestReview refuse while managed isTurnActive; id
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-busy-deliver",
         prompt: "manual deliver must not publish during busy managed turn",
         acceptMode: "review-required",
@@ -1133,7 +1138,7 @@ test("P0: public task.submit/requestReview refuse while managed isTurnActive; id
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "idle manual deliver still ok",
       acceptMode: "review-required",
@@ -1185,7 +1190,7 @@ test("managed ACP: empty / error / non-end_turn do not submit", async () => {
         const d = await rpc(svc, "task.dispatch", {
           requester: { kind: "user", id: "user" },
           workspaceId,
-          workNodeIds: [nodeId], contextNodeIds: [],
+          nodeIds: [nodeId],
           connectionId: `mock-acp-${mode}`,
           prompt: `mode ${mode}`,
         });
@@ -1239,7 +1244,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       const dispatched = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-output-limit",
         prompt: "bounded managed output",
       });
@@ -1363,7 +1368,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
         false,
         "explicit replacement must not pretend the same failing provider is live"
       );
-      assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+      assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
         label: "output-limit replacement",
       });
       } finally {
@@ -1397,7 +1402,7 @@ test("managed ACP: interrupt / stop does not submit", async () => {
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-interrupt",
         prompt: "will interrupt",
       });
@@ -1449,7 +1454,7 @@ test("managed ACP: auto-accept integrates; agent-decide stays pending review", a
         const d = await rpc(svc, "task.dispatch", {
           requester: { kind: "user", id: "user" },
           workspaceId,
-          workNodeIds: [nodeId], contextNodeIds: [],
+          nodeIds: [nodeId],
           connectionId: "mock-acp-autoaccept",
           prompt: "auto-accept path",
           acceptMode: "auto-accept",
@@ -1511,7 +1516,7 @@ test("managed ACP: auto-accept integrates; agent-decide stays pending review", a
         const d = await rpc(svc, "task.dispatch", {
           requester: { kind: "user", id: "user" },
           workspaceId,
-          workNodeIds: [nodeId], contextNodeIds: [],
+          nodeIds: [nodeId],
           connectionId: "mock-acp-ad",
           prompt: "agent-decide path",
           acceptMode: "agent-decide",
@@ -1590,7 +1595,7 @@ test("task.interrupt stops bound session", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "interrupt me",
     });
@@ -1620,7 +1625,7 @@ test("repeated interrupt repairs a late-bound Session projection", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "late bind repair",
     });
@@ -1670,7 +1675,7 @@ test("task.cancel removes queued envelope", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "cancel me",
     });
@@ -1795,7 +1800,7 @@ test("tool approval: ask → pending → approve once → running → submit", a
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-tool-ask",
         prompt: "need tool then finish",
       });
@@ -1902,7 +1907,7 @@ test("tool approval: concurrent asks keep task waiting until the final decision"
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "two concurrent tool requests",
     });
@@ -1985,7 +1990,7 @@ test("tool approval: user deny cancels tool (ACP cancelled)", async () => {
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-tool-deny",
         prompt: "will deny tool",
       });
@@ -2048,7 +2053,7 @@ test("tool approval: ask timeout expires pending; late approve fails", async () 
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-tool-timeout",
         prompt: "will timeout tool ask",
       });
@@ -2113,7 +2118,7 @@ test("tool approval: ask timeout expires pending; late approve fails", async () 
   );
 });
 
-test("failure cleanup: prompt error stops process, parks waiting(external), keeps occupation", async () => {
+test("failure cleanup: prompt error stops process, parks waiting(external), keeps the Task active", async () => {
   resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-fail-clean-"));
@@ -2124,7 +2129,7 @@ test("failure cleanup: prompt error stops process, parks waiting(external), keep
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-fail-clean",
         prompt: "will fail",
       });
@@ -2163,21 +2168,20 @@ test("failure cleanup: prompt error stops process, parks waiting(external), keep
       assert.equal(probe.isAlive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      // Occupation held for explicit task.startSession recovery.
-      assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+      // Exact Task stays active for explicit task.startSession recovery.
+      assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
         label: "prompt-error park",
       });
 
-      // Waiting remains active occupation: the exact Node cannot accept a second Task.
+      // Waiting no longer locks Node refs: a second Task on the same Node can start independently.
       const d2 = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
-        connectionId: "mock-acp-fail-clean",
-        prompt: "must be blocked by waiting occupation",
+        nodeIds: [nodeId],
+        connectionId: "fake-default",
+        prompt: "same node still allows a second Task",
       });
-      assert.ok(d2.error, "same exact Node must remain occupied by the waiting Task");
-      assert.match(String(d2.error?.message ?? ""), /occupied|active task/i);
+      assert.ok(!d2.error, JSON.stringify(d2.error));
       const parkedStill = await rpc(svc, "task.get", { workspaceId, taskPath });
       assert.equal(
         (parkedStill.result as { task: { state: string } }).task.state,
@@ -2225,7 +2229,7 @@ for (const exitCode of [7, 0]) test(`spontaneous managed child exit code=${exitC
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-spontaneous-die",
         prompt: "child will die spontaneously",
       });
@@ -2265,20 +2269,19 @@ for (const exitCode of [7, 0]) test(`spontaneous managed child exit code=${exitC
       assert.equal(probe.isAlive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+      assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
         label: `spontaneous exit code=${exitCode}`,
       });
 
-      // A terminal child parks the Task; its exact Node occupation remains exclusive.
+      // A terminal child parks the Task, but the Node still allows an independent second Task.
       const d2 = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "fake-default",
-        prompt: "must be blocked by parked occupation",
+        prompt: "same node still allows a second Task after park",
       });
-      assert.ok(d2.error, "parked Task must block a second dispatch on the same Node");
-      assert.match(String(d2.error?.message ?? ""), /occupied|active task/i);
+      assert.ok(!d2.error, JSON.stringify(d2.error));
       const parkedStill = await rpc(svc, "task.get", { workspaceId, taskPath });
       assert.equal(
         (parkedStill.result as { task: { state: string } }).task.state,
@@ -2305,7 +2308,7 @@ for (const exitCode of [7, 0]) test(`spontaneous managed child exit code=${exitC
  * Same-lifetime exit→failed projection is covered elsewhere and left unchanged.
  * Here we unmount before service stop so exit events cannot project the task, then
  * remount after restart — mount reconcile must correct the stale disk-live registry row,
- * park waiting(external), and keep occupation.
+ * park waiting(external), and keep the Task active.
  */
 test("crash restart + mount parks running task bound to dead session (task-side)", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-managed-crash-mount-"));
@@ -2326,7 +2329,7 @@ test("crash restart + mount parks running task bound to dead session (task-side)
       const d = await rpc(svc, "task.dispatch", {
         workspaceId: mounted.workspaceId,
         requester: { kind: "user", id: "user" },
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "fake-default",
         prompt: "crash mid-session",
       });
@@ -2335,7 +2338,7 @@ test("crash restart + mount parks running task bound to dead session (task-side)
       sessionId = (d.result as { executionSessionId: string }).executionSessionId;
       assert.equal((await svc.runtime.probe(sessionId)).isAlive, true);
 
-      // Snapshot: task running + bound, occupation held, process alive.
+      // Snapshot: task running + bound, active Task projection present, process alive.
       const pre = await loadTaskRecord(
         svc.hostApi.require(mounted.workspaceId).env.fs,
         taskPath
@@ -2404,7 +2407,7 @@ test("crash restart + mount parks running task bound to dead session (task-side)
       `registry remains corrected after mount, got ${rec!.state}`
     );
 
-    assertOccupationHeld(await nodeCollabProjection(svc2, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc2, workspaceId, nodeId), {
       label: "crash→mount",
     });
   } finally {
@@ -2468,7 +2471,7 @@ test("P0-1: Connection dispatch creates an isolated WorkspaceLane and uses its T
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "work in Connection Task lane",
     });
@@ -2492,7 +2495,7 @@ test("P0-1: Connection dispatch creates an isolated WorkspaceLane and uses its T
     const d2 = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId2], contextNodeIds: [],
+      nodeIds: [nodeId2],
       connectionId: "fake-default",
       prompt: "second Connection task",
     });
@@ -2538,7 +2541,7 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "docs only",
     });
@@ -2610,7 +2613,7 @@ test("P0-2: manual accept integrates real commits into main; resubmit of integra
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "integrate me",
       acceptMode: "review-required",
@@ -2664,7 +2667,7 @@ test("P0-2: manual accept integrates real commits into main; resubmit of integra
     const d2 = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId2], contextNodeIds: [],
+      nodeIds: [nodeId2],
       connectionId: "fake-default",
       prompt: "already on main",
     });
@@ -2713,7 +2716,7 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto-accept with git",
       acceptMode: "auto-accept",
@@ -2742,10 +2745,10 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
     assert.equal((delivered.result as { state: string }).state, "accepted");
     assert.equal(normalizeLf(await fs.readFile(path.join(ws, "auto.txt"), "utf8")), "auto\n");
 
-    // Auto-accept success: Task terminal accepted, with no active occupation.
+    // Auto-accept success: Task terminal accepted, with no active Task projection.
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
-    assertOccupationReleased(
+    assertNoActiveTasks(
       await nodeCollabProjection(svc, workspaceId, nodeId),
       "auto-accept",
       "done"
@@ -2767,7 +2770,7 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "agent decide integrate",
       acceptMode: "agent-decide",
@@ -2849,7 +2852,7 @@ async function claimDeliveredReviewTask(
   const d = await rpc(svc, "task.dispatch", {
     requester: { kind: "user", id: "user" },
     workspaceId,
-    workNodeIds: [nodeId], contextNodeIds: [],
+    nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt,
     acceptMode: "review-required",
@@ -2923,7 +2926,7 @@ test("P0-2: auto-accept submit releases MutationBus during blocked Git integrate
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "block bus during auto-accept integration",
       acceptMode: "auto-accept",
@@ -3042,7 +3045,7 @@ test("P0-2: same-Task sendInput waits for auto-submit Git then refuses accepted"
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "same-task sendInput serializes with auto-accept",
       acceptMode: "auto-accept",
@@ -3108,7 +3111,7 @@ test("P0-2: same-Task sendInput waits for auto-submit Git then refuses accepted"
   });
 });
 
-test("P0-2: accept integration conflict keeps submitted + occupation; no done", async () => {
+test("P0-2: accept integration conflict keeps submitted active; no done", async () => {
   const ws = await makeWorkspace("p0-conflict-accept");
   await initGitOnWorkspace(ws);
 
@@ -3117,7 +3120,7 @@ test("P0-2: accept integration conflict keeps submitted + occupation; no done", 
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "will conflict",
     });
@@ -3161,8 +3164,8 @@ test("P0-2: accept integration conflict keeps submitted + occupation; no done", 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "submitted");
 
-    // Integrate failed: result stays ready, occupation held (task still active).
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    // Integrate failed: result stays ready while the Task remains active.
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "accept integrate conflict",
     });
     const list = await rpc(svc, "taskResult.list", { workspaceId });
@@ -3176,7 +3179,7 @@ test("P0-2: accept integration conflict keeps submitted + occupation; no done", 
   });
 });
 
-test("P0-2: auto-accept integrate failure preserves ready TaskResult and occupation", async () => {
+test("P0-2: auto-accept integrate failure preserves ready TaskResult and the active Task", async () => {
   const ws = await makeWorkspace("p0-conflict-autoaccept");
   await initGitOnWorkspace(ws);
 
@@ -3185,7 +3188,7 @@ test("P0-2: auto-accept integrate failure preserves ready TaskResult and occupat
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto-accept conflict",
       acceptMode: "auto-accept",
@@ -3221,7 +3224,7 @@ test("P0-2: auto-accept integrate failure preserves ready TaskResult and occupat
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "submitted");
 
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "auto-accept integrate failure",
     });
 
@@ -3247,7 +3250,7 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "managed integrate will fail",
       acceptMode: "auto-accept",
@@ -3308,7 +3311,7 @@ test("P0 fix: managed auto-accept failure preserves ready TaskResult and emits d
       "a ready TaskResult is the stronger authority and clears pre-publication returns"
     );
 
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "managed auto-submit integrate failure",
     });
 
@@ -3352,7 +3355,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "race finalization and interrupt",
       acceptMode: "review-required",
@@ -3438,7 +3441,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "interrupt first",
       acceptMode: "review-required",
@@ -3483,7 +3486,7 @@ test("P0 fix: managed auto-submit collects exact Task-lane commit; manual accept
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto-collect then review",
       acceptMode: "review-required",
@@ -3555,7 +3558,7 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto-collect and accept",
       acceptMode: "auto-accept",
@@ -3613,7 +3616,7 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "docs only managed",
       acceptMode: "review-required",
@@ -3671,7 +3674,7 @@ test("P0 fix: managed auto-submit zero-commit / non-Git remains legal", async ()
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "report only",
       acceptMode: "auto-accept",
@@ -3712,7 +3715,7 @@ test("P0: dirty task worktree refuses managed auto-submit and public task.submit
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "must not deliver with dirty role worktree",
       acceptMode: "review-required",
@@ -3855,7 +3858,7 @@ test("reject-resume fail-closes a non-resumable Connection Task without false-ru
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "reject resume must wake session",
       acceptMode: "review-required",
@@ -3905,7 +3908,7 @@ test("Connection Task paths bind the exact Session and failed resume preserves f
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "connection reject resume",
       acceptMode: "review-required",
@@ -3988,7 +3991,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-reject-resume",
         prompt: "native reject-resume continuity",
         acceptMode: "review-required",
@@ -4117,7 +4120,7 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "explicit replacement after unavailable resume", acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -4163,7 +4166,7 @@ test("late session.failed on a replaced prior Session keeps the exact Task runni
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "late prior terminal must not demote replacement",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4202,7 +4205,7 @@ test("late session.failed after managed TaskResult is diagnostic only", async ()
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "result then late session.failed",
       acceptMode: "review-required",
@@ -4274,7 +4277,7 @@ test("P0 pre-TaskResult session.failed parks waiting(external) and preserves Tas
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "recoverable failure path",
       acceptMode: "review-required",
@@ -4325,9 +4328,9 @@ test("P0 pre-TaskResult session.failed parks waiting(external) and preserves Tas
     );
     assert.equal(task.executionSessionId, sessionId);
     // Worktree/lane is optional for non-Git harness workspaces; when present it is kept.
-    // Occupation + session binding are the durable park facts.
+    // Active Task projection + session binding are the durable park facts.
 
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "session.failed park",
     });
 
@@ -4358,7 +4361,7 @@ test("P0 pre-TaskResult session.exited parks waiting(external) with stable summa
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "clean exit before result",
       acceptMode: "review-required",
@@ -4393,7 +4396,7 @@ test("P0 pre-TaskResult session.exited parks waiting(external) with stable summa
       (task.wait as { code?: string } | undefined)?.code,
       SESSION_UNAVAILABLE_WAIT_CODE
     );
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "session.exited park",
     });
   });
@@ -4408,7 +4411,7 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "duplicate terminals",
     });
@@ -4452,7 +4455,7 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
   });
 });
 
-test("P0 late terminal from old session after rebind does not affect new occupation", async () => {
+test("P0 late terminal from old session after rebind does not affect the new active Task", async () => {
   resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("late-old-session-rebind");
 
@@ -4461,7 +4464,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "rebind then late old exit",
     });
@@ -4530,7 +4533,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
     assert.equal(task.state, "running");
     assert.equal(task.executionSessionId, newSessionId);
     assert.equal(task.wait ?? null, null);
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "after late old-session event",
     });
   });
@@ -4559,7 +4562,7 @@ test("P0 three independent same-tick session terminals each park only their own 
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "fake-default",
         prompt: `independent ${name}`,
       });
@@ -4613,14 +4616,14 @@ test("P0 three independent same-tick session terminals each park only their own 
       assert.equal(task.wait?.reason, "external", row.taskPath);
       assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY, row.taskPath);
       assert.equal(task.executionSessionId, row.sessionId, row.taskPath);
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, row.nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, row.nodeId), {
         label: row.taskPath,
       });
     }
   });
 });
 
-test("P0 explicit interrupt remains terminal and releases occupation after park", async () => {
+test("P0 explicit interrupt remains terminal and ends the active Task after park", async () => {
   resetManagedAutoSubmitFlightsForTests();
   const ws = await makeWorkspace("interrupt-after-park");
 
@@ -4629,7 +4632,7 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "park then interrupt",
     });
@@ -4667,7 +4670,7 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
       "interrupted"
     );
 
-    assertOccupationReleased(
+    assertNoActiveTasks(
       await nodeCollabProjection(svc, workspaceId, nodeId),
       "explicit interrupt"
     );
@@ -4687,7 +4690,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "recover with new session",
       acceptMode: "review-required",
@@ -4795,7 +4798,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
     assert.ok(draftAfter, "report draft still present until successful deliver");
     assert.equal(draftAfter!.assistantText, "draft preserved across park");
 
-    assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, workspaceId, nodeId), {
       label: "after replacement session",
     });
   });
@@ -4807,7 +4810,7 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "non-resume-capable binding", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4851,7 +4854,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
-      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "preserve durable input across explicit replacement", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4885,7 +4888,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "force restore failure",
       acceptMode: "review-required",
@@ -4955,7 +4958,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "do not downgrade a broken lane",
       acceptMode: "review-required",
@@ -5013,7 +5016,7 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "single-flight concurrent start",
     });
@@ -5065,7 +5068,7 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "idempotent restart reuse",
     });
@@ -5120,7 +5123,7 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "fake-fail-launch",
         prompt: "fail launch clears exact flight key",
       });
@@ -5181,7 +5184,7 @@ test("P0: user and role concurrent starts share one machine-route launch", async
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auth gate before coalesce",
     });
@@ -5270,7 +5273,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
       const d = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         ...(connectionBound
           ? { connectionId: "fake-default" }
           : {
@@ -5441,11 +5444,11 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     assert.equal(deadBTask.state, "waiting");
     assert.equal(deadBTask.wait?.reason, "external");
 
-    // Occupation kept: active task still owns the box (projection, not Node FM).
-    assertOccupationHeld(await nodeCollabProjection(svc, idA2, dead.nodeId), {
+    // Active Task projection remains on both Nodes (projection, not Node frontmatter).
+    assertHasActiveTask(await nodeCollabProjection(svc, idA2, dead.nodeId), {
       label: "reconcile dead session",
     });
-    assertOccupationHeld(await nodeCollabProjection(svc, idA2, staleLive.nodeId), {
+    assertHasActiveTask(await nodeCollabProjection(svc, idA2, staleLive.nodeId), {
       label: "reconcile stale-live",
     });
 
@@ -5478,7 +5481,7 @@ test("task.startSession clears a recoverable external wait before provider launc
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "resume external wait",
     });
@@ -5522,8 +5525,7 @@ test("task.startSession leaves session_unavailable waiting when a pending result
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "draft publication requires explicit resume",
     });
@@ -5609,8 +5611,7 @@ test("task.startSession internal resume waits for the exact Task lifecycle fligh
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "resume must wait for lifecycle owner",
     });
@@ -5681,7 +5682,7 @@ test("task.startSession parks an unavailable bound session; replaceSession creat
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "explicit recovery only",
     });
@@ -5758,7 +5759,7 @@ test("task.startSession and replaceSession fail closed on a stale missing bindin
     const dispatched = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "stale session binding",
     });
@@ -5823,7 +5824,7 @@ test("task.startSession and replaceSession fail closed on a foreign binding", as
       const dispatched = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId], contextNodeIds: [],
+        nodeIds: [nodeId],
         connectionId: "mock-acp-boundary",
         prompt: "workspace-bound resume",
       });
@@ -5928,7 +5929,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "stale envelope",
       acceptMode: "review-required",
@@ -5972,7 +5973,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "wrong workspace",
     });
@@ -6017,7 +6018,7 @@ test("P0 fix: auto-accept with zero commits is legal (pure docs / no auto-collec
     const d = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "docs only result",
       acceptMode: "auto-accept",

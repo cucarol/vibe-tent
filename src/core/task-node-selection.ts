@@ -1,8 +1,7 @@
 import { isNodeId } from "./id.js";
 
 export type TaskNodeSelection = {
-  workNodeIds: string[];
-  contextNodeIds: string[];
+  nodeIds: string[];
 };
 
 export class TaskNodeSelectionError extends Error {
@@ -43,32 +42,17 @@ export function normalizeTaskNodeSelection(value: unknown): TaskNodeSelection {
     throw new TaskNodeSelectionError("Task Node selection must be an object.");
   }
   const record = value as Record<string, unknown>;
-  const expected = new Set(["workNodeIds", "contextNodeIds"]);
+  const expected = new Set(["nodeIds"]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskNodeSelectionError("Task Node selection contains unknown fields.");
   }
-  const workNodeIds = normalizeNodeIds(record.workNodeIds, "workNodeIds");
-  const contextNodeIds = normalizeNodeIds(record.contextNodeIds, "contextNodeIds");
-  if (workNodeIds.length === 0) {
-    throw new TaskNodeSelectionError("Task workNodeIds requires at least one Node.");
-  }
-  const work = new Set(workNodeIds);
-  const overlap = contextNodeIds.find((id) => work.has(id));
-  if (overlap) {
-    throw new TaskNodeSelectionError(
-      `Task Node cannot be both writable work and read-only context: ${overlap}.`
-    );
-  }
-  return { workNodeIds, contextNodeIds };
+  const nodeIds = normalizeNodeIds(record.nodeIds, "nodeIds");
+  return { nodeIds };
 }
 
 export function orderedTaskNodeIds(selection: TaskNodeSelection): string[] {
   const normalized = normalizeTaskNodeSelection(selection);
-  return [...normalized.workNodeIds, ...normalized.contextNodeIds];
-}
-
-export function taskCanWriteNode(selection: TaskNodeSelection, nodeId: string): boolean {
-  return normalizeTaskNodeSelection(selection).workNodeIds.includes(nodeId);
+  return [...normalized.nodeIds];
 }
 
 export function taskReferencesNode(selection: TaskNodeSelection, nodeId: string): boolean {

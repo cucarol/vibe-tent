@@ -33,8 +33,7 @@ export type CollaborationRead<T> =
 
 export type DispatchTaskRequest = {
   workspaceId: string;
-  workNodeIds: string[];
-  contextNodeIds: string[];
+  nodeIds: string[];
   prompt: string;
   acceptMode: DesktopAcceptMode;
   target: DesktopDispatchTarget;

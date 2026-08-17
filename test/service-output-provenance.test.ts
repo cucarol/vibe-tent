@@ -42,8 +42,7 @@ async function createNote(svc: Awaited<ReturnType<typeof startLocalTentService>>
 async function submitReadyResult(svc: Awaited<ReturnType<typeof startLocalTentService>>, workspaceId: string, root: string, nodeId: string) {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     assigneeRoleId: "rl-executor",
     prompt: "produce formal result",
     requester: { kind: "user", id: "user" },

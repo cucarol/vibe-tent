@@ -32,10 +32,9 @@ const FAKE_CONNECTION = {
 
 function taskNodeContext(id: string, nodePath: string) {
   return {
-    workNodeIds: [id],
-    contextNodeIds: [],
+    nodeIds: [id],
     nodeSnapshots: [
-      { id, path: nodePath, type: "prompt", tags: [], body: "", etag: "a".repeat(24) },
+      { id, path: nodePath, type: "prompt", archived: false, tags: [], body: "", etag: "a".repeat(24) },
     ],
   };
 }

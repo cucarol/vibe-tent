@@ -1,5 +1,5 @@
 /**
- * P0 Core/Runtime: Task Context Card v2 + prompt assembly + Session reuse gate
+ * P0 Core/Runtime: Task Context Card v3/current + prompt assembly + Session reuse gate
  * (Node cx-5q6za6).
  */
 import assert from "node:assert/strict";
@@ -56,8 +56,7 @@ function sampleCard(
 ): TaskContextCard {
   const contextGeneration = overrides?.contextGeneration ?? sampleGeneration();
   const base: Parameters<typeof buildTaskContextCard>[0] = {
-    workNodeIds: ["cx-5q6za6"],
-    contextNodeIds: ["cx-context"],
+    nodeIds: ["cx-5q6za6", "cx-context"],
     nodeSnapshots: [
       {
         id: "cx-5q6za6",
@@ -66,6 +65,7 @@ function sampleCard(
         tags: ["core"],
         body: "Implement the Context Card core seam.",
         etag: "a".repeat(24),
+        archived: false,
       },
       {
         id: "cx-context",
@@ -74,6 +74,7 @@ function sampleCard(
         tags: ["context"],
         body: "Core is authoritative.",
         etag: "b".repeat(24),
+        archived: false,
       },
     ],
     contextGeneration,
@@ -170,8 +171,7 @@ test("canonicalJson sorts object keys for stable hashing", () => {
 test("buildTaskContextCard requires Node context and rejects retired v1 fields", () => {
   const gen = sampleGeneration();
   const card = sampleCard({ contextGeneration: gen });
-  assert.deepEqual(card.workNodeIds, ["cx-5q6za6"]);
-  assert.deepEqual(card.contextNodeIds, ["cx-context"]);
+  assert.deepEqual(card.nodeIds, ["cx-5q6za6", "cx-context"]);
   assert.throws(
     () => buildTaskContextCard({
       ...(card as unknown as Record<string, unknown>),
@@ -181,8 +181,7 @@ test("buildTaskContextCard requires Node context and rejects retired v1 fields",
   );
   assert.throws(
     () => buildTaskContextCard({
-      workNodeIds: card.workNodeIds,
-      contextNodeIds: card.contextNodeIds,
+      nodeIds: card.nodeIds,
       nodeSnapshots: card.nodeSnapshots,
       contextGeneration: "bad",
     }),
@@ -208,7 +207,7 @@ test("parseTaskContextCard round-trips serialize shape", () => {
   const card = sampleCard();
   const wire = serializeTaskContextCardForFrontmatter(card);
   const parsed = parseTaskContextCard(wire);
-  assert.deepEqual(parsed.workNodeIds, card.workNodeIds);
+  assert.deepEqual(parsed.nodeIds, card.nodeIds);
   assert.deepEqual(parsed.nodeSnapshots, card.nodeSnapshots);
   assert.equal(parsed.contextGeneration, card.contextGeneration);
   assert.equal("objective" in wire, false);
@@ -235,7 +234,7 @@ test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () =>
     contextCard: serializeTaskContextCardForFrontmatter(card),
   });
   assert.equal(loaded?.contextGeneration, card.contextGeneration);
-  assert.deepEqual(loaded?.workNodeIds, card.workNodeIds);
+  assert.deepEqual(loaded?.nodeIds, card.nodeIds);
 });
 
 // ---- prompt ordering / cache ----
@@ -272,7 +271,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   const iRoleSkill = idx("## Built-in skill: tent-role");
   const iRolePrompt = idx("## Role prompt");
   const iTaskSkill = idx("## Built-in skill: tent-task");
-  const iCard = idx("Tent Task Context Card v2");
+  const iCard = idx("Tent Task Context Card v3");
   const iUser = idx("## Prompt");
   const iReview = idx("## Review Feedback");
   assert.ok(iInv < iProj);
@@ -284,7 +283,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   assert.ok(iUser < iReview);
   assert.equal(assembled.taskPackage, taskPackage);
   assert.doesNotMatch(text, /contextGeneration: cg-v1-/);
-  assert.match(formatTaskContextCardPrompt(card), /Work Node cx-5q6za6/);
+  assert.match(formatTaskContextCardPrompt(card), /nodeIds: cx-5q6za6, cx-context/);
 });
 
 test("stable prefix injected once per generation; later Tasks append delta only", () => {
@@ -343,7 +342,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   assert.doesNotMatch(delta.text, new RegExp(MANAGED_BOOTSTRAP_INVARIANT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(delta.text, /## Built-in skill: tent-task/);
   assert.match(delta.text, /second task/);
-  assert.match(delta.text, /Tent Task Context Card v2/);
+  assert.match(delta.text, /Tent Task Context Card v3/);
   // Identical stable prefix bytes across two full assemblies with same generation inputs
   const full2 = assembleManagedPrompt({
     workspaceRoot: "/w",
@@ -374,49 +373,52 @@ test("prompt-only managed context emits the immutable user prompt once", () => {
     }),
   });
   assert.equal(assembled.text.split(marker).length - 1, 1);
-  assert.match(assembled.dynamicDelta, /workNodeIds: cx-5q6za6/);
+  assert.match(assembled.dynamicDelta, /nodeIds: cx-5q6za6, cx-context/);
   assert.doesNotMatch(assembled.dynamicDelta, /^objective:/m);
   assert.doesNotMatch(assembled.dynamicDelta, /^acceptance:/m);
 });
 
-test("canonical Task Package bytes are deterministic and preserve work-then-context snapshot order", () => {
-  const workA = {
-    id: "cx-worka",
-    path: "Work/A",
+test("canonical Task Package bytes are deterministic and preserve ordered root snapshot bytes", () => {
+  const rootA = {
+    id: "cx-roota",
+    path: "Roots/A",
     type: "prompt",
-    tags: ["work"],
-    body: "WORK_A",
+    tags: ["root"],
+    body: "ROOT_A",
     etag: "1".repeat(24),
+    archived: false,
   };
-  const workB = {
-    id: "cx-workb",
-    path: "Work/B",
-    type: "prompt",
-    tags: ["work"],
-    body: "WORK_B",
+  const childA = {
+    id: "cx-childa",
+    path: "Roots/A/child",
+    type: "reference",
+    tags: ["child"],
+    body: "CHILD_A",
     etag: "2".repeat(24),
+    archived: false,
   };
-  const ctxA = {
-    id: "cx-contexta",
-    path: "Context/A",
-    type: "reference",
-    tags: ["context"],
-    body: "CTX_A",
+  const rootB = {
+    id: "cx-rootb",
+    path: "Roots/B",
+    type: "prompt",
+    tags: ["root"],
+    body: "ROOT_B",
     etag: "3".repeat(24),
+    archived: false,
   };
-  const ctxB = {
-    id: "cx-contextb",
-    path: "Context/B",
+  const childB = {
+    id: "cx-childb",
+    path: "Roots/B/child",
     type: "reference",
-    tags: ["context"],
-    body: "CTX_B",
-    etag: "4".repeat(24),
+    tags: ["child"],
+    body: "CHILD_B",
+    etag: "2".repeat(24),
+    archived: false,
   };
   const prompt = "Ship the exact package";
   const orderedCard = buildTaskContextCard({
-    workNodeIds: [workB.id, workA.id],
-    contextNodeIds: [ctxB.id, ctxA.id],
-    nodeSnapshots: [workB, workA, ctxB, ctxA],
+    nodeIds: [rootB.id, rootA.id],
+    nodeSnapshots: [rootB, childB, rootA, childA],
     contextGeneration: sampleGeneration("ordered"),
   });
   const taskBase = {
@@ -426,35 +428,32 @@ test("canonical Task Package bytes are deterministic and preserve work-then-cont
     requester: { kind: "user" as const, id: "user" },
     state: "queued" as const,
     assigneeRoleId: "rl-reviewer",
-    workNodeIds: [workB.id, workA.id],
-    contextNodeIds: [ctxB.id, ctxA.id],
-    nodeSnapshots: [workB, workA, ctxB, ctxA],
+    nodeIds: [rootB.id, rootA.id],
+    nodeSnapshots: [rootB, childB, rootA, childA],
     contextCard: orderedCard,
     prompt,
   };
   const sameBytesA = taskPackageForTask(taskBase);
   const sameBytesB = taskPackageForTask({ ...taskBase });
   assert.equal(sameBytesA, sameBytesB);
-  const workBIndex = sameBytesA.indexOf("Work/B");
-  const workAIndex = sameBytesA.indexOf("Work/A");
-  const ctxBIndex = sameBytesA.indexOf("Context/B");
-  const ctxAIndex = sameBytesA.indexOf("Context/A");
-  assert.ok(workBIndex >= 0 && workAIndex >= 0 && ctxBIndex >= 0 && ctxAIndex >= 0);
-  assert.ok(workBIndex < workAIndex, "work snapshots must keep supplied work order");
-  assert.ok(workAIndex < ctxBIndex, "all work snapshots must precede context snapshots");
-  assert.ok(ctxBIndex < ctxAIndex, "context snapshots must keep supplied context order");
+  const rootBIndex = sameBytesA.indexOf("Roots/B");
+  const childBIndex = sameBytesA.indexOf("Roots/B/child");
+  const rootAIndex = sameBytesA.indexOf("Roots/A");
+  const childAIndex = sameBytesA.indexOf("Roots/A/child");
+  assert.ok(rootBIndex >= 0 && childBIndex >= 0 && rootAIndex >= 0 && childAIndex >= 0);
+  assert.ok(rootBIndex < childBIndex, "descendants stay inside the same root block");
+  assert.ok(childBIndex < rootAIndex, "root order must remain exact");
+  assert.ok(rootAIndex < childAIndex, "later root descendants stay after that root");
 
   const swappedOrderCard = buildTaskContextCard({
-    workNodeIds: [workA.id, workB.id],
-    contextNodeIds: [ctxA.id, ctxB.id],
-    nodeSnapshots: [workA, workB, ctxA, ctxB],
+    nodeIds: [rootA.id, rootB.id],
+    nodeSnapshots: [rootA, childA, rootB, childB],
     contextGeneration: sampleGeneration("ordered"),
   });
   const swapped = taskPackageForTask({
     ...taskBase,
-    workNodeIds: [workA.id, workB.id],
-    contextNodeIds: [ctxA.id, ctxB.id],
-    nodeSnapshots: [workA, workB, ctxA, ctxB],
+    nodeIds: [rootA.id, rootB.id],
+    nodeSnapshots: [rootA, childA, rootB, childB],
     contextCard: swappedOrderCard,
   });
   assert.notEqual(swapped, sameBytesA);
@@ -462,9 +461,8 @@ test("canonical Task Package bytes are deterministic and preserve work-then-cont
   const differentGeneration = taskPackageForTask({
     ...taskBase,
     contextCard: buildTaskContextCard({
-      workNodeIds: [workB.id, workA.id],
-      contextNodeIds: [ctxB.id, ctxA.id],
-      nodeSnapshots: [workB, workA, ctxB, ctxA],
+      nodeIds: [rootB.id, rootA.id],
+      nodeSnapshots: [rootB, childB, rootA, childA],
       contextGeneration: sampleGeneration("different-generation-only"),
     }),
   });

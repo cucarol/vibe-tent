@@ -1,4 +1,4 @@
-// Task Context Card v2 + managed prompt assembly + exact-Session context generation.
+// Task Context Card v3/current + managed prompt assembly + exact-Session context generation.
 // Frozen by Node cx-5q6za6. No new lifecycle entity — projected via Task envelope /
 // Session registry / manifest only.
 //
@@ -11,12 +11,12 @@
 
 import { canonicalJson, sha256Hex } from "./canonical-digest.js";
 import {
-  buildTaskContextCardV2,
-  formatTaskContextCardV2Prompt,
+  buildTaskContextCardRecord,
+  formatTaskContextCardMarkdown,
   normalizeTaskContextCard,
   serializeTaskContextCard,
   TASK_CONTEXT_CARD_SCHEMA_VERSION,
-  type BuildTaskContextCardInput as BuildTaskContextCardV2Input,
+  type BuildTaskContextCardInput as TaskContextCardBuildInput,
   type TaskContextCard,
 } from "./task-context-card-schema.js";
 import {
@@ -28,8 +28,8 @@ import type { TaskRecord } from "./task.js";
 
 export { canonicalJson, sha256Hex } from "./canonical-digest.js";
 export {
-  buildTaskContextCardV2,
-  formatTaskContextCardV2Prompt,
+  buildTaskContextCardRecord,
+  formatTaskContextCardMarkdown,
   normalizeTaskContextCard,
   serializeTaskContextCard,
   TASK_CONTEXT_CARD_SCHEMA_VERSION,
@@ -272,9 +272,9 @@ export function computeContextGenerationFromStableFacts(input: {
 // Parse / validate / project
 // ---------------------------------------------------------------------------
 
-export type BuildTaskContextCardInput = BuildTaskContextCardV2Input;
+export type BuildTaskContextCardInput = TaskContextCardBuildInput;
 
-/** Build the sole v2 Context Card wire from frozen Node snapshots. */
+/** Build the sole current Task Context Card wire from frozen Node snapshots. */
 export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskContextCard {
   const retired = [
     "objective",
@@ -299,7 +299,7 @@ export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskCont
     );
   }
   try {
-    return buildTaskContextCardV2(input);
+    return buildTaskContextCardRecord(input);
   } catch (error) {
     if (error instanceof TaskContextCardError) throw error;
     throw new TaskContextCardError(
@@ -398,9 +398,9 @@ export type ManagedPromptAssembly = {
   dynamicDelta: string;
 };
 
-/** Format the v2 Node snapshot card as a stable, cache-friendly markdown block. */
+/** Format the current Node snapshot card as a stable, cache-friendly markdown block. */
 export function formatTaskContextCardPrompt(card: TaskContextCard): string {
-  return formatTaskContextCardV2Prompt(card);
+  return formatTaskContextCardMarkdown(card);
 }
 
 export function formatTaskPackage(input: {
@@ -569,20 +569,6 @@ export function shouldInjectStablePrefix(input: {
   currentContextGeneration: string;
 }): boolean {
   return decideStablePrefixInjection(input).includeStablePrefix;
-}
-
-/**
- * @deprecated Prefer {@link skillSetCompatibilityDigest} (names-only is insufficient).
- * Sorted skill *names* only — kept for pure-function fixtures.
- */
-export function skillsCompatibilityDigest(
-  skillNames: readonly string[] | undefined
-): string {
-  const names = [...(skillNames ?? [])]
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
-  return sha256Hex(canonicalJson(names));
 }
 
 /**
@@ -821,18 +807,6 @@ export function deriveIntegrationAuthority(input: {
     }
     throw err;
   }
-}
-
-/**
- * @deprecated Prefer {@link deriveIntegrationAuthority}.
- * Single-actor helper still fail-loud-parses the actor; mutator is always service.
- */
-export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAuthority {
-  const parsed = parseTaskActorRef(actor, "requester");
-  return {
-    actor: { kind: parsed.kind, id: parsed.id },
-    mutator: INTEGRATION_MUTATOR_SERVICE,
-  };
 }
 
 /**

@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   TASK_CONTEXT_CARD_SCHEMA_VERSION,
   TaskContextCardSchemaError,
-  buildTaskContextCardV2,
-  formatTaskContextCardV2Prompt,
+  buildTaskContextCardRecord,
+  formatTaskContextCardMarkdown,
   normalizeTaskContextCard,
   serializeTaskContextCard,
 } from "../src/core/task-context-card-schema.js";
@@ -13,12 +13,12 @@ import {
 function card() {
   return {
     schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    workNodeIds: ["cx-work"],
-    contextNodeIds: ["cx-context"],
+    nodeIds: ["cx-work", "cx-context"],
     nodeSnapshots: ["cx-work", "cx-context"].map((id) => ({
       id,
       path: `Nodes/${id}`,
       type: "reference",
+      archived: false,
       tags: [],
       body: `${id} frozen`,
       etag: "a".repeat(24),
@@ -58,13 +58,17 @@ test("Task Context Card rejects retired prompt mirrors, refs, and digest", () =>
   }
   assert.throws(
     () => normalizeTaskContextCard({ ...card(), schemaVersion: "v1" }),
-    /schemaVersion must be v2/
+    new RegExp(`schemaVersion must be ${TASK_CONTEXT_CARD_SCHEMA_VERSION}`)
   );
 });
 
 test("Task Context Card requires exact ordered snapshots and generation", () => {
   assert.throws(
-    () => normalizeTaskContextCard({ ...card(), nodeSnapshots: [...card().nodeSnapshots].reverse() }),
+    () =>
+      normalizeTaskContextCard({
+        ...card(),
+        nodeSnapshots: [...card().nodeSnapshots].reverse(),
+      }),
     TaskContextCardSchemaError
   );
   assert.throws(
@@ -75,9 +79,8 @@ test("Task Context Card requires exact ordered snapshots and generation", () => 
 
 test("Task Context Card contains only Node context and optional generation", () => {
   const value = card();
-  const built = buildTaskContextCardV2({
-    workNodeIds: value.workNodeIds,
-    contextNodeIds: value.contextNodeIds,
+  const built = buildTaskContextCardRecord({
+    nodeIds: [...value.nodeIds],
     nodeSnapshots: value.nodeSnapshots,
     contextGeneration: value.contextGeneration,
   });
@@ -88,10 +91,10 @@ test("Task Context Card contains only Node context and optional generation", () 
 });
 
 test("Task Context Card prompt emits each frozen Node body exactly once", () => {
-  const text = formatTaskContextCardV2Prompt(card());
-  assert.match(text, /^Tent Task Context Card v2/);
-  assert.match(text, /--- Work Node cx-work ---/);
-  assert.match(text, /--- Context Node cx-context ---/);
+  const text = formatTaskContextCardMarkdown(card());
+  assert.match(text, /^Tent Task Context Card v3/);
+  assert.match(text, /--- Node cx-work ---/);
+  assert.match(text, /--- Node cx-context ---/);
   assert.equal(text.split("cx-work frozen").length - 1, 1);
   assert.equal(text.split("cx-context frozen").length - 1, 1);
   assert.doesNotMatch(text, /objective:|acceptance:|refs\.nodes|taskDeltaDigest/);

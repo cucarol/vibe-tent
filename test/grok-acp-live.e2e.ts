@@ -131,8 +131,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
     const dispatched = await rpc("task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "grok-live-e2e",
       prompt: "Reply with a short result report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       acceptMode: "review-required",

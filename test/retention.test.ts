@@ -27,7 +27,7 @@ function clock(iso: string) {
 }
 
 function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
-  return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
+  return { id, path: nodePath, type, archived: false, tags: [], body, etag: contentEtag(body) };
 }
 
 async function createReviewedResult(
@@ -69,8 +69,7 @@ async function writeTerminalTask(
   const path = await writeTaskRecord(fs, clock(opts.createdAt ?? OLD), {
     requester: { kind: "user", id: "user" },
     executionSessionId: sessionId,
-    workNodeIds: [opts.claimId ?? "cx-p1"],
-    contextNodeIds: [],
+    nodeIds: [opts.claimId ?? "cx-p1"],
     nodeSnapshots: [nodeSnapshot(opts.claimId ?? "cx-p1", "prompt/表达式任务书")],
     manifestPath: `temp/sessions/${sessionId}/manifests/m.md`,
     prompt: "retention fixture",
@@ -119,8 +118,7 @@ test("preview: never selects active tasks or ready results", async () => {
   const activePath = await writeTaskRecord(fs, clock(OLD), {
     requester: { kind: "user", id: "user" },
     executionSessionId: "ss-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/表达式任务书")],
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
     prompt: "still running work",
@@ -295,8 +293,7 @@ test("purge: deletes task + results as a group; leaves active work", async () =>
   const activePath = await writeTaskRecord(fs, clock(NOW), {
     requester: { kind: "user", id: "user" },
     executionSessionId: "ss-executor",
-    workNodeIds: ["cx-p2"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p2"],
     nodeSnapshots: [nodeSnapshot("cx-p2", "prompt/表达式任务书/草稿")],
     manifestPath: "temp/sessions/ss-executor/manifests/m2.md",
     prompt: "do not purge me",

@@ -44,7 +44,7 @@ export type WorkspaceCollaborationView = {
   workspaceId: string;
   selectedNode: {
     nodeId: string;
-    activeTask: CollaborationActiveTask | null;
+    activeTasks: readonly CollaborationActiveTask[];
     statusDetail: CollaborationStatusDetail | null;
   } | null;
   inbox: {
@@ -229,29 +229,31 @@ function parseExecution(raw: unknown): CollaborationExecution | null {
   throw new Error("workspace.collaboration execution is corrupt");
 }
 
-function parseActiveTask(raw: unknown): CollaborationActiveTask | null {
-  if (raw === null) return null;
-  if (
-    !isRecord(raw) ||
-    !exactKeys(raw, [
-      "taskId",
-      "state",
-      "responsibility",
-      "execution",
-      "readyResult",
-      "pendingDecision",
-    ]) ||
-    !nonEmpty(raw.taskId) ||
-    !TASK_STATES.has(raw.state as TaskState)
-  ) throw new Error("workspace.collaboration activeTask is corrupt");
-  return {
-    taskId: raw.taskId,
-    state: raw.state as TaskState,
-    responsibility: parseResponsibility(raw.responsibility),
-    execution: parseExecution(raw.execution),
-    readyResult: parseTaskResult(raw.readyResult, "selected Task Result"),
-    pendingDecision: parseDecision(raw.pendingDecision, "selected Decision"),
-  };
+function parseActiveTasks(raw: unknown): CollaborationActiveTask[] {
+  if (!Array.isArray(raw)) throw new Error("workspace.collaboration activeTasks are corrupt");
+  return raw.map((item) => {
+    if (
+      !isRecord(item) ||
+      !exactKeys(item, [
+        "taskId",
+        "state",
+        "responsibility",
+        "execution",
+        "readyResult",
+        "pendingDecision",
+      ]) ||
+      !nonEmpty(item.taskId) ||
+      !TASK_STATES.has(item.state as TaskState)
+    ) throw new Error("workspace.collaboration activeTasks are corrupt");
+    return {
+      taskId: item.taskId,
+      state: item.state as TaskState,
+      responsibility: parseResponsibility(item.responsibility),
+      execution: parseExecution(item.execution),
+      readyResult: parseTaskResult(item.readyResult, "selected Task Result"),
+      pendingDecision: parseDecision(item.pendingDecision, "selected Decision"),
+    };
+  });
 }
 
 export function normalizeWorkspaceCollaboration(
@@ -279,12 +281,12 @@ export function normalizeWorkspaceCollaboration(
     } else {
       if (
         !isRecord(raw.selectedNode) ||
-        !exactKeys(raw.selectedNode, ["nodeId", "activeTask", "statusDetail"]) ||
+        !exactKeys(raw.selectedNode, ["nodeId", "activeTasks", "statusDetail"]) ||
         raw.selectedNode.nodeId !== expectedNodeId
       ) throw new Error("workspace.collaboration selected Node mismatch");
       selectedNode = {
         nodeId: expectedNodeId,
-        activeTask: parseActiveTask(raw.selectedNode.activeTask),
+        activeTasks: parseActiveTasks(raw.selectedNode.activeTasks),
         statusDetail: parseSelectedNodeStatusDetail(raw.selectedNode.statusDetail),
       };
     }

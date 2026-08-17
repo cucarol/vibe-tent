@@ -204,10 +204,9 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);
-  const result = await dispatch(e as any, "cx-p1", {
+  const result = await dispatch(e as any, {
     assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "auto-accept integrate outside lock",
     requester: { kind: "user", id: "user" },
     acceptMode: "auto-accept",
@@ -248,10 +247,9 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps subm
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);
-  const result = await dispatch(e as any, "cx-p1", {
+  const result = await dispatch(e as any, {
     assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "manual accept outside lock",
     requester: { kind: "user", id: "user" },
   });
@@ -294,10 +292,9 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);
-  const result = await dispatch(e as any, "cx-p1", {
+  const result = await dispatch(e as any, {
     assigneeRoleId: "rl-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "agent decide",
     requester: { kind: "user", id: "user" },
     acceptMode: "agent-decide",

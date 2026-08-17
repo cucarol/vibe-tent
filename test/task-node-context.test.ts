@@ -11,16 +11,16 @@ function snapshot(id: string) {
     id,
     path: `Nodes/${id}`,
     type: "reference",
+    archived: false,
     tags: [],
     body: `${id} frozen body`,
     etag: "a".repeat(24),
   };
 }
 
-test("Task Node context binds ordered snapshots to work and context authority", () => {
+test("Task Node context binds ordered snapshots to nodeIds authority", () => {
   const value = {
-    workNodeIds: ["cx-work"],
-    contextNodeIds: ["cx-context"],
+    nodeIds: ["cx-work", "cx-context"],
     nodeSnapshots: [snapshot("cx-work"), snapshot("cx-context")],
   };
   assert.deepEqual(normalizeTaskNodeContext(value), value);
@@ -29,18 +29,15 @@ test("Task Node context binds ordered snapshots to work and context authority", 
 test("Task Node context rejects reordered, missing, and extra snapshots", () => {
   const invalid: unknown[] = [
     {
-      workNodeIds: ["cx-work"],
-      contextNodeIds: ["cx-context"],
+      nodeIds: ["cx-work", "cx-context"],
       nodeSnapshots: [snapshot("cx-context"), snapshot("cx-work")],
     },
     {
-      workNodeIds: ["cx-work"],
-      contextNodeIds: ["cx-context"],
+      nodeIds: ["cx-work", "cx-context"],
       nodeSnapshots: [snapshot("cx-work")],
     },
     {
-      workNodeIds: ["cx-work"],
-      contextNodeIds: [],
+      nodeIds: ["cx-work"],
       nodeSnapshots: [snapshot("cx-work")],
       refs: { nodes: ["cx-work"] },
     },

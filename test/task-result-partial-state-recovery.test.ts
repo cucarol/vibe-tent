@@ -48,7 +48,12 @@ class SubmitBoundaryFaultFs extends NodeFs {
 function env(root: string, fs = new NodeFs(root)) { return { fs, clock: { now: () => "2026-08-13T00:00:00.000Z" }, tentName: "partial", tentRoot: root }; }
 async function fixture() {
   const root = await makeTent(); const e = env(root);
-  const d = await dispatch(e as any, "cx-p1", { workNodeIds:["cx-p1"], contextNodeIds:[], prompt:"result", requester:{kind:"user",id:"user"}, executionSessionId:"ss-executor" });
+  const d = await dispatch(e as any, {
+    nodeIds: ["cx-p1"],
+    prompt: "result",
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
+  });
   await taskClaim(e as any, d.taskPath);
   return { root, e, taskPath: d.taskPath };
 }

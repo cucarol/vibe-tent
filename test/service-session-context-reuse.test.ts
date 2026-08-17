@@ -164,10 +164,17 @@ async function createWorkItemNode(svc: Svc, workspaceId: string): Promise<string
 
 function taskNodeContext(id: string, nodePath: string, body = "") {
   return {
-    workNodeIds: [id],
-    contextNodeIds: [],
+    nodeIds: [id],
     nodeSnapshots: [
-      { id, path: nodePath, type: "prompt", tags: [], body, etag: "a".repeat(24) },
+      {
+        id,
+        path: nodePath,
+        type: "prompt",
+        tags: [],
+        body,
+        etag: "a".repeat(24),
+        archived: false,
+      },
     ],
   };
 }
@@ -192,8 +199,7 @@ async function dispatchConnectionTask(
     currentSessionToken: entered.sessionToken,
   });
   const dispatched = await roleClient.taskDispatch(workspaceId, {
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     prompt,
     connectionId,
     requester: { kind: "role", id: "rl-orchestrator" },
@@ -406,7 +412,7 @@ test("contextGeneration patch cannot mutate frozen Node snapshots", async () => 
       const after = await loadTaskRecord(systemFs, before.path);
       assert.equal(after.contextGeneration, generation);
       assert.deepEqual(after.contextCard.nodeSnapshots, snapshots);
-      assert.deepEqual(after.contextCard.workNodeIds, before.contextCard.workNodeIds);
+      assert.deepEqual(after.contextCard.nodeIds, before.contextCard.nodeIds);
     });
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });

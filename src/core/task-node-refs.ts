@@ -1,5 +1,4 @@
-// Task Node references are sourced only from the canonical Node selection.
-// Work Nodes are exclusive write scope; context Nodes are shared read scope.
+// Task Node references are sourced only from the canonical root nodeIds[] selection.
 
 import { isActiveTaskState, type TaskState } from "./task-model.js";
 import {
@@ -15,14 +14,13 @@ export type TaskNodeRefSource = TaskNodeSelection & {
 };
 
 export const MISSING_TASK_NODE_SELECTION =
-  "MISSING_TASK_NODE_SELECTION: Task.workNodeIds and Task.contextNodeIds are required.";
+  "MISSING_TASK_NODE_SELECTION: Task.nodeIds is required.";
 
 function normalizedSelection(task: TaskNodeRefSource): TaskNodeSelection {
   const label = task.id || task.path || "(unknown)";
   try {
     return normalizeTaskNodeSelection({
-      workNodeIds: task.workNodeIds,
-      contextNodeIds: task.contextNodeIds,
+      nodeIds: task.nodeIds,
     });
   } catch (error) {
     const wrapped = new Error(`${MISSING_TASK_NODE_SELECTION} task=${label}`);
@@ -31,19 +29,19 @@ function normalizedSelection(task: TaskNodeRefSource): TaskNodeSelection {
   }
 }
 
-/** Ordered work-then-context Node ids referenced by a Task. */
+/** Ordered root Node ids referenced by a Task. */
 export function taskReferencedNodeIds(task: TaskNodeRefSource): string[] {
   const selection = normalizedSelection(task);
-  return [...selection.workNodeIds, ...selection.contextNodeIds];
+  return [...selection.nodeIds];
 }
 
-/** Whether a Task owns nodeId in its exclusive work scope. */
+/** Whether a Task directly selects nodeId as one of its roots. */
 export function taskDirectlyReferencesNode(task: TaskNodeRefSource, nodeId: string): boolean {
   if (!nodeId) return false;
-  return normalizedSelection(task).workNodeIds.includes(nodeId);
+  return normalizedSelection(task).nodeIds.includes(nodeId);
 }
 
-/** Active Tasks that own nodeId, returned in deterministic order. */
+/** Active Tasks that reference nodeId, returned in deterministic order. */
 export function listDirectActiveTasksForNode<T extends TaskNodeRefSource>(
   nodeId: string,
   tasks: readonly T[]

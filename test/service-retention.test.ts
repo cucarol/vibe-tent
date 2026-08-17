@@ -20,10 +20,17 @@ const OLD = "2026-06-01T12:00:00.000Z";
 
 function taskNodeContext(id: string, nodePath: string) {
   return {
-    workNodeIds: [id],
-    contextNodeIds: [],
+    nodeIds: [id],
     nodeSnapshots: [
-      { id, path: nodePath, type: "prompt", tags: [], body: "", etag: "a".repeat(24) },
+      {
+        id,
+        path: nodePath,
+        type: "prompt",
+        tags: [],
+        body: "",
+        etag: "a".repeat(24),
+        archived: false,
+      },
     ],
   };
 }

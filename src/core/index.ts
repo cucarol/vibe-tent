@@ -11,7 +11,6 @@ export * from "./adapter.js";
 export * from "./frontmatter.js";
 export * from "./tree.js";
 export * from "./link-target.js";
-export * from "./claim.js";
 export * from "./manifest.js";
 export * from "./proposal.js";
 export * from "./output.js";

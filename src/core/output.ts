@@ -1,5 +1,5 @@
 // Output Node helpers: provenance through one exact accepted TaskResult id.
-// Authoritative link is Output frontmatter `resultId` only — no taskId/source Node denorm,
+// Authoritative link is Output frontmatter `resultId` only — no taskId denorm,
 // artifactRefs copy, or generic relation substitute (Canvas P0 / cx-f2kxd4).
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
@@ -40,7 +40,7 @@ export class OutputProvenanceError extends Error {
   }
 }
 
-/** Live join half of Output → TaskResult → Task → its first work Node. */
+/** Live join half of Output → TaskResult → Task. */
 export type OutputProvenanceLive = {
   result: {
     id: string;
@@ -48,14 +48,12 @@ export type OutputProvenanceLive = {
     taskId: string;
     artifactRefs: ArtifactRef[];
   } | null;
-  task: { id: string; state: string; path?: string } | null;
-  sourceNode: { nodeId: string; path?: string; type?: string; archived?: boolean } | null;
+  task: { id: string; state: string; path?: string; nodeIds: string[] } | null;
 };
 
 export type OutputProvenanceIncompleteReason =
   | "result_missing"
   | "task_missing"
-  | "source_missing"
   | "mismatch";
 
 /**
@@ -72,7 +70,6 @@ export type OutputProvenance = {
   resultId: string | null;
   result: OutputProvenanceLive["result"];
   task: OutputProvenanceLive["task"];
-  sourceNode: OutputProvenanceLive["sourceNode"];
   incomplete: OutputProvenanceIncompleteReason[];
 };
 
@@ -395,7 +392,6 @@ export function projectOutputProvenance(
     resultId: null,
     result: null,
     task: null,
-    sourceNode: null,
     incomplete: [],
   };
 
@@ -414,7 +410,7 @@ export function projectOutputProvenance(
   const result = indexes.resultsById.get(resultId);
   if (!result) {
     base.incomplete.push("result_missing");
-    // Without live TaskResult we cannot walk Task/source by id-only authority.
+    // Without live TaskResult we cannot walk Task by id-only authority.
     return base;
   }
 
@@ -434,28 +430,12 @@ export function projectOutputProvenance(
       id: task.id || task.path,
       state: task.state,
       path: task.path,
+      nodeIds: [...task.nodeIds],
     };
     // Lightweight consistency: result.taskId should match task identity when both exist.
     const taskKey = task.id || task.path;
     if (result.taskId && taskKey && result.taskId !== taskKey && result.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
-    }
-    const sourceId = task.workNodeIds[0];
-    if (!sourceId) {
-      base.incomplete.push("source_missing");
-      return base;
-    }
-    const source = indexes.tent.byId.get(sourceId);
-    if (!source) {
-      base.incomplete.push("source_missing");
-      base.sourceNode = { nodeId: sourceId };
-    } else {
-      base.sourceNode = {
-        nodeId: source.id,
-        path: source.path,
-        type: source.type,
-        archived: source.archived || source.mode === "archived",
-      };
     }
   }
 

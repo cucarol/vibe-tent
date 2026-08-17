@@ -41,8 +41,7 @@ test("task package exports canonical bytes through typed client and CLI without 
     const contextNodeId = nodes.find((node) => node.name === "context")!.nodeId;
     const dispatched = await call("task.dispatch", {
       workspaceId,
-      workNodeIds: [workNodeId],
-      contextNodeIds: [contextNodeId],
+      nodeIds: [workNodeId, contextNodeId],
       assigneeRoleId: "rl-native",
       prompt: "Use the frozen package and return one Result.",
       requester: { kind: "user", id: "user" },

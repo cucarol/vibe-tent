@@ -113,8 +113,8 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
 };
 
 /**
- * True when Task state is collaboration-terminal and no longer occupies a node.
- * `submitted` is intentionally excluded (still active occupation / review).
+ * True when Task state is collaboration-terminal and no longer in flight.
+ * `submitted` is intentionally excluded (still active review / Result flow).
  */
 export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {
   return TERMINAL_TASK_STATES.has(state) && !isActiveTaskState(state);

@@ -3,12 +3,11 @@ import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { dispatch } from "../src/core/ops.js";
-import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
+import { loadTaskRecord, loadTaskRecords, patchTaskRecord } from "../src/core/task.js";
 import { loadTaskResults, writeTaskResult } from "../src/core/task-result.js";
 import {
   finalizeTaskAccept,
   finalizeTaskSubmitAuto,
-  findActiveTaskForNode,
   prepareTaskAccept,
   prepareTaskSubmit,
   taskAccept,
@@ -22,6 +21,7 @@ import {
   taskWait,
 } from "../src/core/task-lifecycle.js";
 import { TaskLifecycleError } from "../src/core/task-model.js";
+import { listDirectActiveTasksForNode } from "../src/core/task-node-refs.js";
 import {
   nodeContextCard,
   resultContextCard,
@@ -55,18 +55,20 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
     registry.roles = [...(registry.roles ?? []), { id: roleId, name: roleName, displayName: roleName }];
     await env.fs.writeFile("roles.json", JSON.stringify(registry, null, 2) + "\n");
   }
-  return dispatch(env, nodeId, {
+  return dispatch(env, {
     assigneeRoleId: roleId,
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     requester: { kind: "user", id: "user" },
     ...(typeof input === "string" ? { prompt: input } : input),
   });
 }
 
-async function dispatchOnFreeNode(dir: string, role = "executor") {
+async function activeTasksForNode(fs: NodeFs, nodeId: string) {
+  return listDirectActiveTasksForNode(nodeId, await loadTaskRecords(fs));
+}
+
+async function dispatchFixtureTask(dir: string, role = "executor") {
   const e = env(dir);
-  // cx-p1 is free (no owner) in makeTent fixture
   const result = await dispatchToRole(e as any, "cx-p1", role, {
     prompt: "Implement the lifecycle slice",
     requester: { kind: "user", id: "user" },
@@ -76,7 +78,7 @@ async function dispatchOnFreeNode(dir: string, role = "executor") {
 
 test("lifecycle: first Role claim atomically binds the exact caller Session", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath, {
     claimWrite: { executionSessionId: "ss-caller" },
   });
@@ -89,10 +91,9 @@ test("lifecycle: first Role claim atomically binds the exact caller Session", as
 test("lifecycle: queued Task cannot replace an already-bound Session during claim", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", {
+  const result = await dispatch(e as any, {
     executionSessionId: "ss-bounda",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-p1"],
     prompt: "Keep the exact pre-bound Session",
     requester: { kind: "user", id: "user" },
   });
@@ -114,7 +115,7 @@ test("lifecycle: queued Task cannot replace an already-bound Session during clai
 
 test("lifecycle: dispatch → claim → wait → resume → submit → accept", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   let task = await loadTaskRecord(e.fs, result.taskPath);
   assert.equal(task.state, "queued");
   assert.ok(task.id?.startsWith("tk-"));
@@ -123,7 +124,7 @@ test("lifecycle: dispatch → claim → wait → resume → submit → accept", 
   task = await taskClaim(e as any, result.taskPath);
   assert.equal(task.state, "running");
   assert.equal(task.executionSessionId, undefined, "claim must not bind a Session");
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
   task = await taskWait(e as any, result.taskPath, {
@@ -161,14 +162,14 @@ test("lifecycle: dispatch → claim → wait → resume → submit → accept", 
   assert.equal(accepted.result.review?.reviewer, "user");
   assert.equal(accepted.result.integrationMode, null);
 
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
 
 test("task.wait formal return requires its exact authoritative Session binding", async () => {
   for (const binding of [undefined, "ss-current"] as const) {
     const dir = await makeTent();
-    const { e, result } = await dispatchOnFreeNode(dir);
+    const { e, result } = await dispatchFixtureTask(dir);
     await taskClaim(e as any, result.taskPath, binding
       ? { claimWrite: { executionSessionId: binding } }
       : undefined);
@@ -189,7 +190,7 @@ test("task.wait formal return requires its exact authoritative Session binding",
   }
 
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath, { claimWrite: { executionSessionId: "ss-current" } });
   const waited = await taskWait(e as any, result.taskPath, {
     reason: "external",
@@ -206,7 +207,7 @@ test("task.wait formal return requires its exact authoritative Session binding",
 
 test("lifecycle: finalize rejects a ready TaskResult commit-list drift without mutation", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "ready",
@@ -241,7 +242,7 @@ test("lifecycle: finalize rejects a ready TaskResult commit-list drift without m
 
 test("lifecycle: zero-commit ready TaskResult remains legal to accept", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "non-code result",
@@ -259,7 +260,7 @@ test("lifecycle: zero-commit ready TaskResult remains legal to accept", async ()
 
 test("lifecycle: self-accept is hard-forbidden", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, { report: "ship it", commits: [] });
 
@@ -329,7 +330,7 @@ test("lifecycle: auto-accept persists ready TaskResult before integration and pr
   assert.equal(results.length, 1);
   assert.equal(results[0]!.status, "ready");
   assert.equal(results[0]!.integrationMode, "auto-accept");
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
 
@@ -382,9 +383,9 @@ test("lifecycle: acceptMode is frozen at Task creation", async () => {
   assert.equal((await loadTaskRecord(e.fs, result.taskPath)).acceptMode, "review-required");
 });
 
-test("lifecycle: manual accept integrate failure keeps submitted + occupation", async () => {
+test("lifecycle: manual accept integrate failure keeps submitted active", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, {
     report: "ready",
@@ -404,7 +405,7 @@ test("lifecycle: manual accept integrate failure keeps submitted + occupation", 
   );
   const task = await loadTaskRecord(e.fs, result.taskPath);
   assert.equal(task.state, "submitted");
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
   const ready = (await loadTaskResults(e.fs)).find((d) => d.status === "ready");
   assert.ok(ready, "result stays ready for retry after integrate failure");
@@ -443,7 +444,7 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
 
 test("lifecycle: reject(resume) returns to running; resubmit works", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   const delivered = await taskSubmit(e as any, result.taskPath, { report: "first try" });
   const rejected = await taskReject(e as any, result.taskPath, {
@@ -454,7 +455,7 @@ test("lifecycle: reject(resume) returns to running; resubmit works", async () =>
   });
   assert.equal(rejected.task.state, "running");
   assert.equal(rejected.result.status, "rejected");
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
   const second = await taskSubmit(e as any, result.taskPath, { report: "second try with tests" });
@@ -465,9 +466,9 @@ test("lifecycle: reject(resume) returns to running; resubmit works", async () =>
   assert.ok(all.filter((d) => d.taskId === taskId).length >= 2);
 });
 
-test("lifecycle: cancel queued; interrupt running clears occupation", async () => {
+test("lifecycle: cancel queued; interrupt running ends the active Task", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskCancel(e as any, result.taskPath);
   assert.equal(await e.fs.exists(result.taskPath), false);
 
@@ -477,7 +478,7 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   });
   await taskClaim(e as any, r2.taskPath);
   await taskInterrupt(e as any, r2.taskPath);
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
   const task = await loadTaskRecord(e.fs, r2.taskPath);
   assert.equal(task.state, "interrupted");
@@ -485,7 +486,7 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
 
 test("lifecycle: published TaskResult wins over interrupt and remains reviewable", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   await taskWait(e as any, result.taskPath, {
     reason: "external",
@@ -516,7 +517,7 @@ test("lifecycle: published TaskResult wins over interrupt and remains reviewable
 
 test("lifecycle: repeated interrupt preserves a corrupt Result pointer for explicit diagnosis", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   await taskInterrupt(e as any, result.taskPath);
 
@@ -545,7 +546,7 @@ test("lifecycle: repeated interrupt preserves a corrupt Result pointer for expli
 
 test("lifecycle: persisted uppercase Task identity fails the canonical read boundary", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   const task = await loadTaskRecord(e.fs, result.taskPath);
   const raw = await e.fs.readFile(result.taskPath);
   await e.fs.writeFile(result.taskPath, raw.replace(`id: ${task.id}`, `id: ${task.id!.toUpperCase()}`));
@@ -554,7 +555,7 @@ test("lifecycle: persisted uppercase Task identity fails the canonical read boun
 
 test("lifecycle: persisted Task requires a non-empty prompt body", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   const raw = await e.fs.readFile(result.taskPath);
   await e.fs.writeFile(result.taskPath, raw.replace(/(\n---\n)[\s\S]*$/, "$1"));
   await assert.rejects(() => loadTaskRecord(e.fs, result.taskPath), /non-empty prompt is required/);
@@ -562,7 +563,7 @@ test("lifecycle: persisted Task requires a non-empty prompt body", async () => {
 
 test("lifecycle: Task owner namespace is exact for Role Tasks and stable for replaceable Session execution", async () => {
   const roleRoot = await makeTent();
-  const roleFixture = await dispatchOnFreeNode(roleRoot);
+  const roleFixture = await dispatchFixtureTask(roleRoot);
   const roleRaw = await roleFixture.e.fs.readFile(roleFixture.result.taskPath);
   await roleFixture.e.fs.writeFile(
     roleFixture.result.taskPath,
@@ -575,9 +576,8 @@ test("lifecycle: Task owner namespace is exact for Role Tasks and stable for rep
 
   const sessionRoot = await makeTent();
   const sessionEnv = env(sessionRoot);
-  const sessionFixture = await dispatch(sessionEnv as any, "cx-p1", {
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
+  const sessionFixture = await dispatch(sessionEnv as any, {
+    nodeIds: ["cx-p1"],
     prompt: "session namespace",
     requester: { kind: "user", id: "user" },
     executionSessionId: "ss-executor",
@@ -603,7 +603,7 @@ test("lifecycle: Task owner namespace is exact for Role Tasks and stable for rep
   );
 });
 
-test("lifecycle: exact Node occupation blocks peers but not parent, child, or sibling", async () => {
+test("lifecycle: multiple active Tasks may reference the same exact Node", async () => {
   const dir = await makeTent();
   const e = env(dir);
   const r1 = await dispatchToRole(e as any, "cx-p1", "executor", {
@@ -611,37 +611,23 @@ test("lifecycle: exact Node occupation blocks peers but not parent, child, or si
     requester: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskRecord(e.fs, r1.taskPath)).state, "queued");
-  await assert.rejects(
-    () => dispatchToRole(e as any, "cx-p1", "reviewer", {
-      prompt: "overlap",
-      requester: { kind: "user", id: "user" },
-    }),
-    /occupied by active task/,
-  );
-  const child = await dispatchToRole(e as any, "cx-p2", "reviewer", {
-    prompt: "child",
+  const r2 = await dispatchToRole(e as any, "cx-p1", "reviewer", {
+    prompt: "second",
     requester: { kind: "user", id: "user" },
   });
-  assert.ok(child.taskPath);
-  const parent = await dispatchToRole(e as any, "cx-promptzone", "reviewer", {
-    prompt: "parent",
-    requester: { kind: "user", id: "user" },
-  });
-  assert.ok(parent.taskPath);
-  const r2 = await dispatchToRole(e as any, "cx-o1", "reviewer", {
-    prompt: "sibling",
-    requester: { kind: "user", id: "user" },
-  });
-  assert.ok(r2.taskPath);
-  const active = await findActiveTaskForNode(e.fs, "cx-p1");
-  assert.ok(active);
+  const active = await activeTasksForNode(e.fs, "cx-p1");
+  assert.equal(active.length, 2);
+  assert.deepEqual(new Set(active.map((task) => task.id)), new Set([
+    (await loadTaskRecord(e.fs, r1.taskPath)).id,
+    (await loadTaskRecord(e.fs, r2.taskPath)).id,
+  ]));
 });
 
-test("lifecycle: every terminal state releases exact Node occupation", async () => {
+test("lifecycle: every terminal state ends the active Task", async () => {
   const dir = await makeTent();
   const e = env(dir);
 
-  const rejected = await dispatchOnFreeNode(dir);
+  const rejected = await dispatchFixtureTask(dir);
   await taskClaim(e as any, rejected.result.taskPath);
   const rejectedTaskResult = await taskSubmit(e as any, rejected.result.taskPath, { report: "reject me" });
   const rejectedResult = await taskReject(e as any, rejected.result.taskPath, {
@@ -651,21 +637,21 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
     resume: false,
   });
   assert.equal(rejectedResult.task.state, "rejected");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
 
-  const interrupted = await dispatchOnFreeNode(dir);
+  const interrupted = await dispatchFixtureTask(dir);
   await taskClaim(e as any, interrupted.result.taskPath);
   const interruptedTask = await taskInterrupt(e as any, interrupted.result.taskPath);
   assert.equal(interruptedTask.state, "interrupted");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
 
-  const failed = await dispatchOnFreeNode(dir);
+  const failed = await dispatchFixtureTask(dir);
   await taskClaim(e as any, failed.result.taskPath);
   const failedTask = await taskFail(e as any, failed.result.taskPath, { summary: "provider failed" });
   assert.equal(failedTask.state, "failed");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
 
-  const accepted = await dispatchOnFreeNode(dir);
+  const accepted = await dispatchFixtureTask(dir);
   await taskClaim(e as any, accepted.result.taskPath);
   const acceptedTaskResult = await taskSubmit(e as any, accepted.result.taskPath, { report: "accept me", commits: [] });
   const acceptedResult = await taskAccept(e as any, accepted.result.taskPath, {
@@ -673,25 +659,25 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
     resultId: acceptedTaskResult.result.id,
   });
   assert.equal(acceptedResult.task.state, "accepted");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
 });
 
-test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch", async () => {
+test("lifecycle: taskFail ends the active Task; idempotent re-dispatch", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
   const failed = await taskFail(e as any, result.taskPath, { summary: "provider crash" });
   assert.equal(failed.state, "failed");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
-  // Idempotent second fail — no throw, occupation stays clear.
+  // Idempotent second fail — no throw, active set stays clear.
   const again = await taskFail(e as any, result.taskPath);
   assert.equal(again.state, "failed");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
   // Same box can be re-dispatched without fork / manual frontmatter edit.
@@ -700,13 +686,13 @@ test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch
     requester: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, r2.taskPath);
-  assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
+  assert.equal((await activeTasksForNode(e.fs, "cx-p1")).length, 1);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
 
-test("lifecycle: taskFail from waiting also clears occupation", async () => {
+test("lifecycle: taskFail from waiting also ends the active Task", async () => {
   const dir = await makeTent();
-  const { e, result } = await dispatchOnFreeNode(dir);
+  const { e, result } = await dispatchFixtureTask(dir);
   await taskClaim(e as any, result.taskPath);
   await taskWait(e as any, result.taskPath, {
     reason: "user-input",
@@ -715,7 +701,7 @@ test("lifecycle: taskFail from waiting also clears occupation", async () => {
   const failed = await taskFail(e as any, result.taskPath);
   assert.equal(failed.state, "failed");
   assert.ok(failed.wait == null, "wait must be cleared");
-  assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
+  assert.deepEqual(await activeTasksForNode(e.fs, "cx-p1"), []);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 });
 

@@ -228,9 +228,9 @@ export type TaskResultReview = {
 };
 
 /**
- * States that occupy a node (active task).
- * Rework after reject uses `running` (not a lingering `rejected` occupation).
- * Terminal `rejected` does not occupy.
+ * States that keep a Task in flight.
+ * Rework after reject uses `running` (not a lingering `rejected` state).
+ * Terminal `rejected` is no longer in flight.
  */
 export const ACTIVE_TASK_STATES: ReadonlySet<TaskState> = new Set([
   "queued",

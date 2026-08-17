@@ -1,40 +1,36 @@
 // 工单(manifest)生成 —— 派活的硬执行层之一。
 // V0.2: readable/writable lists are **context pointers** (dispatch selection scope +
 // system paths), not domain R/W axes on Nodes. Deterministic for any agent/process.
-// DispatchInput.claimNodes / claimRoot are ephemeral caller-side selection only —
-// Manifest YAML is auxiliary; Task Context Card v2 is the sole frozen Node context wire.
+// DispatchInput.selectedNodes is ephemeral caller-side selection only —
+// Manifest YAML is auxiliary; the Task Context Card is the sole frozen Node context wire.
 
 import { Node, Manifest, ManifestEntry } from "./types.js";
-import { isUsableNode, LoadedTent, join } from "./tree.js";
+import { isUsableNode, join } from "./tree.js";
 
 export interface DispatchInput {
   tentName: string;
   roleId?: string;
   sessionId?: string;
   /** Ephemeral dispatch selection (nodes in writable scope). Not persisted as claims. */
-  claimNodes?: Node[];
-  /** Ephemeral root/workspace selection. Not persisted as claims. */
-  claimRoot?: boolean;
+  selectedNodes?: Node[];
   workspace?: string;
   worktree?: string;
   branch?: string;
   targetBranch?: string;
 }
 
-export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest {
+export function buildManifest(input: DispatchInput): Manifest {
   const roleId = input.roleId?.trim();
   const sessionId = input.sessionId?.trim();
   if (!roleId && !sessionId) throw new Error("Manifest requires roleId or sessionId.");
-  const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
-  const claimScope = input.claimRoot
-    ? allNodes(tent).filter(isUsableNode)
-    : claimNodes.flatMap(subtree);
+  const selectedNodes = requireSelectedNodes(input);
+  const selectedScope = selectedNodes.flatMap(subtree);
 
   const readable: ManifestEntry[] = [];
   const writable: ManifestEntry[] = [];
 
-  // Context readable set: all usable Nodes (semantic context for the agent).
-  for (const node of allNodes(tent)) {
+  // Context readable set: the exact selected frozen subtree only.
+  for (const node of selectedScope) {
     if (isUsableNode(node)) {
       readable.push({ id: node.id, path: node.path, note: oneLineNote(node) });
     }
@@ -43,16 +39,15 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
   // Context writable set: dispatch selection scope (mutation authority is Task/Service, not this list).
-  for (const node of claimScope) {
+  for (const node of selectedScope) {
     if (isUsableNode(node)) {
       writable.push({ id: node.id, path: node.path });
     }
   }
-  if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structural permission: may create/move top-level nodes at the Tent root." });
-  }
-  for (const node of claimScope) {
-    writable.push({ id: node.id, path: `${node.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
+  for (const node of selectedScope) {
+    if (isUsableNode(node)) {
+      writable.push({ id: node.id, path: `${node.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
+    }
   }
   const executorRoot = roleId
     ? join("temp", "roles", roleId)
@@ -108,19 +103,15 @@ function oneLineNote(node: Node): string {
   return firstLine ? firstLine.slice(0, 40) : node.type ?? "";
 }
 
-function allNodes(tent: LoadedTent): Node[] {
-  return [...tent.byPath.values()];
-}
-
 function subtree(node: Node): Node[] {
   const out: Node[] = [node];
   for (const c of node.children) out.push(...subtree(c));
   return out;
 }
 
-function requireClaimNodes(input: DispatchInput): Node[] {
-  if (!input.claimNodes || input.claimNodes.length === 0) throw new Error("Missing claim nodes.");
-  return input.claimNodes;
+function requireSelectedNodes(input: DispatchInput): Node[] {
+  if (!Array.isArray(input.selectedNodes)) throw new Error("Missing selected nodes.");
+  return input.selectedNodes;
 }
 
 function dedupe(entries: ManifestEntry[]): ManifestEntry[] {

@@ -26,14 +26,13 @@ export function normalizeTaskNodeContext(value: unknown): TaskNodeContext {
     throw new TaskNodeContextError("Task Node context must be an object.");
   }
   const record = value as Record<string, unknown>;
-  const expected = new Set(["workNodeIds", "contextNodeIds", "nodeSnapshots"]);
+  const expected = new Set(["nodeIds", "nodeSnapshots"]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskNodeContextError("Task Node context contains unknown fields.");
   }
   try {
     const selection = normalizeTaskNodeSelection({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds,
+      nodeIds: record.nodeIds,
     });
     return {
       ...selection,

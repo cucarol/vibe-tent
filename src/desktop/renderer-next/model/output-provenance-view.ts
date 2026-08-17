@@ -7,7 +7,6 @@ import type { ArtifactKind, ArtifactRef } from "../../../core/artifact.js";
 const INCOMPLETE_REASONS = new Set<OutputProvenanceIncompleteReason>([
   "result_missing",
   "task_missing",
-  "source_missing",
   "mismatch",
 ]);
 
@@ -106,7 +105,6 @@ export function normalizeOutputProvenance(
     !(raw.resultId === null || (typeof raw.resultId === "string" && raw.resultId)) ||
     !isNullableRecord(raw.result) ||
     !isNullableRecord(raw.task) ||
-    !isNullableRecord(raw.sourceNode) ||
     !Array.isArray(raw.incomplete) ||
     raw.incomplete.some(
       (reason) =>
@@ -144,21 +142,11 @@ export function normalizeOutputProvenance(
       typeof task.state !== "string" ||
       !task.state ||
       !(task.path === undefined || typeof task.path === "string") ||
+      !Array.isArray(task.nodeIds) ||
+      task.nodeIds.some((nodeId) => typeof nodeId !== "string" || !nodeId) ||
       (isRecord(result) && task.id !== result.taskId))
   ) {
     return { state: "error", message: "output.provenance task join is corrupt" };
-  }
-
-  const sourceNode = raw.sourceNode;
-  if (
-    isRecord(sourceNode) &&
-    (typeof sourceNode.nodeId !== "string" ||
-      !sourceNode.nodeId ||
-      !(sourceNode.path === undefined || typeof sourceNode.path === "string") ||
-      !(sourceNode.type === undefined || typeof sourceNode.type === "string") ||
-      !(sourceNode.archived === undefined || typeof sourceNode.archived === "boolean"))
-  ) {
-    return { state: "error", message: "output.provenance source Node is corrupt" };
   }
 
   const value = raw as unknown as OutputProvenance;

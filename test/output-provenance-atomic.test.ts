@@ -13,8 +13,11 @@ function env(dir: string) {
 
 async function readyResult(dir: string) {
   const e = env(dir);
-  const dispatched = await dispatch(e as any, "cx-p1", {
-    workNodeIds: ["cx-p1"], contextNodeIds: [], prompt: "publish", requester: { kind: "user", id: "user" }, executionSessionId: "ss-executor",
+  const dispatched = await dispatch(e as any, {
+    nodeIds: ["cx-p1"],
+    prompt: "publish",
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
   });
   await taskClaim(e as any, dispatched.taskPath);
   const submitted = await taskSubmit(e as any, dispatched.taskPath, { report: "formal result", artifactRefs: [{ kind: "path", target: "out.txt" }] });

@@ -80,11 +80,9 @@ export interface TaskRecordInput {
   assigneeRoleId?: string;
   /** Exact executing Session. Connection identity is never stored on a Task. */
   executionSessionId?: string;
-  /** Exact writable Nodes occupied by this Task. */
-  workNodeIds: string[];
-  /** Shared read-only context Nodes. */
-  contextNodeIds: string[];
-  /** Frozen semantic snapshots ordered work then context. */
+  /** Exact ordered root Node selection; may be empty for prompt-only Tasks. */
+  nodeIds: string[];
+  /** Frozen subtree snapshots rooted at nodeIds[], with overlap deduped once. */
   nodeSnapshots: TaskNodeSnapshot[];
   manifestPath: string;
   prompt: string;
@@ -139,7 +137,7 @@ export interface TaskRecord extends TaskNodeContext {
    * Ordinary executors never mutate target; Service integrates after parent accept.
    */
   integrationAuthority?: IntegrationAuthority;
-  /** Authoritative frozen Task Context Card v2. */
+  /** Authoritative frozen Task Context Card. */
   contextCard: TaskContextCard;
   /** In-memory projection of contextCard.contextGeneration. */
   contextGeneration?: string;
@@ -426,11 +424,11 @@ export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskR
   // by missing-card errors.
   const requester = resolveRequesterFromDisk(data);
 
-  // Complete Context Card v2 is the sole frozen Node context. Incomplete → fail loud.
+  // Complete Task Context Card is the sole frozen Node context. Incomplete → fail loud.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
   if (!contextCard) {
     throw new Error(
-      `Invalid task record format: ${path} (missing Task Context Card v2).`
+      `Invalid task record format: ${path} (missing Task Context Card).`
     );
   }
   if (!isAcceptMode(data.acceptMode)) {
@@ -453,8 +451,7 @@ export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskR
     requester,
     prompt,
     contextCard,
-    workNodeIds: contextCard.workNodeIds,
-    contextNodeIds: contextCard.contextNodeIds,
+    nodeIds: contextCard.nodeIds,
     nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode,
   };
@@ -504,7 +501,7 @@ export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskR
       task.requester
     );
   }
-  // Context Card v2 already loaded above from its sole nested wire.
+  // Task Context Card already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
   if (data.currentResultId !== undefined) {
     if (
@@ -586,10 +583,7 @@ function formatTaskPackagePointers(task: TaskRecord): string {
   if (task.id) {
     lines.push(`Task id: ${task.id}`);
   }
-  if (task.contextCard) {
-    lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
-    lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
-  }
+  lines.push(`nodeIds: ${task.nodeIds.join(", ") || "(none)"}`);
   if (task.requester) {
     lines.push(
       `requester: ${task.requester.kind}:${task.requester.id}`
@@ -734,11 +728,10 @@ export async function writeTaskRecord(
   const id = requestedId || makeTaskId();
 
   const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.workNodeIds,
-    contextNodeIds: input.contextNodeIds,
+    nodeIds: input.nodeIds,
     nodeSnapshots: input.nodeSnapshots,
   });
-  const primaryRef = nodeContext.workNodeIds[0]!;
+  const primaryRef = nodeContext.nodeIds[0] ?? "prompt";
   const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs, dir, stem);
   input.onPathAllocated?.(path);
@@ -763,7 +756,7 @@ export async function writeTaskRecord(
     );
   }
 
-  // Full Context Card v2 on every new write — frozen Node snapshots are the sole context wire.
+  // Full current Task Context Card on every new write — frozen Node snapshots are the sole context wire.
   // contextGeneration is absent until a managed Session computes and uses it.
   const contextCard = buildTaskContextCard({
     ...nodeContext,
@@ -978,7 +971,7 @@ export async function patchTaskRecord(
     }
     const currentCard = loadTaskContextCardFromFrontmatter(data);
     if (!currentCard) {
-      throw new Error(`Invalid Task record format: ${path} (missing Task Context Card v2).`);
+      throw new Error(`Invalid Task record format: ${path} (missing Task Context Card).`);
     }
     data.contextCard = serializeTaskContextCardForFrontmatter({
       ...currentCard,
@@ -997,10 +990,6 @@ export async function patchTaskRecord(
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskRecord(fs, path);
-}
-
-export function primaryNodeId(task: TaskRecord): string | undefined {
-  return taskReferencedNodeIds(task)[0];
 }
 
 function parseTaskState(value: unknown): TaskState {

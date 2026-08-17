@@ -9,7 +9,7 @@ import { guardCollaborationViewIdentity } from "../src/desktop/renderer-next/mod
 
 const ok = <T>(workspaceId: string, value: T) => ({ ok: true as const, workspaceId, value, fetchedAt: "now" });
 const command = (workspaceId: string) => ok(workspaceId, { workspaceId });
-const snapshot = (nodeId: string | null): WorkspaceCollaborationView => ({ workspaceId: "ws-a", selectedNode: nodeId ? { nodeId, activeTask: null, statusDetail: null } : null, inbox: { items: [{ kind: "result", resultId: "rs-a", summary: "完成", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } } });
+const snapshot = (nodeId: string | null): WorkspaceCollaborationView => ({ workspaceId: "ws-a", selectedNode: nodeId ? { nodeId, activeTasks: [], statusDetail: null } : null, inbox: { items: [{ kind: "result", resultId: "rs-a", summary: "完成", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } } });
 function gateway(overrides: Partial<CollaborationSurfaceGateway> = {}): CollaborationSurfaceGateway {
   return {
     workspaceCollaboration: async (workspaceId, nodeId) => ok(workspaceId, snapshot(nodeId)),
@@ -96,7 +96,7 @@ test("identity guard represents null selection as workspace loading/error, not i
 test("identity guard keeps same-workspace Inbox but never the prior selected Task", () => {
   const prior: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }, statusDetail: null },
+    selectedNode: { nodeId: "cx-a", activeTasks: [{ taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }], statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: prior, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const guarded = guardCollaborationViewIdentity(view, { workspaceId: "ws-a", nodeId: "cx-b", online: true });
@@ -109,7 +109,7 @@ test("identity guard keeps same-workspace Inbox but never the prior selected Tas
 test("same-workspace retained Inbox does not render a surrogate selected-Node workflow", () => {
   const prior: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: { taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }, statusDetail: null },
+    selectedNode: { nodeId: "cx-a", activeTasks: [{ taskId: "tk-a", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null }], statusDetail: null },
   };
   const guarded = guardCollaborationViewIdentity(
     { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: prior, targets: [], targetsReady: true, busyKey: null, canMutate: true },
@@ -130,14 +130,14 @@ test("Role-responsible return stays readable without exposing user review mutati
   const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const roleSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: {
+    selectedNode: { nodeId: "cx-a", activeTasks: [{
       taskId: "tk-role",
       state: "submitted",
       responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
       execution: { kind: "role", roleId: "rl-worker", label: "执行" },
       readyResult: { resultId: "rs-role", summary: "已完成方案", createdAt: "now" },
       pendingDecision: null,
-    }, statusDetail: null },
+    }], statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: roleSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
@@ -156,14 +156,14 @@ test("selected exact Task Result renders its complete multiline Markdown report"
   const report = "## 完成内容\n\n第一段保留换行。\n\n- 修改界面\n- 补齐回归\n\n`npm test` 通过。";
   const resultSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: {
+    selectedNode: { nodeId: "cx-a", activeTasks: [{
       taskId: "tk-current",
       state: "submitted",
       responsibility: { kind: "user" },
       execution: { kind: "role", roleId: "rl-ui", label: "界面" },
       readyResult: { resultId: "rs-current", summary: report, createdAt: "now" },
       pendingDecision: null,
-    }, statusDetail: null },
+    }], statusDetail: null },
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
@@ -182,14 +182,14 @@ test("stale Result keeps only the exact last-known report visible and disables r
   const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const staleSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: {
+    selectedNode: { nodeId: "cx-a", activeTasks: [{
       taskId: "tk-current",
       state: "submitted",
       responsibility: { kind: "user" },
       execution: null,
       readyResult: { resultId: "rs-current", summary: "# 上次确认的正文\n\n保留为已知内容。", createdAt: "now" },
       pendingDecision: null,
-    }, statusDetail: null },
+    }], statusDetail: null },
     inbox: { items: [{ kind: "result", resultId: "rs-foreign", summary: "不得串入的另一条正文", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } },
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
@@ -209,9 +209,9 @@ test("missing selected current Result renders no report body even when Inbox has
   const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const missingSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: {
+    selectedNode: { nodeId: "cx-a", activeTasks: [{
       taskId: "tk-current", state: "running", responsibility: { kind: "user" }, execution: null, readyResult: null, pendingDecision: null,
-    }, statusDetail: null },
+    }], statusDetail: null },
     inbox: { items: [{ kind: "result", resultId: "rs-foreign", summary: "不得作为当前结果展示", createdAt: "now" }], counts: { result: 1, decision: 0, total: 1 } },
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
@@ -227,14 +227,14 @@ test("selected pending Decision remains actionable because workspace projection 
   const node = { nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const decisionSnapshot: WorkspaceCollaborationView = {
     ...snapshot("cx-a"),
-    selectedNode: { nodeId: "cx-a", activeTask: {
+    selectedNode: { nodeId: "cx-a", activeTasks: [{
       taskId: "tk-waiting",
       state: "waiting",
       responsibility: { kind: "role", roleId: "rl-parent", label: "规划" },
       execution: { kind: "role", roleId: "rl-worker", label: "执行" },
       readyResult: null,
       pendingDecision: { requestId: "dr-user", question: "是否继续？", options: [{ id: "yes", label: "继续" }] },
-    }, statusDetail: null },
+    }], statusDetail: null },
   };
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: decisionSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {

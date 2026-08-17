@@ -110,7 +110,7 @@ export interface ManifestEntry {
  * Dispatch context card payload.
  * `readable` / `writable` keys are retained as **context pointer lists** for Agent
  * envelopes (claim scope + system paths), not domain R/W axes on Nodes.
- * Task occupation lives only on Task.workNodeIds; Manifest is not a second source.
+ * Task root selection lives only on Task.nodeIds; Manifest is not a second source.
  */
 export interface Manifest {
   tent: string;

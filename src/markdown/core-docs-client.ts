@@ -4,8 +4,6 @@ import type { OpsEnv } from "../core/ops-context.js";
 import { createNode, forkNode } from "../core/ops.js";
 import { parseFrontmatter, serializeFrontmatter, NODE_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, nodeNotePath, type LoadedTent } from "../core/tree.js";
-import { loadTaskRecords } from "../core/task.js";
-import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
 import type { Node } from "../core/types.js";
 import { withTentMutation } from "../core/adapter.js";
 import type { DocsClient } from "./docs-client.js";
@@ -122,20 +120,17 @@ export class CoreDocsClient implements DocsClient {
 
       const diskParsed = parseFrontmatter(diskRaw);
       const nextParsed = parseFrontmatter(nextRaw);
-      const active = await hasActiveTask(this.env, tent, node);
-      if (active) {
-        for (const field of PROTECTED_COLLAB_FIELDS) {
-          if (!Object.prototype.hasOwnProperty.call(nextParsed.data, field) &&
-              !Object.prototype.hasOwnProperty.call(diskParsed.data, field)) {
-            continue;
-          }
-          if (stringifyField(nextParsed.data[field]) !== stringifyField(diskParsed.data[field])) {
-            return {
-              ok: false,
-              code: "collab_field_protected",
-              message: `Cannot change ${field} while node has an active task; use Task API.`,
-            };
-          }
+      for (const field of PROTECTED_COLLAB_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(nextParsed.data, field) &&
+            !Object.prototype.hasOwnProperty.call(diskParsed.data, field)) {
+          continue;
+        }
+        if (stringifyField(nextParsed.data[field]) !== stringifyField(diskParsed.data[field])) {
+          return {
+            ok: false,
+            code: "collab_field_protected",
+            message: `Cannot change reserved ${field}; use Task API.`,
+          };
         }
       }
 
@@ -292,13 +287,6 @@ function toProjection(node: Node, withChildren: boolean): NodeProjection {
 
 function resolveNodeId(tent: LoadedTent, nodeId: string): Node | undefined {
   return tent.byId.get(nodeId.trim());
-}
-
-async function hasActiveTask(env: OpsEnv, tent: LoadedTent, node: Node): Promise<boolean> {
-  // Direct active Node ref only (cx-tsw53f); ancestor/descendant/workspace do not freeze writes.
-  void tent;
-  const tasks = await loadTaskRecords(env.fs);
-  return listDirectActiveTasksForNode(node.id, tasks).length > 0;
 }
 
 function isAncestorPath(ancestor: string, child: string): boolean {

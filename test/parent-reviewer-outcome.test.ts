@@ -23,7 +23,7 @@ import {
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 
 function nodeSnapshot(id: string, nodePath: string, body = "") {
-  return { id, path: nodePath, type: "prompt", tags: [], body, etag: contentEtag(body) };
+  return { id, path: nodePath, type: "prompt", archived: false, tags: [], body, etag: contentEtag(body) };
 }
 
 test("parseTaskOutcomeReport: only blocked is a control; normal and decision-shaped reports remain content", () => {
@@ -105,8 +105,7 @@ test("writeTaskRecord persists requester only and rejects legacy reviewer on rel
   await fsa.mkdir("temp/helper/tasks");
   const taskPath = await writeTaskRecord(fsa, new SystemClock(), {
     assigneeRoleId: "rl-helper",
-    workNodeIds: ["cx-1"],
-    contextNodeIds: [],
+    nodeIds: ["cx-1"],
     nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
     manifestPath: "temp/helper/manifest.yml",
     prompt: "do it",
@@ -148,8 +147,7 @@ test("retired authority field presence fails loud on load and patch", async () =
     await fsa.mkdir("temp/helper/tasks");
     const taskPath = await writeTaskRecord(fsa, new SystemClock(), {
       assigneeRoleId: "rl-helper",
-      workNodeIds: ["cx-1"],
-      contextNodeIds: [],
+      nodeIds: ["cx-1"],
       nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
       manifestPath: "temp/helper/manifest.yml",
       prompt: "do it",
@@ -191,8 +189,7 @@ test("writeTaskRecord refuses elevated policy for downstream Task Agent", async 
     () =>
       writeTaskRecord(fsa, new SystemClock(), {
         assigneeRoleId: "rl-helper",
-        workNodeIds: ["cx-1"],
-        contextNodeIds: [],
+        nodeIds: ["cx-1"],
         nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
         manifestPath: "temp/helper/manifest.yml",
         prompt: "do it",
@@ -238,8 +235,7 @@ test("task.dispatch hard-rejects reviewer input and projects requester only", as
 
     const dispatchBase = {
       workspaceId,
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "parent single source",
       requester: { kind: "user", id: "user" },

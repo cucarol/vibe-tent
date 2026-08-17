@@ -136,8 +136,7 @@ async function runningTask(
   const d = await rpc(svc, "task.dispatch", {
     requester: { kind: "user", id: "user" },
     workspaceId,
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     connectionId: opts?.connectionId ?? "fake-default",
     prompt: "result gate fixture",
     acceptMode: opts?.acceptMode ?? "review-required",
@@ -749,8 +748,7 @@ test("P0 race: input before submit blocks; submit first makes sendInput refuse",
     const d = await rpc(svc, "task.dispatch", {
       workspaceId: a.workspaceId,
       requester: { kind: "user", id: "user" },
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "deliver first ordering",
       acceptMode: "review-required",
@@ -984,7 +982,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
       assert.equal(publicData.firstStatus, "failed");
       assert.equal(publicData.firstInputId, publicId);
 
-      // Finish the public task occupation so the same role can start managed session.
+      // Finish the public active Task so the same role can start the managed Session.
       await rpc(svc, "task.interrupt", {
         workspaceId,
         taskPath: publicPath,
@@ -1001,8 +999,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
       const dManaged = await rpc(svc, "task.dispatch", {
         requester: { kind: "user", id: "user" },
         workspaceId,
-        workNodeIds: [nodeId2],
-        contextNodeIds: [],
+        nodeIds: [nodeId2],
         connectionId: "mock-gate",
         prompt: "managed gate shape",
         acceptMode: "review-required",

@@ -48,8 +48,7 @@ function fixtureContextCard(overrides?: {
   const nodePath = overrides?.nodePath ?? "inbox";
   const body = "Terminal Task worktree reclaim fixture\n";
   return buildTaskContextCard({
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     nodeSnapshots: [{
       id: nodeId,
       path: nodePath,
@@ -57,6 +56,7 @@ function fixtureContextCard(overrides?: {
       tags: [],
       body,
       etag: contentEtag(body),
+      archived: false,
     }],
   });
 }
@@ -70,8 +70,7 @@ function sessionTask(
     acceptMode: "review-required",
     manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
     requester: { kind: "user", id: "user" },
-    workNodeIds: partial.workNodeIds ?? contextCard.workNodeIds,
-    contextNodeIds: partial.contextNodeIds ?? contextCard.contextNodeIds,
+    nodeIds: partial.nodeIds ?? contextCard.nodeIds,
     nodeSnapshots: partial.nodeSnapshots ?? contextCard.nodeSnapshots,
     contextCard,
     ...partial,

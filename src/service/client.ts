@@ -684,10 +684,8 @@ export class ServiceClient {
   taskDispatch(
     workspaceId: string,
     args: {
-      /** Exact writable Nodes; each exact Node can have one active Task. */
-      workNodeIds: string[];
-      /** Shared read-only context Nodes; these never occupy a Node. */
-      contextNodeIds: string[];
+      /** Exact ordered root Node selection; may be empty for a prompt-only Task. */
+      nodeIds: string[];
       prompt: string;
       /**
        * Explicit requester (V0.2). Required on every dispatch.
@@ -714,8 +712,7 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       roleId: string;
-      workNodeIds: string[];
-      contextNodeIds: string[];
+      nodeIds: string[];
       prompt: string;
       /** Optional exact current Task used only to inherit persisted responsibility. */
       sourceTaskPath?: string;
@@ -886,7 +883,7 @@ export class ServiceClient {
   }
 
   /**
-   * V0.2 Output provenance: Output → Task Result → Task → sourceNode by id.
+   * V0.2 Output provenance: Output → Task Result → Task.
    * Unbound type=output returns bound:false; never infers by path/name/time.
    */
   outputProvenance(

@@ -3,7 +3,7 @@ import {
   type TaskNodeContext,
 } from "./task-node-context.js";
 
-export const TASK_CONTEXT_CARD_SCHEMA_VERSION = "v2" as const;
+export const TASK_CONTEXT_CARD_SCHEMA_VERSION = "v3" as const;
 
 export type TaskContextCard = TaskNodeContext & {
   schemaVersion: typeof TASK_CONTEXT_CARD_SCHEMA_VERSION;
@@ -31,8 +31,7 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
   const record = value as Record<string, unknown>;
   const expected = new Set([
     "schemaVersion",
-    "workNodeIds",
-    "contextNodeIds",
+    "nodeIds",
     "nodeSnapshots",
     "contextGeneration",
   ]);
@@ -55,8 +54,7 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
   }
   try {
     const nodeContext = normalizeTaskNodeContext({
-      workNodeIds: record.workNodeIds,
-      contextNodeIds: record.contextNodeIds,
+      nodeIds: record.nodeIds,
       nodeSnapshots: record.nodeSnapshots,
     });
     return {
@@ -74,10 +72,9 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
   }
 }
 
-export function buildTaskContextCardV2(input: BuildTaskContextCardInput): TaskContextCard {
+export function buildTaskContextCardRecord(input: BuildTaskContextCardInput): TaskContextCard {
   const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.workNodeIds,
-    contextNodeIds: input.contextNodeIds,
+    nodeIds: input.nodeIds,
     nodeSnapshots: input.nodeSnapshots,
   });
   return normalizeTaskContextCard({
@@ -91,8 +88,7 @@ export function serializeTaskContextCard(card: TaskContextCard): Record<string, 
   const normalized = normalizeTaskContextCard(card);
   return {
     schemaVersion: normalized.schemaVersion,
-    workNodeIds: [...normalized.workNodeIds],
-    contextNodeIds: [...normalized.contextNodeIds],
+    nodeIds: [...normalized.nodeIds],
     nodeSnapshots: normalized.nodeSnapshots.map((snapshot) => ({
       ...snapshot,
       tags: [...snapshot.tags],
@@ -103,13 +99,11 @@ export function serializeTaskContextCard(card: TaskContextCard): Record<string, 
   };
 }
 
-export function formatTaskContextCardV2Prompt(card: TaskContextCard): string {
+export function formatTaskContextCardMarkdown(card: TaskContextCard): string {
   const normalized = normalizeTaskContextCard(card);
-  const work = new Set(normalized.workNodeIds);
   const lines = [
-    "Tent Task Context Card v2",
-    `workNodeIds: ${normalized.workNodeIds.join(", ")}`,
-    `contextNodeIds: ${normalized.contextNodeIds.join(", ") || "(none)"}`,
+    "Tent Task Context Card v3",
+    `nodeIds: ${normalized.nodeIds.join(", ") || "(none)"}`,
     ...(normalized.contextGeneration
       ? [`contextGeneration: ${normalized.contextGeneration}`]
       : []),
@@ -117,9 +111,10 @@ export function formatTaskContextCardV2Prompt(card: TaskContextCard): string {
   for (const snapshot of normalized.nodeSnapshots) {
     lines.push(
       "",
-      `--- ${work.has(snapshot.id) ? "Work" : "Context"} Node ${snapshot.id} ---`,
+      `--- Node ${snapshot.id} ---`,
       `path: ${snapshot.path}`,
       `type: ${snapshot.type}`,
+      `archived: ${snapshot.archived ? "true" : "false"}`,
       `tags: ${snapshot.tags.join(", ") || "(none)"}`,
       `etag: ${snapshot.etag}`,
       "body:",

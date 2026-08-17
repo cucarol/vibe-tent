@@ -24,20 +24,20 @@ async function filesUnder(relativeRoot: string): Promise<string[]> {
   return out;
 }
 
-test("source hard-cuts the next runtime to protocol 9", async () => {
+test("source hard-cuts the next runtime to protocol 10", async () => {
   const [protocol, rendererBridge] = await Promise.all([
     source("src/service/protocol.ts"),
     source("src/desktop/renderer-next/gateway/desktop-bridge.ts"),
   ]);
 
-  assert.match(protocol, /TENT_SERVICE_PROTOCOL_VERSION = 9 as const/);
-  assert.doesNotMatch(protocol, /TENT_SERVICE_PROTOCOL_VERSION = 8 as const/);
-  assert.match(rendererBridge, /health\.protocolVersion !== 9/);
-  assert.match(rendererBridge, /protocolVersion: 9/);
-  assert.doesNotMatch(rendererBridge, /protocolVersion !== 8/);
+  assert.match(protocol, /TENT_SERVICE_PROTOCOL_VERSION = 10 as const/);
+  assert.doesNotMatch(protocol, /TENT_SERVICE_PROTOCOL_VERSION = 9 as const/);
+  assert.match(rendererBridge, /health\.protocolVersion !== 10/);
+  assert.match(rendererBridge, /protocolVersion: 10/);
+  assert.doesNotMatch(rendererBridge, /protocolVersion !== 9/);
 });
 
-test("Protocol 9 public contracts expose only current product vocabulary", async () => {
+test("currently published public contracts keep current vocabulary without source-only retired terms", async () => {
   const publicFiles = [
     "README.md",
     ...(await filesUnder("docs")).filter((file) => file.endsWith(".md")),
@@ -66,7 +66,7 @@ test("Protocol 9 public contracts expose only current product vocabulary", async
   assert.match(publicText, /Protocol 9/);
 });
 
-test("Protocol 9 source and test names hard-cut Result publication vocabulary", async () => {
+test("Protocol 10 source and test names hard-cut Result publication vocabulary", async () => {
   const sourceFiles = (await filesUnder("src")).filter((file) => file.endsWith(".ts"));
   const sourceText = (await Promise.all(sourceFiles.map(source))).join("\n");
   for (const stale of [
@@ -99,7 +99,7 @@ test("Protocol 9 source and test names hard-cut Result publication vocabulary", 
   }
 });
 
-test("V0.2 package metadata and Protocol-8 rejection fixture stay exact", async () => {
+test("V0.2 package metadata and current generated/public protocol fixtures stay exact", async () => {
   const [pkg, manifest, service, releaseContract, attachProtocol] = await Promise.all([
     source("package.json").then(JSON.parse),
     source("manifest.json").then(JSON.parse),
@@ -111,5 +111,5 @@ test("V0.2 package metadata and Protocol-8 rejection fixture stay exact", async 
   assert.equal(manifest.version, "0.2.0");
   assert.match(service, /SERVICE_VERSION = "0\.2\.0"/);
   assert.match(releaseContract, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
-  assert.match(attachProtocol, /healthy protocol 8 fails after the protocol 9 hard cut/);
+  assert.match(attachProtocol, /healthy protocol 9 fails after the protocol 10 hard cut/);
 });

@@ -47,8 +47,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mounted.workspaceId, {
-      workNodeIds: [created.nodeId],
-      contextNodeIds: [],
+      nodeIds: [created.nodeId],
       connectionId: CONNECTION.connectionId,
       prompt: "hold managed session open",
       requester: { kind: "user", id: "user" },
@@ -137,7 +136,7 @@ test("managed auto-result refuses when stop and both seal probes fail", async ()
       {}
     );
     assert.equal(health.status, "ok");
-    assert.equal(health.protocolVersion, 9);
+    assert.equal(health.protocolVersion, 10);
   } finally {
     await svc.stop();
     await fs.rm(workspace, { recursive: true, force: true });

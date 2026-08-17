@@ -109,8 +109,7 @@ async function runningTaskWithBase(
   const d = await rpc(svc, "task.dispatch", {
     requester: { kind: "user", id: "user" },
     workspaceId,
-    workNodeIds: [nodeId],
-    contextNodeIds: [],
+    nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt: "executor lane history fixture",
     acceptMode: "review-required",

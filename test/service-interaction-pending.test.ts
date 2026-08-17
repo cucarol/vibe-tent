@@ -88,8 +88,7 @@ test("interaction.listPending aggregates actionable Result and tool approval wit
     const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      workNodeIds: [nodeId],
-      contextNodeIds: [],
+      nodeIds: [nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "Need decisions and review",
       requester: { kind: "user", id: "user" },
@@ -179,8 +178,7 @@ test("interaction.listPending aggregates actionable Result and tool approval wit
       currentSessionToken: roleOwnedEntered.sessionToken,
     });
     const roleOwned = await roleOwnedClient.taskDispatch(workspaceId, {
-      workNodeIds: [roleNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [roleNode.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "Role-owned result is not a user Inbox action",
       requester: { kind: "role", id: "rl-executor" },
@@ -292,8 +290,7 @@ test("interaction.listPending fails closed on duplicate current Task identity", 
       currentSessionToken: entered.sessionToken,
     });
     const dispatched = await local.taskDispatch(workspaceId, {
-      workNodeIds: [node.nodeId],
-      contextNodeIds: [],
+      nodeIds: [node.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "duplicate authority fixture",
       requester: { kind: "user", id: "user" },

@@ -26,8 +26,11 @@ function env(root: string, fs: FsAdapter = new NodeFs(root)) {
 async function fixture() {
   const root = await makeTent();
   const base = env(root);
-  const dispatched = await dispatch(base as any, "cx-p1", {
-    workNodeIds: ["cx-p1"], contextNodeIds: [], prompt: "review", requester: { kind: "user", id: "user" }, executionSessionId: "ss-executor",
+  const dispatched = await dispatch(base as any, {
+    nodeIds: ["cx-p1"],
+    prompt: "review",
+    requester: { kind: "user", id: "user" },
+    executionSessionId: "ss-executor",
   });
   await taskClaim(base as any, dispatched.taskPath);
   const submitted = await taskSubmit(base as any, dispatched.taskPath, { report: "immutable result", commits: [] });

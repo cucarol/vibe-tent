@@ -133,8 +133,7 @@ async function createRunningRoleTask(input: {
     type: "prompt",
   });
   const dispatched = (await requesterClient.taskDispatch(workspaceId, {
-    workNodeIds: [note.nodeId],
-    contextNodeIds: [],
+    nodeIds: [note.nodeId],
     assigneeRoleId: "rl-executor",
     prompt: "Need a durable decision",
     requester: input.requester,
@@ -161,8 +160,7 @@ async function createRunningConnectionTask(input: {
     type: "prompt",
   });
   const dispatched = (await root.taskDispatch(workspaceId, {
-    workNodeIds: [note.nodeId],
-    contextNodeIds: [],
+    nodeIds: [note.nodeId],
     connectionId: "fake-default",
     prompt: "Managed Task with a durable Decision Request",
     requester: { kind: "user", id: "user" },

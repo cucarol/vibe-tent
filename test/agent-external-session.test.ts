@@ -232,7 +232,7 @@ test("service RPC session.enter/status/leave: idempotent, no submit", async () =
     })) as { nodeId: string };
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId], contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "do the thing",
       requester: { kind: "user", id: "user" },
@@ -260,7 +260,7 @@ test("service RPC session.enter/status/leave: idempotent, no submit", async () =
     assert.equal(left.left, true);
     assert.equal(left.state, "stopped");
     assert.deepEqual(left.incompleteTasks.map((task) => task.path), [dispatched.taskPath]);
-    // Leave never completes the Task; it preserves occupation in an honest,
+    // Leave never completes the Task; it preserves an honest,
     // recoverable wait because the exact external Session is no longer open.
     const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
       task: { state: string; executionSessionId?: string };
@@ -338,8 +338,7 @@ test("task.submit authenticates the exact external Session without blocking call
         body: `# ${name}\n`,
       })) as { nodeId: string };
       return (await root.taskDispatch(workspaceId, {
-        workNodeIds: [node.nodeId],
-        contextNodeIds: [],
+        nodeIds: [node.nodeId],
         assigneeRoleId: "rl-executor",
         prompt: name,
         requester: { kind: "user", id: "user" },
@@ -428,8 +427,7 @@ test("external Role reject-resume keeps the exact live Session and Task running"
       body: "# external reject resume\n",
     })) as { nodeId: string };
     const dispatched = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId],
-      contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "external reject resume",
       requester: { kind: "user", id: "user" },
@@ -501,8 +499,7 @@ test("external session.leave defensively parks every exact active Task and new c
       type: "prompt",
     })) as { nodeId: string };
     const first = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [firstNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [firstNode.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "first exact external Task",
       requester: { kind: "user", id: "user" },
@@ -532,8 +529,7 @@ test("external session.leave defensively parks every exact active Task and new c
     const directRefused = await roleClient.tryCall("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      workNodeIds: [directNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [directNode.nodeId],
       prompt: "must not create a second active direct Task",
     });
     assert.equal(directRefused.ok, false);
@@ -552,8 +548,7 @@ test("external session.leave defensively parks every exact active Task and new c
     );
 
     const second = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [secondNode.nodeId],
-      contextNodeIds: [],
+      nodeIds: [secondNode.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "second exact external Task",
       requester: { kind: "user", id: "user" },
@@ -646,8 +641,7 @@ test("task.claim recovers only the exact rejected external Role Task from its pa
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId],
-      contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "recover exact external Task",
       requester: { kind: "user", id: "user" },
@@ -730,8 +724,7 @@ test("external Role claim racing exact session.leave converges to a recoverable 
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId],
-      contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "race exact external recovery with leave",
       requester: { kind: "user", id: "user" },
@@ -827,8 +820,7 @@ test("external Role reject-resume racing session.leave never projects closed Ses
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId],
-      contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "race reject resume with exact external leave",
       requester: { kind: "user", id: "user" },
@@ -973,8 +965,7 @@ test("external Role reject-resume failure is parked without managed-Session diag
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await root.taskDispatch(workspaceId, {
-      workNodeIds: [note.nodeId],
-      contextNodeIds: [],
+      nodeIds: [note.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "external failure wording",
       requester: { kind: "user", id: "user" },

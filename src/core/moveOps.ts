@@ -7,11 +7,7 @@ import { buildNodeIndex } from "./okf.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { isOperationalPath } from "./paths.js";
-import {
-  assertNoActiveTaskRefsInSubtree,
-  rewriteNodeLinks,
-  type RewriteNodeLinksOptions,
-} from "./renameOps.js";
+import { rewriteNodeLinks, type RewriteNodeLinksOptions } from "./renameOps.js";
 import type { Node } from "./types.js";
 import {
   nodeNotePath,
@@ -50,8 +46,7 @@ type PlannedWrite = {
  * - `cx-` / frontmatter id never change; folder stem (display name) is preserved
  * - reparent: move directory tree, rewrite path-based links, roll back on failure
  * - same-parent reorder: order.json only — no link rewrite
- * - structural occupation: an active ref anywhere in the moved subtree blocks
- *   the move; destination-parent occupation alone does not
+ * - active Tasks do not lock current Node structure; frozen snapshots keep their own context
  */
 export async function moveNode(
   env: OpsEnv,
@@ -82,8 +77,6 @@ async function moveNodeUnlocked(
     throw new Error("Invalid or archived nodes cannot be moved.");
   }
   assertNotOperationalPath(moved.path);
-
-  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
 
   const parentNode = resolveNewParent(tent, newParentId);
   if (parentNode) {

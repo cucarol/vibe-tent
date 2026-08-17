@@ -150,8 +150,7 @@ for (const fixture of cases) {
           type: "prompt",
         });
         const dispatched = (await healthyClient.taskDispatch(workspaceId, {
-          workNodeIds: [note.nodeId],
-          contextNodeIds: [],
+          nodeIds: [note.nodeId],
           connectionId: CONNECTION.connectionId,
           prompt: "hold for corruption result gate",
           requester: { kind: "user", id: "user" },
@@ -185,8 +184,7 @@ for (const fixture of cases) {
           type: "prompt",
         });
         const dispatched = (await client.taskDispatch(workspaceId, {
-          workNodeIds: [note.nodeId],
-          contextNodeIds: [],
+          nodeIds: [note.nodeId],
           connectionId: CONNECTION.connectionId,
           prompt: "hold for corruption result gate",
           requester: { kind: "user", id: "user" },

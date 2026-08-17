@@ -193,7 +193,7 @@ test("tryAttachService: forged public health cannot authenticate an endpoint", a
       publicHealthCalls += 1;
       return jsonResponse(200, {
         status: "ok",
-        protocolVersion: 9,
+        protocolVersion: 10,
         instanceId: endpoint.instanceId,
         pid: endpoint.pid,
         startedAt: endpoint.startedAt,
@@ -252,7 +252,7 @@ test("tryAttachService: hanging authenticated candidates are aborted without hid
       id: request.id,
       result: {
         status: "ok",
-        protocolVersion: 9,
+        protocolVersion: 10,
         instanceId: healthy.instanceId,
         pid: healthy.pid,
         startedAt: healthy.startedAt,
@@ -569,7 +569,7 @@ test("task RPC layer: claim → submit; ServiceClient observes same state; servi
     const nodeId = created.nodeId;
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
-      workNodeIds: [nodeId], contextNodeIds: [],
+      nodeIds: [nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "Ship CLI attach",
       requester: { kind: "user", id: "user" },
@@ -633,7 +633,7 @@ test("task claim/submit via attach (not injected client) sees same ServiceClient
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
-      workNodeIds: [created.nodeId], contextNodeIds: [],
+      nodeIds: [created.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "agent path",
       requester: { kind: "user", id: "user" },
@@ -688,7 +688,7 @@ test("task command errors: missing report / unknown sub / attach-only miss", asy
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      workNodeIds: [created.nodeId], contextNodeIds: [],
+      nodeIds: [created.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "x",
       requester: { kind: "user", id: "user" },
@@ -716,7 +716,7 @@ test("task list/get human output uses canonical assignee fields", async () => {
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      workNodeIds: [created.nodeId], contextNodeIds: [],
+      nodeIds: [created.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "list test",
       requester: { kind: "user", id: "user" },
@@ -745,7 +745,7 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      workNodeIds: [created.nodeId], contextNodeIds: [],
+      nodeIds: [created.nodeId],
       assigneeRoleId: "rl-executor",
       prompt: "cli user ack",
       requester: { kind: "user", id: "user" },

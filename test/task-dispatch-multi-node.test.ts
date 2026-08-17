@@ -1,22 +1,18 @@
-/**
- * Multi-Node dispatch runtime seam (work/context Node selection):
- * - Core: exact ordered selection → frozen Node snapshots; structural gates; concurrency
- * - Service: canonical work/context parsing; retired field rejection; conflict reject; zero-write
- */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { NodeFs } from "../src/fs/node-fs.js";
-import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
-import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
-import { parseFrontmatter } from "../src/core/frontmatter.js";
-import { dispatch, resolveDispatchTaskNodeSelection, archiveNode } from "../src/core/ops.js";
-import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { startLocalTentService } from "../src/service/service.js";
-import { rpcCall } from "../src/service/http-server.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import { parseFrontmatter } from "../src/core/frontmatter.js";
+import { archiveNode, dispatch } from "../src/core/ops.js";
+import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { loadTaskRecord } from "../src/core/task.js";
+import { normalizeTaskNodeSelection } from "../src/core/task-node-selection.js";
+import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
+import { NodeFs } from "../src/fs/node-fs.js";
+import { rpcCall } from "../src/service/http-server.js";
+import { startLocalTentService } from "../src/service/service.js";
 import { makeTent } from "./helpers.js";
 
 function envFor(dir: string) {
@@ -35,385 +31,41 @@ const FAKE_CONNECTION = {
   fake: { waitForSignal: true, sleepMs: 60_000 },
 } as const;
 
-async function dispatchToRole(env: any, nodeId: string, roleId: string, input: Record<string, unknown>) {
+async function ensureRole(env: { fs: NodeFs }, roleId: string) {
   const canonicalRoleId = roleId.startsWith("rl-") ? roleId : `rl-${roleId}`;
-  const registry = await env.fs.exists("roles.json")
-    ? JSON.parse(await env.fs.readFile("roles.json")) as { roles?: Array<Record<string, unknown>> }
+  const registryPath = "roles.json";
+  const registry = await env.fs.exists(registryPath)
+    ? JSON.parse(await env.fs.readFile(registryPath)) as { roles?: Array<Record<string, unknown>> }
     : { roles: [] as Array<Record<string, unknown>> };
   if (!(registry.roles ?? []).some((role) => role.id === canonicalRoleId)) {
-    registry.roles = [...(registry.roles ?? []), {
-      id: canonicalRoleId,
-      name: roleId.replace(/^rl-/, ""),
-      displayName: roleId.replace(/^rl-/, ""),
-    }];
-    await env.fs.writeFile("roles.json", JSON.stringify(registry, null, 2) + "\n");
+    registry.roles = [
+      ...(registry.roles ?? []),
+      { id: canonicalRoleId, name: roleId.replace(/^rl-/, ""), displayName: roleId.replace(/^rl-/, "") },
+    ];
+    await env.fs.writeFile(registryPath, JSON.stringify(registry, null, 2) + "\n");
   }
-  const { workNodeIds, contextNodeIds, ...rest } = input as {
-    workNodeIds?: string[];
-    contextNodeIds?: string[];
-  };
-  return dispatch(env, nodeId, {
-    assigneeRoleId: canonicalRoleId,
-    workNodeIds: workNodeIds ?? [nodeId],
-    contextNodeIds: contextNodeIds ?? [],
-    requester: { kind: "user", id: "user" },
-    ...rest,
+  return canonicalRoleId;
+}
+
+async function dispatchToRole(
+  env: ReturnType<typeof envFor>,
+  roleId: string,
+  input: {
+    nodeIds: string[];
+    prompt: string;
+    requester?: { kind: "user" | "role"; id: string };
+  }
+) {
+  return dispatch(env as any, {
+    assigneeRoleId: await ensureRole({ fs: env.fs }, roleId),
+    nodeIds: input.nodeIds,
+    prompt: input.prompt,
+    requester: input.requester ?? { kind: "user", id: "user" },
   });
 }
 
-// ---- Core: resolveDispatchTaskNodeSelection ----
-
-test("resolveDispatchTaskNodeSelection: work/context Nodes are ordered and validated", () => {
-  assert.deepEqual(
-    resolveDispatchTaskNodeSelection({
-      workNodeIds: ["cx-p1", "cx-o1"],
-      contextNodeIds: ["cx-g1"],
-      tentName: "demo",
-    }),
-    { workNodeIds: ["cx-p1", "cx-o1"], contextNodeIds: ["cx-g1"] }
-  );
-  assert.throws(
-    () => resolveDispatchTaskNodeSelection({ workNodeIds: [], contextNodeIds: [], tentName: "demo" }),
-    /at least one Node/
-  );
-  assert.throws(
-    () =>
-      resolveDispatchTaskNodeSelection({
-        workNodeIds: ["cx-p1"],
-        contextNodeIds: ["  "],
-        tentName: "demo",
-      }),
-    /canonical lowercase cx-\* Node ids/
-  );
-  assert.throws(
-    () =>
-      resolveDispatchTaskNodeSelection({
-        workNodeIds: ["root"],
-        contextNodeIds: [],
-        tentName: "demo",
-      }),
-    /canonical lowercase cx-\* Node ids/
-  );
-  assert.throws(
-    () => resolveDispatchTaskNodeSelection({ workNodeIds: undefined, contextNodeIds: [], tentName: "demo" }),
-    /workNodeIds must be an array/
-  );
-});
-
-// ---- Core: dispatch multi-ref ----
-
-test("dispatch: work/context Nodes preserve exact order in Context Card; dedupe; no claims[]", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-
-  const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
-    prompt: "multi-node ordered work",
-    requester: { kind: "user", id: "user" },
-    workNodeIds: ["cx-o1", "cx-p1"],
-    contextNodeIds: ["cx-g1"],
-  });
-
-  const loaded = await loadTaskRecord(env.fs, result.taskPath);
-  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-p1", "cx-g1"]);
-  assert.deepEqual(
-    loaded.contextCard?.workNodeIds,
-    ["cx-o1", "cx-p1"]
-  );
-  assert.deepEqual(loaded.contextCard?.contextNodeIds, ["cx-g1"]);
-  assert.deepEqual(loaded.contextCard?.nodeSnapshots.map((snapshot) => snapshot.id), ["cx-o1", "cx-p1", "cx-g1"]);
-
-  const raw = await env.fs.readFile(result.taskPath);
-  const { data } = parseFrontmatter(raw);
-  assert.equal("claims" in data, false);
-  // Manifest snapshots the same ids as writable pointers (auxiliary).
-  assert.match(result.manifestYaml, /id: cx-o1/);
-  assert.match(result.manifestYaml, /id: cx-p1/);
-  assert.match(result.manifestYaml, /id: cx-g1/);
-  assert.doesNotMatch(result.manifestYaml, /^claims:/m);
-});
-
-test("dispatch: multiline Context Card strings round-trip without corrupting the Task envelope", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-  const prompt = "先读取项目说明\n\n只修改核心解析器\n\n完成后运行测试";
-
-  const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
-    prompt: prompt,
-    requester: { kind: "user", id: "user" },
-    workNodeIds: ["cx-o1"],
-    contextNodeIds: [],
-  });
-
-  const raw = await env.fs.readFile(result.taskPath);
-  assert.doesNotMatch(raw, /objective:|acceptance:|refs:/);
-  const loaded = await loadTaskRecord(env.fs, result.taskPath);
-  assert.equal(loaded.contextCard.schemaVersion, "v2");
-  assert.deepEqual(loaded.contextCard.workNodeIds, ["cx-o1"]);
-  assert.deepEqual(loaded.contextCard.contextNodeIds, []);
-  assert.ok(loaded.prompt?.endsWith(prompt));
-  assert.equal(loaded.prompt?.split(prompt).length, 2, "raw prompt appears exactly once");
-});
-
-test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Role aggregation)", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-
-  const prior = await dispatchToRole(env as any, "cx-p1", "analyst", {
-    prompt: "prior role task",
-    workNodeIds: ["cx-p1", "cx-p2"],
-    contextNodeIds: [],
-  });
-  assert.deepEqual(
-    taskReferencedNodeIds(await loadTaskRecord(env.fs, prior.taskPath)),
-    ["cx-p1", "cx-p2"]
-  );
-
-  const next = await dispatchToRole(env as any, "cx-o1", "analyst", {
-    prompt: "new role task exact selection",
-    workNodeIds: ["cx-o1"],
-    contextNodeIds: ["cx-g1"],
-  });
-  const loaded = await loadTaskRecord(env.fs, next.taskPath);
-  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-g1"]);
-  assert.deepEqual(
-    loaded.contextCard.nodeSnapshots.map((node) => node.id),
-    ["cx-o1", "cx-g1"]
-  );
-  assert.equal(await env.fs.readFile(next.manifestPath), next.manifestYaml);
-
-  const writableSection = next.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
-  assert.ok(writableSection.length > 0, "manifest must emit writable section");
-  assert.match(writableSection, /id: cx-o1/);
-  assert.doesNotMatch(writableSection, /id: cx-g1/);
-  assert.doesNotMatch(writableSection, /id: cx-p1\b/);
-  assert.doesNotMatch(writableSection, /id: cx-p2\b/);
-  assert.doesNotMatch(next.manifestYaml, /^claims:/m);
-});
-
-test("dispatch: missing / archived / invalid Node selection zero-write (no task/manifest)", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-
-  // Missing id
-  await assert.rejects(
-    () =>
-      dispatchToRole(env as any, "cx-p1", "analyst", {
-        prompt: "missing node",
-        requester: { kind: "user", id: "user" },
-        workNodeIds: ["cx-p1"],
-        contextNodeIds: ["cx-doesnotexist"],
-      }),
-    /Node not found/
-  );
-  assert.equal(await env.fs.exists("temp/analyst"), false);
-
-  // Archived
-  await archiveNode(env as any, "cx-o1");
-  await assert.rejects(
-    () =>
-      dispatchToRole(env as any, "cx-o1", "executor", {
-        prompt: "archived node",
-        requester: { kind: "user", id: "user" },
-        workNodeIds: ["cx-o1"],
-        contextNodeIds: [],
-      }),
-    /Cannot dispatch:.*[Aa]rchiv/
-  );
-  assert.equal(await env.fs.exists("temp/executor"), false);
-
-  // An archived Node may remain read-only context for a different work Node.
-  const contextDir = await makeTent();
-  const contextEnv = envFor(contextDir);
-  await archiveNode(contextEnv as any, "cx-o1");
-  const contextDispatch = await dispatchToRole(contextEnv as any, "cx-p1", "reader", {
-    prompt: "read archived context",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: ["cx-o1"],
-  });
-  assert.ok(contextDispatch.taskPath);
-
-  // Root token mixed with concrete ids
-  await assert.rejects(
-    () =>
-      dispatchToRole(env as any, "cx-p1", "planner", {
-        prompt: "mixed root",
-        requester: { kind: "user", id: "user" },
-        workNodeIds: ["cx-p1"],
-        contextNodeIds: ["root"],
-      }),
-    /canonical lowercase cx-\* Node ids/
-  );
-  assert.equal(await env.fs.exists("temp/planner"), false);
-});
-
-test("dispatch: canonical Task id is fail-loud and cannot alias an existing Task", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-
-  await assert.rejects(
-    () =>
-      dispatch(env as any, "cx-p1", {
-        executionSessionId: "ss-invalidtask",
-        taskId: "tk-bad/path",
-        workNodeIds: ["cx-p1"],
-        contextNodeIds: [],
-        prompt: "invalid Task id must not allocate paths",
-        requester: { kind: "user", id: "user" },
-      }),
-    /Invalid Task id/
-  );
-  assert.equal(await env.fs.exists("temp/sessions/ss-invalidtask"), false);
-
-  const first = await dispatch(env as any, "cx-p1", {
-    executionSessionId: "ss-firsttask",
-    taskId: "tk-exactcollision",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
-    prompt: "first exact Task identity",
-    requester: { kind: "user", id: "user" },
-  });
-  assert.equal((await loadTaskRecord(env.fs, first.taskPath)).id, "tk-exactcollision");
-
-  await assert.rejects(
-    () =>
-      dispatch(env as any, "cx-o1", {
-        executionSessionId: "ss-secondtask",
-        taskId: "tk-exactcollision",
-        workNodeIds: ["cx-o1"],
-        contextNodeIds: [],
-        prompt: "duplicate Task identity must fail before writes",
-        requester: { kind: "user", id: "user" },
-      }),
-    /Task id already exists/
-  );
-  assert.equal(await env.fs.exists("temp/sessions/ss-secondtask"), false);
-});
-
-test("dispatch: exact Node occupation blocks only the same Node and releases on terminal states", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-
-  const first = await dispatchToRole(env as any, "cx-p1", "analyst", {
-    prompt: "first exact Node task",
-    requester: { kind: "user", id: "user" },
-    workNodeIds: ["cx-p1", "cx-p2"],
-    contextNodeIds: [],
-  });
-  await assert.rejects(
-    () =>
-      dispatchToRole(env as any, "cx-p1", "executor", {
-        prompt: "same Node concurrent",
-        requester: { kind: "user", id: "user" },
-        workNodeIds: ["cx-p1"],
-        contextNodeIds: [],
-      }),
-    /occupied by active task/
-  );
-  assert.equal(await env.fs.exists("temp/executor"), false);
-
-  // Parent/child and sibling Nodes are separate contexts and remain concurrent.
-  const parent = await dispatchToRole(env as any, "cx-promptzone", "planner", {
-    prompt: "parent context concurrent",
-    requester: { kind: "user", id: "user" },
-    workNodeIds: ["cx-promptzone"],
-    contextNodeIds: [],
-  });
-  const sibling = await dispatchToRole(env as any, "cx-g1", "reviewer", {
-    prompt: "sibling context concurrent",
-    requester: { kind: "user", id: "user" },
-    workNodeIds: ["cx-g1"],
-    contextNodeIds: [],
-  });
-
-  assert.ok(parent.taskPath);
-  assert.ok(sibling.taskPath);
-
-  const expectOccupied = async (state: "queued" | "running" | "waiting" | "submitted") => {
-    await patchTaskRecord(env.fs, first.taskPath, {
-      state,
-      updatedAt: "2026-07-30T12:00:00.000Z",
-    });
-    await assert.rejects(
-      () =>
-        dispatchToRole(env as any, "cx-p1", "executor", {
-          prompt: `blocked while ${state}`,
-          requester: { kind: "user", id: "user" },
-          workNodeIds: ["cx-p1"],
-          contextNodeIds: [],
-        }),
-      /occupied by active task/
-    );
-  };
-
-  await expectOccupied("queued");
-  await expectOccupied("running");
-  await expectOccupied("waiting");
-  await expectOccupied("submitted");
-
-  for (const state of ["accepted", "rejected", "interrupted", "failed"] as const) {
-    await patchTaskRecord(env.fs, first.taskPath, {
-      state,
-      updatedAt: "2026-07-30T12:00:00.000Z",
-    });
-    const released = await dispatchToRole(env as any, "cx-p1", "executor", {
-      prompt: `released after ${state}`,
-      requester: { kind: "user", id: "user" },
-      workNodeIds: ["cx-p1"],
-      contextNodeIds: [],
-    });
-    assert.ok(released.taskPath);
-    await patchTaskRecord(env.fs, released.taskPath, {
-      state: "failed",
-      updatedAt: "2026-07-30T12:00:00.000Z",
-    });
-  }
-});
-
-test("dispatch: malformed work/context selection rejects before any Task or manifest write", async () => {
-  const dir = await makeTent();
-  const env = envFor(dir);
-  await assert.rejects(
-    () =>
-      dispatchToRole(env as any, "cx-o1", "analyst", {
-        prompt: "conflict",
-        requester: { kind: "user", id: "user" },
-        workNodeIds: ["cx-o1"],
-        contextNodeIds: [" "],
-      }),
-    /canonical lowercase cx-\* Node ids/
-  );
-  assert.equal(await env.fs.exists("temp/analyst"), false);
-});
-
-// ---- Service RPC ----
-
-async function makeWorkspace(name = "mn-dispatch"): Promise<string> {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), `tent-${name}-`));
-  const fsa = new NodeFs(workspace);
-  await scaffoldInWorkspace(fsa, {
-    name,
-    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
-  });
-  await fsa.writeFile(
-    ".tent/roles.json",
-    JSON.stringify(
-      {
-        roles: [
-          { id: "rl-executor", name: "executor", prompt: "do work" },
-          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch work" },
-        ],
-      },
-      null,
-      2
-    ) + "\n"
-  );
-  return workspace;
-}
-
-async function withService<T>(
-  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
-): Promise<T> {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mn-data-"));
+async function withService<T>(fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>) {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-dispatch-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
@@ -426,235 +78,237 @@ async function withService<T>(
   }
 }
 
-function rpc(
-  svc: Awaited<ReturnType<typeof startLocalTentService>>,
-  method: string,
-  params?: Record<string, unknown>
-) {
+function rpc(svc: Awaited<ReturnType<typeof startLocalTentService>>, method: string, params?: Record<string, unknown>) {
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
-async function mountTwoNotes(
-  svc: Awaited<ReturnType<typeof startLocalTentService>>,
-  ws: string
-) {
-  const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-  assert.ok(!mounted.error, JSON.stringify(mounted.error));
-  const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-  const a = await rpc(svc, "docs.createNote", {
-    workspaceId,
-    name: "alpha-node",
-    type: "prompt",
+async function makeWorkspace(name: string) {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), `tent-dispatch-${name}-`));
+  const workspaceFs = new NodeFs(workspace);
+  await scaffoldInWorkspace(workspaceFs, {
+    name,
+    nodes: [
+      { name: "alpha", type: "prompt", body: "# Alpha\n" },
+      { name: "beta", type: "goal", body: "# Beta\n" },
+      { name: "gamma", type: "reference", body: "# Gamma\n" },
+    ],
   });
-  assert.ok(!a.error, JSON.stringify(a.error));
-  const b = await rpc(svc, "docs.createNote", {
-    workspaceId,
-    name: "beta-node",
-    type: "prompt",
-  });
-  assert.ok(!b.error, JSON.stringify(b.error));
-  return {
-    workspaceId,
-    idA: (a.result as { nodeId: string }).nodeId,
-    idB: (b.result as { nodeId: string }).nodeId,
-  };
+  await workspaceFs.writeFile(
+    ".tent/roles.json",
+    JSON.stringify({
+      roles: [{ id: "rl-executor", name: "executor", displayName: "Executor", prompt: "work" }],
+    }, null, 2) + "\n"
+  );
+  return workspace;
 }
 
-test("service task.dispatch: work/context Nodes are ordered in the Context Card", async () => {
-  const ws = await makeWorkspace("svc-multi");
+async function mountNamedNodes(svc: Awaited<ReturnType<typeof startLocalTentService>>, workspace: string) {
+  const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: workspace });
+  assert.ok(!mounted.error, JSON.stringify(mounted.error));
+  const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+  const tentFs = new NodeFs(path.join(workspace, ".tent"));
+  const tree = await import("../src/core/tree.js").then(({ loadTent }) => loadTent(tentFs));
+  const ids = new Map<string, string>();
+  for (const node of tree.byId.values()) ids.set(node.name, node.id);
+  return { workspaceId, tentFs, ids };
+}
+
+test("Task nodeIds keep order and allow prompt-only Tasks", () => {
+  assert.deepEqual(
+    normalizeTaskNodeSelection({
+      nodeIds: ["cx-p1", "cx-o1", "cx-g1"],
+    }),
+    { nodeIds: ["cx-p1", "cx-o1", "cx-g1"] }
+  );
+  assert.deepEqual(
+    normalizeTaskNodeSelection({
+      nodeIds: [],
+    }),
+    { nodeIds: [] }
+  );
+  assert.throws(
+    () =>
+      normalizeTaskNodeSelection({
+        nodeIds: ["cx-p1", "  "],
+      }),
+    /canonical lowercase cx-\* Node ids/
+  );
+  assert.throws(
+    () =>
+      normalizeTaskNodeSelection({
+        nodeIds: ["root"],
+      }),
+    /canonical lowercase cx-\* Node ids/
+  );
+  assert.throws(
+    () =>
+      normalizeTaskNodeSelection({
+        nodeIds: undefined,
+      }),
+    /Task nodeIds must be an array/
+  );
+});
+
+test("dispatch freezes exact nodeIds order and archived roots remain legal context", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+  await archiveNode(env as any, "cx-o1");
+
+  const result = await dispatchToRole(env, "analyst", {
+    prompt: "multi-node ordered work",
+    nodeIds: ["cx-o1", "cx-p1", "cx-g1"],
+  });
+
+  const loaded = await loadTaskRecord(env.fs, result.taskPath);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-p1", "cx-g1"]);
+  assert.deepEqual(loaded.contextCard.nodeIds, ["cx-o1", "cx-p1", "cx-g1"]);
+  assert.deepEqual(
+    loaded.contextCard.nodeSnapshots.map((snapshot) => snapshot.id),
+    ["cx-o1", "cx-p1", "cx-p2", "cx-g1", "cx-g2"]
+  );
+  assert.equal(loaded.contextCard.nodeSnapshots[0]?.archived, true);
+
+  const raw = await env.fs.readFile(result.taskPath);
+  const { data } = parseFrontmatter(raw);
+  assert.equal("claims" in data, false);
+  assert.match(result.manifestYaml, /id: cx-p1/);
+  assert.match(result.manifestYaml, /id: cx-g1/);
+  assert.doesNotMatch(result.manifestYaml, /id: cx-o1/);
+  assert.doesNotMatch(result.manifestYaml, /^claims:/m);
+});
+
+test("dispatch dedupes overlapping selected roots inside frozen subtree snapshots", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+
+  const result = await dispatchToRole(env, "analyst", {
+    prompt: "overlapping roots stay deterministic",
+    nodeIds: ["cx-p1", "cx-p2"],
+  });
+
+  const loaded = await loadTaskRecord(env.fs, result.taskPath);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-p1", "cx-p2"]);
+  assert.deepEqual(loaded.contextCard.nodeIds, ["cx-p1", "cx-p2"]);
+  assert.deepEqual(
+    loaded.contextCard.nodeSnapshots.map((snapshot) => snapshot.id),
+    ["cx-p1", "cx-p2"]
+  );
+});
+
+test("dispatch keeps archived roots and descendants as frozen context without manifest authority", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+  await archiveNode(env as any, "cx-p1");
+
+  const result = await dispatchToRole(env, "analyst", {
+    prompt: "archived subtree remains frozen context",
+    nodeIds: ["cx-p1"],
+  });
+
+  const loaded = await loadTaskRecord(env.fs, result.taskPath);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-p1"]);
+  assert.deepEqual(loaded.contextCard.nodeSnapshots.map((snapshot) => snapshot.id), ["cx-p1", "cx-p2"]);
+  assert.deepEqual(loaded.contextCard.nodeSnapshots.map((snapshot) => snapshot.archived), [true, true]);
+  assert.doesNotMatch(result.manifestYaml, /id: cx-p1/);
+  assert.doesNotMatch(result.manifestYaml, /id: cx-p2/);
+  assert.doesNotMatch(result.manifestYaml, /path: prompt\/表达式任务书\/?$/m);
+  assert.doesNotMatch(result.manifestYaml, /path: prompt\/表达式任务书\/草稿\/?$/m);
+});
+
+test("dispatch supports prompt-only Tasks without a placeholder Node", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+  const result = await dispatch(env as any, {
+    executionSessionId: "ss-promptonly",
+    nodeIds: [],
+    prompt: "prompt only",
+    requester: { kind: "user", id: "user" },
+  });
+  const loaded = await loadTaskRecord(env.fs, result.taskPath);
+  assert.deepEqual(taskReferencedNodeIds(loaded), []);
+  assert.deepEqual(loaded.contextCard.nodeIds, []);
+  assert.deepEqual(loaded.contextCard.nodeSnapshots, []);
+});
+
+test("service task.dispatch preserves exact nodeIds order and allows concurrent references", async () => {
+  const workspace = await makeWorkspace("svc-multi");
   await withService(async (svc) => {
-    const { workspaceId, idA, idB } = await mountTwoNotes(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
+    const { workspaceId, tentFs, ids } = await mountNamedNodes(svc, workspace);
+    const alpha = ids.get("alpha")!;
+    const beta = ids.get("beta")!;
+    const gamma = ids.get("gamma")!;
+
+    const first = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [idB],
-      contextNodeIds: [idA],
-      connectionId: "fake-default",
+      nodeIds: [beta, alpha, gamma],
+      connectionId: FAKE_CONNECTION.connectionId,
       prompt: "service multi-node ordered",
     });
-    assert.ok(!d.error, JSON.stringify(d.error));
-    const result = d.result as { taskPath: string; state: string; executionSessionId?: string };
-    assert.equal(result.state, "running");
+    assert.ok(!first.error, JSON.stringify(first.error));
+    const firstTask = await loadTaskRecord(tentFs, (first.result as { taskPath: string }).taskPath);
+    assert.deepEqual(taskReferencedNodeIds(firstTask), [beta, alpha, gamma]);
+    assert.deepEqual(firstTask.contextCard.nodeIds, [beta, alpha, gamma]);
 
-    const tentFs = new NodeFs(path.join(ws, ".tent"));
-    const task = await loadTaskRecord(tentFs, result.taskPath);
-    assert.deepEqual(taskReferencedNodeIds(task), [idB, idA]);
-    assert.deepEqual(task.workNodeIds, [idB]);
-    assert.deepEqual(task.contextNodeIds, [idA]);
-    assert.equal(task.executionSessionId, result.executionSessionId);
-    assert.equal("claims" in (parseFrontmatter(await tentFs.readFile(result.taskPath)).data), false);
-
-    const blocked = await rpc(svc, "task.dispatch", {
+    const second = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [idB],
-      contextNodeIds: [],
-      connectionId: "fake-default",
-      prompt: "same exact Node must wait",
+      nodeIds: [beta],
+      connectionId: FAKE_CONNECTION.connectionId,
+      prompt: "same node, still legal",
     });
-    assert.ok(blocked.error, "an active Task must occupy each exact referenced Node");
-    assert.match(String(blocked.error.message || blocked.error), /occupied by active task/i);
+    assert.ok(!second.error, JSON.stringify(second.error));
+
+    const listed = await rpc(svc, "task.list", { workspaceId });
+    assert.ok(!listed.error, JSON.stringify(listed.error));
+    const tasks = (listed.result as { tasks: Array<{ nodeIds: string[] }> }).tasks;
+    assert.equal(tasks.filter((task) => task.nodeIds.includes(beta)).length, 2);
   });
 });
 
-test("service task.dispatch: invalid and retired selection fields fail before write", async () => {
-  const ws = await makeWorkspace("svc-fail");
+test("service task.dispatch rejects retired fields and malformed nodeIds before write", async () => {
+  const workspace = await makeWorkspace("svc-invalid");
   await withService(async (svc) => {
-    const { workspaceId, idA, idB } = await mountTwoNotes(svc, ws);
+    const { workspaceId, ids } = await mountNamedNodes(svc, workspace);
 
-    const initialList = await rpc(svc, "task.list", { workspaceId });
-    assert.ok(!initialList.error);
-    const initialCount = ((initialList.result as { tasks: unknown[] }).tasks ?? []).length;
+    const before = await rpc(svc, "task.list", { workspaceId });
+    assert.ok(!before.error, JSON.stringify(before.error));
+    const beforeCount = ((before.result as { tasks: unknown[] }).tasks ?? []).length;
 
-    const missing = await rpc(svc, "task.dispatch", {
+    const retired = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [idA],
-      contextNodeIds: ["cx-missingzz"],
-      connectionId: "fake-default",
-      prompt: "missing ref",
+      nodeIds: [ids.get("alpha")!],
+      workNodeIds: ["cx-retired"],
+      prompt: "retired field",
+      connectionId: FAKE_CONNECTION.connectionId,
     });
-    assert.ok(missing.error, "expected missing node fail");
-    assert.match(String(missing.error.message || missing.error), /Node not found|not found/i);
+    assert.ok(retired.error);
+    assert.equal(retired.error.code, -32602);
+    assert.match(String(retired.error.message || retired.error), /unknown parameter/i);
 
-    // Empty work selection
-    const empty = await rpc(svc, "task.dispatch", {
+    const malformed = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [],
-      contextNodeIds: [],
-      connectionId: "fake-default",
-      prompt: "empty",
+      nodeIds: ["cx-alpha", 42],
+      prompt: "bad nodeIds",
+      connectionId: FAKE_CONNECTION.connectionId,
     });
-    assert.ok(empty.error);
-    assert.match(String(empty.error.message || empty.error), /non-empty|workNodeIds/i);
+    assert.ok(malformed.error);
+    assert.match(String(malformed.error.message || malformed.error), /canonical lowercase cx-\* Node ids|nodeIds/i);
 
-    // Malformed context selection (not string[])
-    const bad = await rpc(svc, "task.dispatch", {
+    const promptOnly = await rpc(svc, "task.dispatch", {
       requester: { kind: "user", id: "user" },
       workspaceId,
-      workNodeIds: [idA],
-      contextNodeIds: [42],
-      connectionId: "fake-default",
-      prompt: "bad type",
+      nodeIds: [],
+      prompt: "prompt-only service",
+      connectionId: FAKE_CONNECTION.connectionId,
     });
-    assert.ok(bad.error);
-    assert.match(String(bad.error.message || bad.error), /contextNodeIds/i);
+    assert.ok(!promptOnly.error, JSON.stringify(promptOnly.error));
 
-    for (const retiredField of ["nodeId", "id", "claimId"] as const) {
-      const retired = await rpc(svc, "task.dispatch", {
-        requester: { kind: "user", id: "user" },
-        workspaceId,
-        [retiredField]: idA,
-        workNodeIds: [idB],
-        contextNodeIds: [],
-        connectionId: "fake-default",
-        prompt: `retired ${retiredField}`,
-      });
-      assert.ok(retired.error, `${retiredField} must fail loud`);
-      assert.match(
-        String(retired.error.message || retired.error),
-        new RegExp(`unknown parameter.*${retiredField}|workNodeIds|contextNodeIds`, "i")
-      );
-    }
-
-    const afterInvalid = await rpc(svc, "task.list", { workspaceId });
-    assert.ok(!afterInvalid.error);
-    assert.equal(
-      ((afterInvalid.result as { tasks: unknown[] }).tasks ?? []).length,
-      initialCount,
-      "invalid and retired dispatches must not create Tasks"
-    );
-
-    // Fresh free node for archive gate (idA/idB are still directly referenced).
-    const freeNote = await rpc(svc, "docs.createNote", {
-      workspaceId,
-      name: "gamma-free",
-      type: "prompt",
-    });
-    assert.ok(!freeNote.error, JSON.stringify(freeNote.error));
-    const idFree = (freeNote.result as { nodeId: string }).nodeId;
-
-    const beforeList = await rpc(svc, "task.list", { workspaceId });
-    assert.ok(!beforeList.error);
-    const beforeCount = ((beforeList.result as { tasks: unknown[] }).tasks ?? []).length;
-
-    const arch = await rpc(svc, "docs.setMode", {
-      workspaceId,
-      nodeId: idFree,
-      mode: "archived",
-    });
-    assert.ok(!arch.error, JSON.stringify(arch.error));
-
-    const archivedDispatch = await rpc(svc, "task.dispatch", {
-      requester: { kind: "user", id: "user" },
-      workspaceId,
-      workNodeIds: [idFree],
-      contextNodeIds: [],
-      connectionId: "fake-default",
-      prompt: "archived multi",
-    });
-    assert.ok(archivedDispatch.error, "archived ref must fail loud");
-    assert.match(
-      String(archivedDispatch.error.message || archivedDispatch.error),
-      /[Aa]rchiv|Cannot dispatch/
-    );
-
-    const afterList = await rpc(svc, "task.list", { workspaceId });
-    assert.ok(!afterList.error);
-    const afterCount = ((afterList.result as { tasks: unknown[] }).tasks ?? []).length;
-    assert.equal(
-      afterCount,
-      beforeCount,
-      "archived multi-node dispatch must not create a Task"
-    );
-  });
-});
-
-test("service task.dispatch: Role and route Tasks use distinct Node selections", async () => {
-  const ws = await makeWorkspace("svc-role");
-  await withService(async (svc) => {
-    const { workspaceId, idA, idB } = await mountTwoNotes(svc, ws);
-
-    const roleD = await rpc(svc, "task.dispatch", {
-      requester: { kind: "user", id: "user" },
-      workspaceId,
-      workNodeIds: [idA],
-      contextNodeIds: [idB],
-      assigneeRoleId: "rl-executor",
-      prompt: "role multi-node",
-    });
-    assert.ok(!roleD.error, JSON.stringify(roleD.error));
-    const roleResult = roleD.result as { assigneeRoleId?: string; state: string; taskPath: string };
-    assert.equal(roleResult.assigneeRoleId, "rl-executor");
-    assert.equal(roleResult.state, "queued");
-    assert.match(roleResult.taskPath, /^temp\/roles\/rl-executor\/tasks\//);
-
-    const extra = await rpc(svc, "docs.createNote", {
-      workspaceId,
-      name: "gamma-node",
-      type: "prompt",
-    });
-    assert.ok(!extra.error, JSON.stringify(extra.error));
-    const idC = (extra.result as { nodeId: string }).nodeId;
-
-    const routeD = await rpc(svc, "task.dispatch", {
-      requester: { kind: "user", id: "user" },
-      workspaceId,
-      workNodeIds: [idC],
-      contextNodeIds: [],
-      connectionId: "fake-default",
-      prompt: "route multi-node",
-    });
-    assert.ok(!routeD.error, JSON.stringify(routeD.error));
-    const routeResult = routeD.result as { executionSessionId?: string; state: string; taskPath: string };
-    assert.equal(typeof routeResult.executionSessionId, "string");
-    assert.match(routeResult.taskPath, /^temp\/sessions\//);
-
-    const tentFs = new NodeFs(path.join(ws, ".tent"));
-    const roleTask = await loadTaskRecord(tentFs, roleResult.taskPath);
-    const routeTask = await loadTaskRecord(tentFs, routeResult.taskPath);
-    assert.deepEqual(taskReferencedNodeIds(roleTask), [idA, idB]);
-    assert.deepEqual(taskReferencedNodeIds(routeTask), [idC]);
+    const after = await rpc(svc, "task.list", { workspaceId });
+    assert.ok(!after.error, JSON.stringify(after.error));
+    const afterCount = ((after.result as { tasks: unknown[] }).tasks ?? []).length;
+    assert.equal(afterCount, beforeCount + 1, "only the prompt-only valid dispatch should create a Task");
   });
 });
