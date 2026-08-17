@@ -106,7 +106,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
   });
   await fsa.writeFile(
     ".tent/roles.json",
-    JSON.stringify({ roles: [{ name: "e2e", prompt: "Return a concise report without tools." }] }, null, 2) + "\n"
+    JSON.stringify({ roles: [{ id: "rl-e2e", name: "e2e", prompt: "Return a concise report without tools." }] }, null, 2) + "\n"
   );
 
   const svc = await startLocalTentService({
