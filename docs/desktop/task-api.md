@@ -2,7 +2,8 @@
 
 ## TaskRecord
 
-TaskRecord stores a canonical id, non-empty `prompt`, work/context Node ids,
+TaskRecord stores a canonical id, non-empty `prompt`, ordered deduped `nodeIds[]`
+(which may be empty),
 optional `assigneeRoleId`, optional current `executionSessionId`, exact
 `requester`, `acceptMode`, state, WorkspaceLane facts, optional `statusDetail`,
 and optional `currentResultId`.
@@ -15,8 +16,8 @@ immutable storage partition; it is never current execution or review authority.
 
 `task.package` returns the canonical Task Package and `tent task package` exports
 its bytes directly. Ordinary `task.get` remains a lightweight lifecycle read. The
-Package is derived from TaskRecord plus the frozen Context Card, keeps
-ordered work/context Node snapshots, and excludes Session/Connection runtime state.
+Package is derived from TaskRecord plus the frozen Context Card, keeps ordered
+root `nodeIds[]` plus their frozen subtree snapshots, and excludes Session/Connection runtime state.
 Every Harness receives this same contract; transport wrappers are not authority.
 
 ## TaskResultRecord
@@ -33,8 +34,8 @@ ready -> accepted | rejected
 
 `Task.currentResultId` is the only review selector. Service never chooses a
 result by latest file, directory order, or history scan. Accept/reject use exact
-`workspaceId + resultId + actor`; a response-loss retry must prove the same
-candidate.
+`workspaceId + resultId + actor`; an accepted Result never auto-enters later
+Task context, and a response-loss retry must prove the same candidate.
 
 ## Accept mode
 

@@ -1,6 +1,6 @@
 # Task CLI reference
 
-All commands attach to Protocol 9 Local Service. Use the exact `taskPath`,
+All commands attach to Protocol 10 Local Service. Use the exact `taskPath`,
 `resultId`, or `requestId` returned by an authoritative projection.
 
 ```text
@@ -8,8 +8,8 @@ tent task list [--json]
 tent task get <taskPath> [--json]
 tent task package <taskPath> [--json]
 tent task claim <taskPath> [--json]
-tent task claim --work-node <nodeId> ... --prompt <text>|-
-tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> ... --prompt <text>|-
+tent task claim [--node <nodeId> ...] --prompt <text>|-
+tent task dispatch --target role:<roleId>|connection:<connectionId> [--node <nodeId> ...] --prompt <text>|-
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review] [--json]
 tent task accept <resultId> --actor <user|roleId> [--json]
 tent task bind-output <resultId> --output-node <nodeId> ... --actor <user|roleId> [--json]
@@ -25,9 +25,10 @@ tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>]
 ## Claim and dispatch
 
 Claim re-reads the persisted Task. Direct Role claim requires the current trusted
-Role Session plus at least one work Node. Dispatch targets a durable Role or an
-Agent Connection. The caller supplies prompt and Node refs; Service derives
-requester, responsibility, execution, lane, and review authority.
+Role Session and may be prompt-only or may pass ordered `--node` roots. Dispatch
+targets a durable Role or an Agent Connection. The caller supplies prompt and
+selected root Nodes; Service derives requester, responsibility, execution, lane,
+and review authority.
 
 `task package` exports the deterministic frozen execution input shared by every
 Harness. It is read-only and excludes Session/Connection runtime state.

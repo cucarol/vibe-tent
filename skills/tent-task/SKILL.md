@@ -11,7 +11,7 @@ Use this Skill for one concrete Task. A durable Role executor also applies
 ## Load the contract
 
 1. Read the exact Task Package with `tent task package <taskPath>` before editing.
-2. Verify `prompt`, work/context Node ids, requester, WorkspaceLane, Task state,
+2. Verify `prompt`, ordered `nodeIds[]` roots, requester, WorkspaceLane, Task state,
    and any attached host Session binding.
 3. Consume each TaskInput or review delta once through the formal lifecycle.
 4. Work only in the recorded workspace/worktree and preserve unrelated changes.
@@ -32,7 +32,7 @@ TaskResult is the formal submission.
 
 ## Execute and verify
 
-Respect exact work Node occupation, Git lane, base/target, scope, and irreversible
+Respect exact frozen Task roots/snapshots, Git lane, base/target, scope, and irreversible
 boundaries. Run proportionate tests and record exact failures. A zero-commit
 TaskResult is valid when the formal result is real but no commit is required.
 

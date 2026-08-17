@@ -1,6 +1,6 @@
 # CLI and Local Service contract
 
-The CLI attaches to Local Service, verifies Protocol 9, mounts the workspace,
+The CLI attaches to Local Service, verifies Protocol 10, mounts the workspace,
 then calls typed RPC. It never edits `.tent/temp` directly.
 
 ## Task lifecycle
@@ -10,7 +10,7 @@ tent task list
 tent task get <taskPath>
 tent task package <taskPath>
 tent task claim <taskPath>
-tent task claim --work-node <nodeId> ... --prompt <text>|-
+tent task claim [--node <nodeId> ...] --prompt <text>|-
 tent task dispatch --target role:<roleId>|connection:<connectionId> ...
 tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review]
 tent task accept <resultId> --actor <user|roleId>
@@ -38,7 +38,8 @@ on existing `type: output` Nodes; Node content and creation remain ordinary Node
 
 ## Role and Connection targets
 
-`role:<roleId>` creates queued work for that durable Role. A Role requester is
+`role:<roleId>` creates queued work for that durable Role. Direct Role claim may
+be prompt-only or may pass ordered `--node` roots. A Role requester is
 valid only from its exact authenticated Role Session. `connection:<connectionId>`
 is the optional managed-ACP path and creates a Session from the immutable Connection
 snapshot. Agent Connection is launch configuration, not Task identity or authorization.

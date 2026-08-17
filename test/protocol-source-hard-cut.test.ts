@@ -63,7 +63,7 @@ test("currently published public contracts keep current vocabulary without sourc
   assert.match(publicText, /TaskResult/);
   assert.match(publicText, /task\.submit/);
   assert.match(publicText, /\bresultId\b/);
-  assert.match(publicText, /Protocol 9/);
+  assert.match(publicText, /Protocol 10/);
 });
 
 test("Protocol 10 source and test names hard-cut Result publication vocabulary", async () => {

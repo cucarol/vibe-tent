@@ -32,10 +32,10 @@ deltas remain persisted facts, never chat memory.
 
 ## Dispatch
 
-- Direct Role work: `tent task claim --work-node ... --prompt ...`.
+- Direct Role work: `tent task claim [--node ...] --prompt ...`.
 - Durable handoff: `tent task dispatch --target role:<roleId> ...`.
 - Optional Tent-managed ACP execution: `tent task dispatch --target connection:<connectionId> ...`.
-- Preserve exact work/context Node ids and requester chain. Do not invent Role,
+- Preserve exact ordered `nodeIds[]` roots and requester chain. Do not invent Role,
   Connection, Session, or Task facts.
 
 Use SubGrok only through Tent-managed Task/Session lifecycle. Codex/native host

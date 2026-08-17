@@ -1,6 +1,6 @@
 # Canonical identities
 
-Protocol 9 uses one name for each current identity.
+Protocol 10 uses one name for each current identity.
 
 | Fact | Canonical id | Authority |
 | --- | --- | --- |

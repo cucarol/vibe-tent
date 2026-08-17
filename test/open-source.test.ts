@@ -140,7 +140,9 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /fresh logical submission creates a new canonical `rs-` record/i);
   assert.match(spec, /exact retry must match every immutable candidate field.*persisted candidate and `resultId`/is);
   assert.match(spec, /review itself never mutates a Node/);
-  assert.match(spec, /same work Node cannot be occupied by another active Task/);
+  assert.match(spec, /ordered, deduped `nodeIds\[\]`, which may be empty/);
+  assert.match(spec, /overlapping roots are deduped deterministically/i);
+  assert.match(spec, /accepted Result never auto-enters later Task context/i);
   assert.match(spec, /currentResultId.*only review selector/i);
   assert.match(spec, /Accept\/reject never bind an Output Node or edit any Node/);
   assert.match(spec, /natural, non-empty managed ACP final report defaults to a TaskResult/i);
@@ -154,7 +156,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(roleSkill, /also apply `tent-task`/i);
   assert.match(roleSkill, /Never reconstruct authority from chat memory/i);
   assert.match(roleSkill, /Task plus TaskResult are the default durable record/i);
-  assert.match(roleSkill, /task claim --work-node/i);
+  assert.match(roleSkill, /task claim \[--node .*?\] --prompt/i);
   assert.match(roleSkill, /task dispatch --target connection:/i);
   assert.match(roleSkill, /Native host\s+subagents stay inside the host/i);
   assert.ok(roleSkill.length < 6000, "tent-role SKILL.md should stay compact");
@@ -166,7 +168,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSkill, /exact\s+retry must match every immutable candidate field.*persisted.*`resultId`/is);
   assert.match(taskSkill, /review-required.*never self-accepts/is);
   assert.match(taskSkill, /auto-accept.*agent-decide/is);
-  assert.match(taskSkill, /exact work Node occupation/i);
+  assert.match(taskSkill, /ordered `nodeIds\[\]` roots/i);
+  assert.match(taskSkill, /frozen Task roots\/snapshots/i);
   assert.match(taskSkill, /natural non-empty final report content is submitted directly/i);
   assert.match(taskSkill, /Publication failure keeps the durable report draft/i);
   assert.match(taskSkill, /outcome: blocked/);
@@ -184,7 +187,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
 
   assert.match(taskPaths, /system root/i);
   assert.match(taskPaths, /<workspace>\/\.tent/);
-  assert.match(taskPaths, /workNodeIds|Context Card/i);
+  assert.match(taskPaths, /nodeIds\[\]|Context Card/i);
   assert.doesNotMatch(taskPaths, /honor contract/i);
   assert.match(taskCli, /tent task submit <taskPath> --report/);
   assert.match(taskCli, /fresh logical submission creates a new ready TaskResult/i);
@@ -252,7 +255,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(taskSkill, /Lead the terminal report with exactly one/i);
 });
 
-test("docs/skill drift: Protocol 9 Node/Task/TaskResult model and optional type", async () => {
+test("docs/skill drift: Protocol 10 Node/Task/TaskResult model and optional type", async () => {
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const taskPaths = await fs.readFile(
     path.join(repoRoot, "skills", "tent-task", "references", "paths.md"),
@@ -260,7 +263,7 @@ test("docs/skill drift: Protocol 9 Node/Task/TaskResult model and optional type"
   );
 
   // SPEC: current protocol, optional Node type, exact Result selector, WorkspaceLane.
-  assert.match(spec, /Protocol 9/);
+  assert.match(spec, /Protocol 10/);
   assert.match(spec, /WorkspaceLane/);
   assert.match(spec, /one optional arbitrary `type` marker/);
   assert.match(spec, /core product entities are Node, Role, Task, and TaskResult/i);

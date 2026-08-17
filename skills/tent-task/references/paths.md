@@ -14,8 +14,9 @@ Tent uses an in-workspace system root at `<workspace>/.tent`.
 Never guess or hand-write operational paths. CLI `taskPath` is relative to the
 system root; editor paths include `.tent/` or use the absolute returned path.
 
-Context Card v2 persists canonical `workNodeIds[]` and `contextNodeIds[]`. Stable
-Node id is authority; snapshots are injection facts, not a second ref list.
+Context Card v3/current persists canonical ordered `nodeIds[]` roots and their
+frozen subtree snapshots. Stable Node id is authority; snapshots are injection
+facts, not a second ref list.
 
 ## WorkspaceLane
 

@@ -26,7 +26,7 @@ Use only the CLI, Desktop, and bundled Skill installation paths above.
 
 - **Node**：带稳定 `cx-` id 的 Markdown 事实与上下文；只有一个可选 `type` 标记。
 - **Role**：跨 Session 持续对用户负责的主体。
-- **Task**：一次工作与审阅单位，记录 prompt、有序 work/context Nodes、requester 和 `currentResultId`，并导出确定性的 Task Package。
+- **Task**：一次工作与审阅单位，记录 prompt、有序且去重的 `nodeIds[]` roots（可为空）、requester 和 `currentResultId`，并导出确定性的 Task Package。
 - **TaskResult**：Task 的不可变提交内容；每次正式提交生成新的 `rs-` 记录，review 针对 exact `resultId`。
 - **Session**：可选的宿主执行连续性记录；不是 Task 或 Role 的替代品。
 - **Agent Connection**：可选的机器本地 ACP 启动配置；不是身份或权限。
@@ -42,7 +42,7 @@ Tent 在 workspace 的 `.tent/` 中保存协作事实；它不是聊天记录，
 - **Skills**：Role 与 Task 的 agent-facing 执行合同。
 - **Desktop / CLI**：同一权威投影的客户端。
 
-代码 Task 使用记录的 WorkspaceLane。Service 校验 commits、target head 与 integration CAS；客户端只发送 Protocol 9 RPC，并在 mutation 后重读权威投影。
+代码 Task 使用记录的 WorkspaceLane。Service 校验 commits、target head 与 integration CAS；客户端只发送 Protocol 10 RPC，并在 mutation 后重读权威投影。
 
 ## 贡献与安全
 

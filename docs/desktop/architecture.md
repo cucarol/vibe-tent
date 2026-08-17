@@ -1,6 +1,6 @@
 # Desktop architecture
 
-Desktop is a Protocol 9 client of one process-independent Local Service. It
+Desktop is a Protocol 10 client of one process-independent Local Service. It
 does not open operational files directly and never becomes a second mutation
 authority.
 
@@ -27,7 +27,7 @@ update durable context or bind an accepted result to an Output Node.
 
 ## Attach and events
 
-Desktop attaches only when health reports Protocol 9. An incompatible endpoint
+Desktop attaches only when health reports Protocol 10. An incompatible endpoint
 is rejected before business RPC. The endpoint token remains in main/preload
 boundaries.
 

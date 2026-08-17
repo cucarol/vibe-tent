@@ -18,5 +18,5 @@ TaskInput, DecisionRequest, context, and worktree.
 
 Hard byte/frame/report limits and secret redaction remain mandatory. A truncated
 or failed provider response never becomes a TaskResult. Context Card provides
-facts; TaskRecord, exact binding, Node occupation, and WorkspaceLane provide
+facts; TaskRecord, exact binding, frozen Task roots/snapshots, and WorkspaceLane provide
 authority.

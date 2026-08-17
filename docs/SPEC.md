@@ -1,6 +1,6 @@
 # Vibe Tent V0.2 Specification
 
-Protocol 9 is the only current public contract. Retired public commands and wire fields are removed rather than kept as aliases.
+Protocol 10 is the only current public contract. Retired public commands and wire fields are removed rather than kept as aliases.
 
 ## 1. Product vocabulary
 
@@ -31,14 +31,14 @@ A host or external Session may exist without a current Task and later enter a Ro
 A Task is one work package and one review unit. Its TaskRecord contains:
 
 - canonical Task id and non-empty `prompt`;
-- `workNodeIds[]` and `contextNodeIds[]`;
+- ordered, deduped `nodeIds[]`, which may be empty;
 - optional `assigneeRoleId` and `executionSessionId`;
 - exact `requester` (`user` or Role), which receives the result and owns review authority;
 - `acceptMode`, WorkspaceLane facts, state, wait/status detail, and optional `currentResultId`.
 
-The Service derives execution and authority from canonical fields. The same work Node cannot be occupied by another active Task. Occupation is per exact work Node: parent and child Nodes are independent and never imply a subtree lock. Context Card v2 and incremental TaskInput/review deltas are persisted host-injected facts, not chat memory.
+The Service derives execution and authority from canonical fields. `nodeIds[]` records the user's exact selected root Nodes, not a lock or execution claim. A selected root freezes its full subtree snapshots at Task creation, including archived descendants; overlapping roots are deduped deterministically and later tree changes do not rewrite the old Task. Context Card v3/current and incremental TaskInput/review deltas are persisted host-injected facts, not chat memory.
 
-Every Task exposes one canonical Task Package derived from its TaskRecord and frozen Context Card. The Package preserves ordered work/context Node snapshots and the near-field prompt, excludes Session/Connection runtime state, and is byte-stable for the same Task facts. Native Harnesses and Tent-managed ACP consume the same Package; adapters may wrap transport but cannot rewrite its authority semantics.
+Every Task exposes one canonical Task Package derived from its TaskRecord and frozen Context Card. The Package preserves ordered `nodeIds[]` roots plus their frozen subtree snapshots and the near-field prompt, excludes Session/Connection runtime state, and is byte-stable for the same Task facts. Native Harnesses and Tent-managed ACP consume the same Package; adapters may wrap transport but cannot rewrite its authority semantics.
 
 Task state uses the existing lifecycle. An explicit blocked return is `waiting` with `statusDetail.kind=blocked`; a clear terminal failure is `failed` with bounded `statusDetail`. Needs-input is represented by a DecisionRequest rather than a Task state or result wrapper.
 
@@ -64,6 +64,8 @@ Task running
 ```
 
 Review authority comes from `requester`. The user path and exact Role Session authority are transport-bound. Accept integrates exact commits when required, then records accepted review and Task state. Reject records rejected review and may resume the same Task. Accept/reject never bind an Output Node or edit any Node.
+
+An accepted Result never auto-enters later Task context.
 
 After acceptance, an explicit actor may update an existing Node through ordinary etag-safe Node mutation. To derive an Output, the actor creates an ordinary `type: output` Node and explicitly calls `task.bindOutput` with the accepted exact `resultId`. Binding only records provenance; it does not generate or rewrite Node content.
 
@@ -103,8 +105,8 @@ The workspace root contains `.tent/`; operational paths are relative to its syst
 
 WorkspaceLane records branch, base commit, target branch, worktree, and integration authority. Git integration, Node writes, deletion, secret handling, cross-Task input isolation, byte/frame limits, and exact TaskResult review retain hard protection. Reversible failures use the ordinary waiting/failed fallback rather than new recovery products.
 
-## 11. Local Service and Protocol 9
+## 11. Local Service and Protocol 10
 
-Local Service is the only mounted-workspace mutation authority. Clients attach, verify Protocol 9, send typed RPC, and re-read projections. Any incompatible protocol is rejected before business RPC.
+Local Service is the only mounted-workspace mutation authority. Clients attach, verify Protocol 10, send typed RPC, and re-read projections. Any incompatible protocol is rejected before business RPC.
 
 Core owns authority semantics; Service owns transport, exact caller binding, runtime orchestration, and events. Events invalidate projections but are not facts by themselves. Generated CLI/Service/Desktop artifacts are rebuilt only in a dedicated release task after source integration.
