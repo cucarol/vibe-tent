@@ -1404,39 +1404,15 @@ var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
 async function loadRolesRegistry(fs21) {
-  const { registry } = await readRolesRegistryState(fs21);
-  return registry;
+  if (!await fs21.exists(ROLES_REGISTRY_PATH)) {
+    return cloneDefaultRoles();
+  }
+  const rawText = await fs21.readFile(ROLES_REGISTRY_PATH);
+  const parsed = JSON.parse(rawText);
+  return parseRolesRegistry(parsed);
 }
 async function loadRolesRegistryForMutation(fs21) {
   return loadRolesRegistry(fs21);
-}
-async function readRolesRegistryState(fs21) {
-  if (!await fs21.exists(ROLES_REGISTRY_PATH)) {
-    return {
-      registry: cloneDefaultRoles(),
-      recovered: false
-    };
-  }
-  try {
-    const rawText = await fs21.readFile(ROLES_REGISTRY_PATH);
-    const parsed = JSON.parse(rawText);
-    const registry = normalizeRolesRegistry(parsed);
-    return { registry, recovered: false };
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs21, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return {
-      registry: reset,
-      recovered: true
-    };
-  }
 }
 async function createRole(fs21, definition2, rand = Math.random) {
   await withTentMutation(fs21, async () => {
@@ -1524,24 +1500,54 @@ function findRoleIndex(roles, ref) {
   if (idx !== -1) return idx;
   return roles.findIndex((role) => role.name === key2);
 }
-function normalizeRolesRegistry(value) {
-  const root = isRecord3(value) ? value : {};
+function parseRolesRegistry(value) {
+  if (!isRecord3(value)) {
+    throw new Error("Invalid roles registry: root must be an object with roles array.");
+  }
+  if (!Array.isArray(value.roles)) {
+    throw new Error("Invalid roles registry: roles must be an array.");
+  }
   const roles = [];
   const usedIds = /* @__PURE__ */ new Set();
-  if (Array.isArray(root.roles)) {
-    for (const item of root.roles) {
-      if (!isRecord3(item)) continue;
-      const role = normalizeRoleDefinition(item, {
-        usedIds,
-        assignMissingId: "deterministic"
-      });
-      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-      if (roles.some((existing) => existing.id === role.id)) continue;
-      usedIds.add(role.id);
-      roles.push(role);
+  const usedNames = /* @__PURE__ */ new Set();
+  for (const item of value.roles) {
+    if (!isRecord3(item)) {
+      throw new Error("Invalid roles registry: each role must be an object.");
     }
+    const role = parseRoleDefinitionFromRegistry(item);
+    if (usedIds.has(role.id)) {
+      throw new Error(`Invalid roles registry: duplicate role id ${role.id}.`);
+    }
+    if (usedNames.has(role.name)) {
+      throw new Error(`Invalid roles registry: duplicate role name ${role.name}.`);
+    }
+    usedIds.add(role.id);
+    usedNames.add(role.name);
+    roles.push(role);
   }
   return { roles };
+}
+function parseRoleDefinitionFromRegistry(value) {
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id || !isRoleId(id)) {
+    throw new Error("Invalid roles registry: each role must have a canonical role id.");
+  }
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  if (!name) {
+    throw new Error(`Invalid roles registry: role ${id} must have a non-empty name.`);
+  }
+  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const role = {
+    id,
+    name,
+    displayName: displayRaw || name
+  };
+  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
+  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  return role;
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -2888,9 +2894,6 @@ async function loadTaskRecord(fs21, path23) {
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
-    task.roleBranchBase = data.roleBranchBase.trim();
-  }
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
@@ -3116,7 +3119,6 @@ async function writeTaskRecord(fs21, clock, input) {
     const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
     if (tip) {
       data.baseCommit = tip;
-      data.roleBranchBase = tip;
     }
   }
   const pointers = nodeContext.nodeSnapshots.map((snapshot) => `- ${snapshot.id}: ${snapshot.path}`).join("\n");
@@ -3199,10 +3201,6 @@ async function patchTaskRecord(fs21, path23, patch) {
     const value = patch[key2];
     if (value === null) delete data[key2];
     else if (typeof value === "string") data[key2] = value;
-  }
-  if (patch.roleBranchBase === null) delete data.roleBranchBase;
-  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
-    data.roleBranchBase = patch.roleBranchBase.trim();
   }
   if (patch.baseCommit === null) delete data.baseCommit;
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
@@ -16920,7 +16918,7 @@ async function evaluateTaskWorktreeReclaim(input) {
       targetBranch,
       taskId,
       taskBranch: expectedBranch,
-      roleBranchBase: task.roleBranchBase,
+      baseCommit: task.baseCommit,
       results
     });
     if (!settle.ok) {
@@ -17398,16 +17396,19 @@ async function evaluateAcceptedSettle(input) {
     workspaceRoot: input.workspaceRoot,
     taskBranch: input.taskBranch,
     targetBranch: target,
-    roleBranchBase: input.roleBranchBase
+    baseCommit: input.baseCommit
   });
-  if (branchMissing.length > 0) {
+  if (!branchMissing.ok) {
+    return branchMissing;
+  }
+  if (branchMissing.missing.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Task branch ${input.taskBranch} still has ${branchMissing.length} commit(s) not integrated into ${target} (including TaskResult-omitted tips); refusing reclaim.`,
+      reason: `Task branch ${input.taskBranch} still has ${branchMissing.missing.length} commit(s) not integrated into ${target} (including TaskResult-omitted tips); refusing reclaim.`,
       details: {
-        missingCommits: branchMissing.slice(0, 12),
-        missingCount: branchMissing.length,
+        missingCommits: branchMissing.missing.slice(0, 12),
+        missingCount: branchMissing.missing.length,
         targetBranch: target,
         source: "task-branch"
       }
@@ -17420,31 +17421,74 @@ async function listUnintegratedTaskBranchCommits(input) {
   const branchRef = `refs/heads/${input.taskBranch}`;
   const branchExists = await gitOk2(root, ["show-ref", "--verify", "--quiet", branchRef]);
   if (!branchExists) {
-    return [];
+    return { ok: true, missing: [] };
   }
-  let range = `${input.targetBranch}..${branchRef}`;
-  const base = input.roleBranchBase?.trim();
-  if (base) {
-    try {
-      const fullBase = (await git2(root, ["rev-parse", base])).trim();
-      if (fullBase && await gitOk2(root, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
-        range = `${fullBase}..${branchRef}`;
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task is missing baseCommit while ${input.taskBranch} still exists; cannot verify reclaim.`,
+      details: {
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch
       }
-    } catch {
-    }
+    };
   }
+  let fullBase = "";
+  try {
+    fullBase = (await git2(root, ["rev-parse", "--verify", `${base}^{commit}`])).trim();
+  } catch {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${base} is unreadable; cannot verify reclaim.`,
+      details: {
+        baseCommit: base,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch
+      }
+    };
+  }
+  if (!fullBase) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${base} resolved empty; cannot verify reclaim.`,
+      details: {
+        baseCommit: base,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch
+      }
+    };
+  }
+  if (!await gitOk2(root, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${fullBase} is not an ancestor of ${input.taskBranch}; cannot verify reclaim.`,
+      details: {
+        baseCommit: fullBase,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch
+      }
+    };
+  }
+  const range = `${fullBase}..${branchRef}`;
   let output = "";
   try {
     output = await git2(root, ["log", range, "--format=%H"]);
-  } catch {
-    try {
-      const tip = (await git2(root, ["rev-parse", branchRef])).trim();
-      if (!tip) return [];
-      const integrated = await findIntegratedCommit(root, tip, input.targetBranch);
-      return integrated ? [] : [tip];
-    } catch {
-      return ["<unreadable-task-branch>"];
-    }
+  } catch (err) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${fullBase} could not bound ${input.taskBranch}: ${err instanceof Error ? err.message : String(err)}`,
+      details: {
+        baseCommit: fullBase,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch
+      }
+    };
   }
   const shas = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const missing = [];
@@ -17452,7 +17496,7 @@ async function listUnintegratedTaskBranchCommits(input) {
     const integrated = await findIntegratedCommit(root, sha, input.targetBranch);
     if (!integrated) missing.push(sha);
   }
-  return missing;
+  return { ok: true, missing };
 }
 function compareRegistrationToExpected(input) {
   const expectedPath = nodePath4.resolve(input.expectedPath);
@@ -27991,9 +28035,6 @@ async function prepareRoleClaimWrite(ctx, workspaceId, task) {
   const tip = typeof real.baseCommit === "string" && real.baseCommit.trim() ? real.baseCommit.trim() : await readRoleBranchTip(real.workspace, real.branch);
   const fullTip = await resolveCommitSha(real.workspace, tip);
   patch.baseCommit = fullTip;
-  if (!task.roleBranchBase?.trim()) {
-    patch.roleBranchBase = fullTip;
-  }
   patch.baseCommitCapture = {
     source: "first-claim",
     baseCommit: fullTip,
@@ -28869,7 +28910,7 @@ async function assertOrdinaryExecutorLaneHistoryForSubmit(workspaceRoot, task) {
   if (!base) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.submit refused: ordinary executor lane requires exact workspaceLane.baseCommit (recorded at Task worktree creation); roleBranchBase is not a TaskResult substitute (task remains ${task.state}, no ready TaskResult; lane/audit preserved)`,
+      `task.submit refused: ordinary executor lane requires exact workspaceLane.baseCommit (recorded at Task worktree creation; task remains ${task.state}, no ready TaskResult; lane/audit preserved)`,
       {
         code: "EXECUTOR_LANE_HISTORY",
         historyCode: "MISSING_BASE",
@@ -33917,10 +33958,10 @@ async function collectManagedTaskResultCommits(workspaceRoot, task, fs21) {
   if (!hasRecordedLane) {
     return [];
   }
-  const base = task.roleBranchBase?.trim();
+  const base = task.baseCommit?.trim();
   if (!base) {
     throw new Error(
-      `Managed result collection requires roleBranchBase on task ${task.id || task.path}; baseline must be captured at first Git lane bind (never fall back to all role commits).`
+      `Managed result collection requires baseCommit on task ${task.id || task.path}; baseline must be captured at first Git lane bind (never fall back to all role commits).`
     );
   }
   const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
@@ -34591,9 +34632,6 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       const fromEnsure = typeof lane.baseCommit === "string" ? lane.baseCommit.trim() : "";
       const tip = fromEnsure || await readRoleBranchTip(lane.workspace, lane.branch);
       patch.baseCommit = tip;
-      if (!current.roleBranchBase?.trim()) {
-        patch.roleBranchBase = tip;
-      }
     }
     if (!currentHasAuthority) {
       if (!current.requester) {
@@ -34720,7 +34758,7 @@ function projectTask(task) {
     worktree: task.worktree,
     branch: task.branch,
     targetBranch: task.targetBranch,
-    // Exact baseCommit only — never substitute roleBranchBase in the projection.
+    // Exact baseCommit only.
     ...task.baseCommit ? { baseCommit: task.baseCommit } : {},
     ...derivedAuthority ? { integrationAuthority: derivedAuthority } : {}
   } : void 0;

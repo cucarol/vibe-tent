@@ -32,7 +32,6 @@ var DESKTOP_IPC = {
   hideMain: "tent:hide-main",
   showFloat: "tent:show-float",
   hideFloat: "tent:hide-float",
-  pushContextCard: "tent:push-context-card",
   getFloatingStatus: "tent:get-floating-status",
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
@@ -79,7 +78,6 @@ var api = {
   hideMain: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.hideMain),
   showFloat: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.showFloat),
   hideFloat: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.hideFloat),
-  pushContextCard: (payload) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.pushContextCard, payload),
   getFloatingStatus: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.getFloatingStatus),
   onStateChanged: (handler) => {
     const listener = (_event, state) => handler(state);

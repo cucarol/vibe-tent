@@ -1555,36 +1555,6 @@ function relationsToFrontmatterValue(records) {
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 var NODE_ID_PREFIX = "cx-";
-var ROLE_ID_PREFIX = "rl-";
-function deterministicDigest(input, byteLen = 32) {
-  const out = new Uint8Array(byteLen);
-  for (let offset = 0; offset < byteLen; offset += 4) {
-    let h = (2166136261 ^ Math.imul(offset + 1, 2654435769)) >>> 0;
-    const salted = `${offset}\0${input}`;
-    for (let i = 0; i < salted.length; i++) {
-      h ^= salted.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    h ^= h >>> 16;
-    h = Math.imul(h, 2246822507) >>> 0;
-    h ^= h >>> 13;
-    h = Math.imul(h, 3266489909) >>> 0;
-    h ^= h >>> 16;
-    out[offset] = h & 255;
-    if (offset + 1 < byteLen) out[offset + 1] = h >>> 8 & 255;
-    if (offset + 2 < byteLen) out[offset + 2] = h >>> 16 & 255;
-    if (offset + 3 < byteLen) out[offset + 3] = h >>> 24 & 255;
-  }
-  return out;
-}
-function encodeAlphabetBytes(bytes, len) {
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    const b = bytes[i % bytes.length] ^ i * 17 & 255;
-    s += ALPHABET[b % ALPHABET.length];
-  }
-  return s;
-}
 function makePrefixedId(prefix, rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
@@ -1601,22 +1571,6 @@ function makeUniquePrefixedId(prefix, existing, rand = Math.random) {
 }
 function makeUniqueNodeId(existing, rand = Math.random) {
   return makeUniquePrefixedId(NODE_ID_PREFIX, existing, rand);
-}
-function makeUniqueRoleId(existing, rand = Math.random) {
-  return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
-}
-function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set()) {
-  const key = name.trim();
-  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
-  for (let len = 6; len <= 16; len++) {
-    const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
-    if (!existing.has(id)) return id;
-  }
-  const fallback = deterministicDigest(
-    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
-    32
-  );
-  return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
 }
 function isNodeId(id) {
   return /^cx-[a-z0-9]+$/i.test(id);
@@ -2491,9 +2445,6 @@ async function loadTaskRecord(fs10, path9) {
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
-    task.roleBranchBase = data.roleBranchBase.trim();
-  }
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
@@ -2590,36 +2541,12 @@ var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
 async function loadRolesRegistry(fs10) {
-  const { registry } = await readRolesRegistryState(fs10);
-  return registry;
-}
-async function readRolesRegistryState(fs10) {
   if (!await fs10.exists(ROLES_REGISTRY_PATH)) {
-    return {
-      registry: cloneDefaultRoles(),
-      recovered: false
-    };
+    return cloneDefaultRoles();
   }
-  try {
-    const rawText = await fs10.readFile(ROLES_REGISTRY_PATH);
-    const parsed = JSON.parse(rawText);
-    const registry = normalizeRolesRegistry(parsed);
-    return { registry, recovered: false };
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs10, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs10, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return {
-      registry: reset,
-      recovered: true
-    };
-  }
+  const rawText = await fs10.readFile(ROLES_REGISTRY_PATH);
+  const parsed = JSON.parse(rawText);
+  return parseRolesRegistry(parsed);
 }
 function resolveRole(roles, ref) {
   const key = typeof ref === "string" ? ref.trim() : "";
@@ -2628,48 +2555,48 @@ function resolveRole(roles, ref) {
   if (byId) return byId;
   return roles.find((role) => role.name === key);
 }
-function normalizeRolesRegistry(value) {
-  const root = isRecord3(value) ? value : {};
+function parseRolesRegistry(value) {
+  if (!isRecord3(value)) {
+    throw new Error("Invalid roles registry: root must be an object with roles array.");
+  }
+  if (!Array.isArray(value.roles)) {
+    throw new Error("Invalid roles registry: roles must be an array.");
+  }
   const roles = [];
   const usedIds = /* @__PURE__ */ new Set();
-  if (Array.isArray(root.roles)) {
-    for (const item of root.roles) {
-      if (!isRecord3(item)) continue;
-      const role = normalizeRoleDefinition(item, {
-        usedIds,
-        assignMissingId: "deterministic"
-      });
-      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-      if (roles.some((existing) => existing.id === role.id)) continue;
-      usedIds.add(role.id);
-      roles.push(role);
+  const usedNames = /* @__PURE__ */ new Set();
+  for (const item of value.roles) {
+    if (!isRecord3(item)) {
+      throw new Error("Invalid roles registry: each role must be an object.");
     }
+    const role = parseRoleDefinitionFromRegistry(item);
+    if (usedIds.has(role.id)) {
+      throw new Error(`Invalid roles registry: duplicate role id ${role.id}.`);
+    }
+    if (usedNames.has(role.name)) {
+      throw new Error(`Invalid roles registry: duplicate role name ${role.name}.`);
+    }
+    usedIds.add(role.id);
+    usedNames.add(role.name);
+    roles.push(role);
   }
   return { roles };
 }
-function normalizeRoleDefinition(value, opts = {}) {
+function parseRoleDefinitionFromRegistry(value) {
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id || !isRoleId(id)) {
+    throw new Error("Invalid roles registry: each role must have a canonical role id.");
+  }
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
-  const assign = opts.assignMissingId ?? "deterministic";
-  let id = typeof value.id === "string" ? value.id.trim() : "";
-  if (id && !isRoleId(id)) {
-    id = "";
-  }
-  if (id && usedIds.has(id) && assign !== "keep") {
-    id = "";
-  }
-  if (!id) {
-    if (assign === "random") {
-      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
-    } else if (name) {
-      id = deterministicRoleIdFromName(name, usedIds);
-    } else {
-      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
-    }
+  if (!name) {
+    throw new Error(`Invalid roles registry: role ${id} must have a non-empty name.`);
   }
   const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
-  const displayName = displayRaw || name;
-  const role = { id, name, displayName };
+  const role = {
+    id,
+    name,
+    displayName: displayRaw || name
+  };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) {
     role.description = value.description.trim();
@@ -2677,29 +2604,10 @@ function normalizeRoleDefinition(value, opts = {}) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   return role;
 }
-function serializeRolesRegistry(registry) {
-  return {
-    roles: registry.roles.map((role) => {
-      const row = {
-        id: role.id,
-        name: role.name,
-        displayName: role.displayName || role.name
-      };
-      if (role.prompt) row.prompt = role.prompt;
-      if (role.description) row.description = role.description;
-      if (role.color) row.color = role.color;
-      return row;
-    })
-  };
-}
 function cloneDefaultRoles() {
   return {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
-}
-async function writeJson(fs10, path9, value) {
-  if (!await fs10.exists(".tent")) await fs10.mkdir(".tent");
-  await fs10.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -867,7 +867,6 @@ var DESKTOP_IPC = {
   hideMain: "tent:hide-main",
   showFloat: "tent:show-float",
   hideFloat: "tent:hide-float",
-  pushContextCard: "tent:push-context-card",
   getFloatingStatus: "tent:get-floating-status",
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
@@ -908,65 +907,6 @@ function rememberWorkspace(prefs, root) {
     recentWorkspaces: recent,
     lastWorkspaceRoot: resolved
   };
-}
-
-// src/core/context-card.ts
-var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
-function buildContextCard(ref, options) {
-  const kind = ref.kind;
-  const id = ref.id.trim();
-  if (!id) throw new Error("ContextRef.id cannot be empty.");
-  if (!kind) throw new Error("ContextRef.kind is required.");
-  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options);
-  return {
-    contextRef: {
-      kind,
-      id,
-      path: ref.path,
-      fragment: ref.fragment
-    },
-    prompt,
-    label,
-    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
-  };
-}
-function formatContextCardPrompt(ref, hints) {
-  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
-  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
-  const workspaceRoot = opts.workspaceRoot?.trim() || "";
-  const lines = [
-    "Tent contextCard v1",
-    `contextRef: ${ref.kind}/${ref.id}`
-  ];
-  if (ref.path) lines.push(`path: ${ref.path}`);
-  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
-  if (systemRoot) {
-    lines.push(`systemRoot: ${systemRoot}`);
-    lines.push(`tentRoot: ${systemRoot}`);
-  }
-  if (ref.path) {
-    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
-    if (rel && !rel.startsWith(".tent/")) {
-      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
-    }
-  }
-  lines.push(
-    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
-  );
-  lines.push("Do not invent missing content; fetch by id before answering.");
-  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
-  return lines.join("\n");
-}
-function nodeContextCard(nodeId, path7, opts) {
-  return buildContextCard({ kind: "node", id: nodeId, path: path7 }, opts);
-}
-function taskContextCard(taskId, opts) {
-  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
-}
-function contextCardToDragText(card) {
-  return card.prompt;
 }
 
 // src/desktop/main/document-ipc-handler.ts
@@ -1316,76 +1256,12 @@ function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(DESKTOP_IPC.hideFloat, async () => {
     ctx.hideFloat();
   });
-  import_electron2.ipcMain.handle(
-    DESKTOP_IPC.pushContextCard,
-    async (_e, payload) => {
-      const entry = ctx.model.cards.pushRef(
-        {
-          kind: payload.kind,
-          id: payload.id,
-          path: payload.path
-        },
-        { label: payload.label }
-      );
-      ctx.broadcastState();
-      return entry;
-    }
-  );
   import_electron2.ipcMain.handle(DESKTOP_IPC.getFloatingStatus, async () => {
     await ctx.model.refreshHealth();
     await ctx.model.refreshFloatingTasks();
     return ctx.model.floatingStatus();
   });
 }
-
-// src/desktop/workbench/context-card-store.ts
-var ContextCardStore = class {
-  constructor(max = 12) {
-    this.cards = [];
-    this.listeners = /* @__PURE__ */ new Set();
-    this.max = max;
-  }
-  subscribe(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  list() {
-    return [...this.cards];
-  }
-  clear() {
-    this.cards = [];
-    this.emit();
-  }
-  pushFromCard(card) {
-    const entry = {
-      id: `${card.contextRef.kind}:${card.contextRef.id}:${Date.now()}`,
-      label: card.label,
-      kind: card.contextRef.kind,
-      refId: card.contextRef.id,
-      path: card.contextRef.path,
-      text: contextCardToDragText(card),
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    this.cards = [entry, ...this.cards.filter((c) => !(c.kind === entry.kind && c.refId === entry.refId))].slice(
-      0,
-      this.max
-    );
-    this.emit();
-    return entry;
-  }
-  pushNode(nodeId, path7, label, tentRootHint) {
-    return this.pushFromCard(nodeContextCard(nodeId, path7, { label, tentRootHint }));
-  }
-  pushTask(taskId, path7, label) {
-    return this.pushFromCard(taskContextCard(taskId, { path: path7, label }));
-  }
-  pushRef(ref, opts) {
-    return this.pushFromCard(buildContextCard(ref, opts));
-  }
-  emit() {
-    for (const l of this.listeners) l();
-  }
-};
 
 // src/desktop/workbench/shell-model.ts
 var DesktopShellModel = class {
@@ -1396,7 +1272,6 @@ var DesktopShellModel = class {
     this.foregroundWorkspaceId = null;
     this.floatingTasks = [];
     this.listeners = /* @__PURE__ */ new Set();
-    this.cards = new ContextCardStore();
   }
   setRpc(rpc) {
     this.rpc = rpc;
@@ -1507,7 +1382,6 @@ var DesktopShellModel = class {
       takenTasks: this.floatingTasks.filter(
         (task) => task.state === "running" || task.state === "waiting" || task.state === "submitted"
       ).length,
-      recentCards: this.cards.list(),
       foregroundRoot: foreground?.workspaceRoot ?? null
     };
   }
