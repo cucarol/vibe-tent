@@ -30,7 +30,7 @@ function generatedCall(text: string, marker: string): string {
   return text.slice(index, end + 3);
 }
 
-test("generated release artifacts require Protocol 9 TaskResult review and Decision mutation", async () => {
+test("generated release artifacts require Protocol 10 TaskResult review, Decision mutation, and canonical nodeIds grammar", async () => {
   const [cli, service, desktopMain, desktopRenderer] = await Promise.all([
     generated("cli.mjs"),
     generated("service.mjs"),
@@ -38,12 +38,19 @@ test("generated release artifacts require Protocol 9 TaskResult review and Decis
     generated("desktop/dist/renderer-next/main.js"),
   ]);
 
-  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
-  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
+  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 10/);
+  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 10/);
+  assert.match(cli, /tent task claim \[--node <nodeId> \.\.\.\] --prompt <text>\|-/);
+  assert.match(
+    cli,
+    /tent task dispatch --target role:<roleId>\|connection:<connectionId> \[--node <nodeId> \.\.\.\] --prompt <text>\|-/
+  );
+  assert.match(cli, /--work-node\/--context-node are retired; use --node <nodeId> \.\.\./);
   assert.match(cli, /tent task submit <taskPath> --report <text>\|-/);
   assert.match(cli, /tent task accept <resultId> --actor <user\|roleId>/);
   assert.match(cli, /tent task reject <resultId> --actor <user\|roleId>/);
   assert.match(cli, /tent task decision respond <requestId>/);
+  assert.match(cli, /omit for a prompt-only Task/);
   assert.doesNotMatch(cli, /task accept <taskPath>/);
   assert.doesNotMatch(cli, /task reject <taskPath>/);
   assert.doesNotMatch(cli, /--delivery-id|task deliver/);
@@ -69,7 +76,7 @@ test("generated release artifacts require Protocol 9 TaskResult review and Decis
     /new Set\(\["workspaceId", "taskPath", "requestId", "response"\]\)/
   );
 
-  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
+  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 10/);
   assert.match(desktopMain, /task\.accept/);
   assert.match(desktopMain, /task\.reject/);
   assert.match(desktopMain, /decisionRequest\.respond/);
@@ -85,7 +92,7 @@ test("generated release artifacts require Protocol 9 TaskResult review and Decis
     assert.doesNotMatch(mutation, /taskPath|taskId/);
   }
 
-  assert.match(desktopRenderer, /protocolVersion!==9/);
+  assert.match(desktopRenderer, /protocolVersion!==10/);
   assert.match(desktopRenderer, /acceptTaskResult/);
   assert.match(desktopRenderer, /rejectTaskResult/);
   assert.match(desktopRenderer, /respondDecision/);

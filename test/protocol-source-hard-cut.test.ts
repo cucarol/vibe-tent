@@ -110,6 +110,6 @@ test("V0.2 package metadata and current generated/public protocol fixtures stay 
   assert.equal(pkg.version, "0.2.0");
   assert.equal(manifest.version, "0.2.0");
   assert.match(service, /SERVICE_VERSION = "0\.2\.0"/);
-  assert.match(releaseContract, /TENT_SERVICE_PROTOCOL_VERSION = 9/);
+  assert.match(releaseContract, /TENT_SERVICE_PROTOCOL_VERSION = 10/);
   assert.match(attachProtocol, /healthy protocol 9 fails after the protocol 10 hard cut/);
 });
