@@ -5,7 +5,6 @@ import {
   makeUniqueRoleId,
   type RandomSource,
 } from "./id.js";
-import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
 import { ROLES_TEMP_DIR, SESSIONS_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
@@ -63,51 +62,18 @@ const DEFAULT_ROLES_REGISTRY: LoadedRolesRegistry = {
   roles: [],
 };
 
-/**
- * 正常路径只读扁平 roles.json；嵌套 `.tent/roles.json` 由一次性迁移搬迁。
- * 旧行缺 id/displayName 时在**内存**确定性投影；普通 read **不写盘**。
- * 其他持久化只发生在 create/update/delete 等显式 mutation。
- */
 export async function loadRolesRegistry(fs: FsAdapter): Promise<LoadedRolesRegistry> {
-  const { registry } = await readRolesRegistryState(fs);
-  return registry;
+  if (!(await fs.exists(ROLES_REGISTRY_PATH))) {
+    return cloneDefaultRoles();
+  }
+  const rawText = await fs.readFile(ROLES_REGISTRY_PATH);
+  const parsed = JSON.parse(rawText) as unknown;
+  return parseRolesRegistry(parsed);
 }
 
 /** Same as loadRolesRegistry — kept for mutation call sites. */
 async function loadRolesRegistryForMutation(fs: FsAdapter): Promise<LoadedRolesRegistry> {
   return loadRolesRegistry(fs);
-}
-
-async function readRolesRegistryState(fs: FsAdapter): Promise<{
-  registry: LoadedRolesRegistry;
-  recovered: boolean;
-}> {
-  if (!(await fs.exists(ROLES_REGISTRY_PATH))) {
-    return {
-      registry: cloneDefaultRoles(),
-      recovered: false,
-    };
-  }
-  try {
-    const rawText = await fs.readFile(ROLES_REGISTRY_PATH);
-    const parsed = JSON.parse(rawText) as unknown;
-    const registry = normalizeRolesRegistry(parsed);
-    return { registry, recovered: false };
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return {
-      registry: reset,
-      recovered: true,
-    };
-  }
 }
 
 export async function createRole(
@@ -235,26 +201,57 @@ export function findRoleIndex(roles: readonly RoleDefinition[], ref: string): nu
   return roles.findIndex((role) => role.name === key);
 }
 
-function normalizeRolesRegistry(value: unknown): LoadedRolesRegistry {
-  const root = isRecord(value) ? value : {};
-  const roles: LoadedRoleDefinition[] = [];
-  const usedIds = new Set<string>();
-
-  if (Array.isArray(root.roles)) {
-    for (const item of root.roles) {
-      if (!isRecord(item)) continue;
-      const role = normalizeRoleDefinition(item, {
-        usedIds,
-        assignMissingId: "deterministic",
-      });
-      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-      if (roles.some((existing) => existing.id === role.id)) continue;
-      usedIds.add(role.id);
-      roles.push(role);
-    }
+function parseRolesRegistry(value: unknown): LoadedRolesRegistry {
+  if (!isRecord(value)) {
+    throw new Error("Invalid roles registry: root must be an object with roles array.");
+  }
+  if (!Array.isArray(value.roles)) {
+    throw new Error("Invalid roles registry: roles must be an array.");
   }
 
+  const roles: LoadedRoleDefinition[] = [];
+  const usedIds = new Set<string>();
+  const usedNames = new Set<string>();
+  for (const item of value.roles) {
+    if (!isRecord(item)) {
+      throw new Error("Invalid roles registry: each role must be an object.");
+    }
+    const role = parseRoleDefinitionFromRegistry(item);
+    if (usedIds.has(role.id)) {
+      throw new Error(`Invalid roles registry: duplicate role id ${role.id}.`);
+    }
+    if (usedNames.has(role.name)) {
+      throw new Error(`Invalid roles registry: duplicate role name ${role.name}.`);
+    }
+    usedIds.add(role.id);
+    usedNames.add(role.name);
+    roles.push(role);
+  }
   return { roles };
+}
+
+function parseRoleDefinitionFromRegistry(value: Record<string, unknown>): LoadedRoleDefinition {
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id || !isRoleId(id)) {
+    throw new Error("Invalid roles registry: each role must have a canonical role id.");
+  }
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  if (!name) {
+    throw new Error(`Invalid roles registry: role ${id} must have a non-empty name.`);
+  }
+  const displayRaw =
+    typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const role: LoadedRoleDefinition = {
+    id,
+    name,
+    displayName: displayRaw || name,
+  };
+  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
+  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  return role;
 }
 
 export interface NormalizeRoleOptions {
@@ -348,6 +345,3 @@ async function writeJson(fs: FsAdapter, path: string, value: unknown): Promise<v
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-// Re-export normalize helper used by tests that imported internal shape.
-export { normalizeRolesRegistry };

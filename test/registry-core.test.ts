@@ -296,6 +296,7 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
     rolesRegistry: {
       roles: [
         {
+          id: "rl-analyst",
           name: "analyst",
           prompt: "分析问题并给出计划",
         },
@@ -334,6 +335,7 @@ test("role registry drops retired routing authorization fields", async () => {
     "roles.json",
     JSON.stringify({
       roles: [{
+        id: "rl-orchestrator",
         name: "orchestrator",
         prompt: "coordinate",
         a2aPolicy: "allow",
@@ -389,46 +391,49 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
   assert.equal(cleared[0]!.prompt, undefined);
 });
 
-test("role 注册表: 旧数据无 id 时内存确定性补齐；load 不写盘；displayName 可改；id/name 不可改", async () => {
+test("role 注册表: canonical rows load strict; createRole still generates ids; resolve/update remain exact", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-id-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir(".tent");
-  // Legacy disk shape: name only
-  const legacyDisk = JSON.stringify({ roles: [{ name: "planner", prompt: "plan" }] }, null, 2) + "\n";
-  await fsa.writeFile("roles.json", legacyDisk);
+  const canonicalDisk =
+    JSON.stringify(
+      {
+        roles: [{
+          id: "rl-planner",
+          name: "planner",
+          prompt: "plan",
+        }],
+      },
+      null,
+      2
+    ) + "\n";
+  await fsa.writeFile("roles.json", canonicalDisk);
 
-  const expectedId = deterministicRoleIdFromName("planner");
   const loaded = await loadRolesRegistry(fsa);
   assert.equal(loaded.roles.length, 1);
-  assert.equal(loaded.roles[0]!.id, expectedId);
+  assert.equal(loaded.roles[0]!.id, "rl-planner");
   assert.equal(loaded.roles[0]!.displayName, "planner");
   assert.ok(isRoleId(loaded.roles[0]!.id));
 
-  // Plain load must not persist backfill
-  assert.equal(await fsa.readFile("roles.json"), legacyDisk);
-
-  // Stable across reloads (still in-memory only until mutation)
+  assert.equal(await fsa.readFile("roles.json"), canonicalDisk);
   const loaded2 = await loadRolesRegistry(fsa);
-  assert.equal(loaded2.roles[0]!.id, expectedId);
-  assert.equal(await fsa.readFile("roles.json"), legacyDisk);
+  assert.equal(loaded2.roles[0]!.id, "rl-planner");
+  assert.equal(await fsa.readFile("roles.json"), canonicalDisk);
 
-  // Compat resolve: id / operational name only — never displayName
-  assert.equal(resolveRole(loaded2.roles, expectedId)?.name, "planner");
-  assert.equal(resolveRole(loaded2.roles, "planner")?.id, expectedId);
+  assert.equal(resolveRole(loaded2.roles, "rl-planner")?.name, "planner");
+  assert.equal(resolveRole(loaded2.roles, "planner")?.id, "rl-planner");
 
-  // Explicit mutation persists filled identity fields
-  await updateRole(fsa, expectedId, { displayName: "规划者" });
+  await updateRole(fsa, "rl-planner", { displayName: "规划者" });
   const renamed = await loadRolesRegistry(fsa);
-  assert.equal(renamed.roles[0]!.id, expectedId);
+  assert.equal(renamed.roles[0]!.id, "rl-planner");
   assert.equal(renamed.roles[0]!.name, "planner");
   assert.equal(renamed.roles[0]!.displayName, "规划者");
-  // displayName is not a resolver key
   assert.equal(resolveRole(renamed.roles, "规划者"), undefined);
 
   const diskAfterMutation = JSON.parse(await fsa.readFile("roles.json")) as {
     roles: Array<{ id: string; name: string; displayName: string }>;
   };
-  assert.equal(diskAfterMutation.roles[0]!.id, expectedId);
+  assert.equal(diskAfterMutation.roles[0]!.id, "rl-planner");
   assert.equal(diskAfterMutation.roles[0]!.displayName, "规划者");
 
   await assert.rejects(
@@ -494,7 +499,7 @@ test("role 注册表: 重复 displayName 无歧义；displayName 永不解析身
   assert.equal(resolveRole(loaded.roles, "delta")?.displayName, "Twin");
 });
 
-test("role 注册表: plain loadRolesRegistry 对缺 id 的 legacy 行不写盘", async () => {
+test("role 注册表: missing id fails loud and leaves bytes untouched", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-nowrite-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir(".tent");
@@ -503,7 +508,7 @@ test("role 注册表: plain loadRolesRegistry 对缺 id 的 legacy 行不写盘"
       {
         roles: [
           { name: "a", prompt: "A" },
-          { name: "b", displayName: "Bee" },
+          { id: "rl-bee", name: "b", displayName: "Bee" },
         ],
       },
       null,
@@ -519,16 +524,86 @@ test("role 注册表: plain loadRolesRegistry 对缺 id 的 legacy 行不写盘"
   };
 
   try {
-    const loaded = await loadRolesRegistry(fsa);
-    assert.equal(loaded.roles.length, 2);
-    assert.equal(loaded.roles[0]!.id, deterministicRoleIdFromName("a"));
-    assert.equal(loaded.roles[1]!.id, deterministicRoleIdFromName("b"));
-    assert.equal(loaded.roles[1]!.displayName, "Bee");
+    await assert.rejects(
+      () => loadRolesRegistry(fsa),
+      /canonical role id/i
+    );
     assert.equal(writeCount, 0, "loadRolesRegistry must not write during ordinary read");
   } finally {
     fsa.writeFile = originalWrite;
   }
   assert.equal(await fsa.readFile("roles.json"), legacy);
+});
+
+test("role 注册表: malformed root and strict row violations fail loud without rewriting bytes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-strict-"));
+  const fsa = new NodeFs(dir);
+
+  const badRoot = JSON.stringify({ nope: [] }, null, 2) + "\n";
+  await fsa.writeFile("roles.json", badRoot);
+  await assert.rejects(
+    () => loadRolesRegistry(fsa),
+    /roles must be an array/i
+  );
+  assert.equal(await fsa.readFile("roles.json"), badRoot);
+
+  const cases: Array<{
+    label: string;
+    registry: unknown;
+    pattern: RegExp;
+  }> = [
+    {
+      label: "non-object row",
+      registry: { roles: ["bad-row"] },
+      pattern: /each role must be an object/i,
+    },
+    {
+      label: "invalid id",
+      registry: { roles: [{ id: "bad", name: "alpha" }] },
+      pattern: /canonical role id/i,
+    },
+    {
+      label: "missing name",
+      registry: { roles: [{ id: "rl-alpha" }] },
+      pattern: /non-empty name/i,
+    },
+    {
+      label: "empty name",
+      registry: { roles: [{ id: "rl-alpha", name: "   " }] },
+      pattern: /non-empty name/i,
+    },
+    {
+      label: "duplicate name",
+      registry: {
+        roles: [
+          { id: "rl-alpha", name: "alpha" },
+          { id: "rl-beta", name: "alpha" },
+        ],
+      },
+      pattern: /duplicate role name alpha/i,
+    },
+    {
+      label: "duplicate id",
+      registry: {
+        roles: [
+          { id: "rl-alpha", name: "alpha" },
+          { id: "rl-alpha", name: "beta" },
+        ],
+      },
+      pattern: /duplicate role id rl-alpha/i,
+    },
+  ];
+
+  for (const { label, registry, pattern } of cases) {
+    const raw = JSON.stringify(registry, null, 2) + "\n";
+    await fsa.writeFile("roles.json", raw);
+    await assert.rejects(
+      () => loadRolesRegistry(fsa),
+      pattern,
+      label
+    );
+    assert.equal(await fsa.readFile("roles.json"), raw, `${label}: bytes must stay untouched`);
+  }
 });
 
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {
@@ -568,20 +643,21 @@ test("corrupt order registry is backed up and reset to default order", async () 
   assert.equal((await loadTent(fsa)).byPath.has("AfterBadOrder"), true);
 });
 
-test("corrupt roles registry is backed up and reset with an explicit restore warning", async () => {
+test("corrupt roles registry fails loud and preserves exact bytes", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   await fs.writeFile(path.join(dir, "roles.json"), "{not-json", "utf8");
 
   const warnings = await captureConsoleError(async () => {
-    assert.deepEqual(await loadRolesRegistry(fsa), { roles: [] });
+    await assert.rejects(
+      () => loadRolesRegistry(fsa),
+      /Unexpected token|JSON/i
+    );
   });
 
-  assert.match(warnings.join("\n"), /roles\.json was corrupt; backed up to roles\.json\.corrupt-/);
-  assert.match(warnings.join("\n"), /and reset\. Review it\./);
-  assert.match(warnings.join("\n"), /IMPORTANT: role definitions cannot be inferred/);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "roles.json"), "utf8")), { roles: [] });
-  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), true);
+  assert.deepEqual(warnings, []);
+  assert.equal(await fs.readFile(path.join(dir, "roles.json"), "utf8"), "{not-json");
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), false);
 });
 
 async function captureConsoleError(action: () => Promise<void>): Promise<string[]> {
