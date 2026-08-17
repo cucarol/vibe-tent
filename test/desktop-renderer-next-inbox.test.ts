@@ -26,6 +26,18 @@ test("Inbox resolves exact source without a selected-node surrogate and fails cl
   assert.equal(resolveInboxItemNode(result, [node("cx-a")], "stale"), null);
 });
 
+test("Decision activation routes to its exact Node collaboration surface", () => {
+  const html = renderToStaticMarkup(createElement(InboxView, {
+    view,
+    nodes: [node("cx-b")],
+    projection: "fresh",
+    onSelectNode() {},
+    onOpenDecision() {},
+  }));
+  assert.match(html, /data-actionable="true"/);
+  assert.doesNotMatch(html, /data-request-id/);
+});
+
 test("retained stale Inbox remains visible but non-authoritative", () => {
   const stale: CollaborationSurfaceView = { ...view, status: "stale", canMutate: false, issue: { kind: "transport", message: "离线" } };
   const html = renderToStaticMarkup(createElement(InboxView, { view: stale, nodes: [node("cx-a"), node("cx-b")], projection: "stale", onSelectNode() {} }));

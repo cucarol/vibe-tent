@@ -139,6 +139,9 @@ export function AppShell({
   const [outlineMode, setOutlineMode] = useState<"nodes" | "inbox">(
     initialOutlineMode
   );
+  const [inspectorTab, setInspectorTab] = useState<"content" | "collaboration">(
+    initialInspectorTab
+  );
   const [outlineReveal, setOutlineReveal] = useState({ nodeId: "", revision: 0 });
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
@@ -311,6 +314,12 @@ export function AppShell({
     requestAnimationFrame(() => placementActionRef.current?.focus());
   };
 
+  const openDecision = (nodeId: string) => {
+    selectNodeFromOutline(nodeId);
+    setInspectorTab("collaboration");
+    layout.restore("right");
+  };
+
   const toggleOutline = () => {
     setImmersive(false);
     layout.toggle("left");
@@ -355,7 +364,7 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" style={layoutStyle} data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={(mode) => { setOutlineMode(mode); if (mode === "inbox") onNodeSelectionChange?.(null, false); }} nodes={nodes} projection={projection} focusedNodeId={focusedNodeId} selectedNodeIds={selectedNodeIds} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={(mode) => { setOutlineMode(mode); if (mode === "inbox") onNodeSelectionChange?.(null, false); }} nodes={nodes} projection={projection} focusedNodeId={focusedNodeId} selectedNodeIds={selectedNodeIds} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} onOpenDecision={openDecision} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNodes={onPresentationChange ? dropNodes : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionPlacementIds={attentionPlacementIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
@@ -380,12 +389,13 @@ export function AppShell({
           ) : null}
           collaboration={collaboration}
           collaborationActions={collaborationActions}
+          tab={inspectorTab}
+          onTabChange={setInspectorTab}
           expanded={focusExpanded}
           onExpandedChange={(expanded) => {
             if (expanded) layout.restore("right");
             setFocusExpanded(expanded);
           }}
-          initialTab={initialInspectorTab}
           onCollapse={() => {
             layout.collapse("right");
           }}

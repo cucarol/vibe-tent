@@ -815,6 +815,24 @@ test("Focus renders externally controlled placement state without inventing a se
   assert.match(placed, />再放一份</);
 });
 
+test("selected Node keeps the single Task Package entry before detail tabs", () => {
+  const node = {
+    nodeId: "cx-a", etag: "etag-a", path: "A", name: "A", type: "goal",
+    tags: [], mode: "editable", archived: false, invalid: false,
+    parentNodeId: null, hasChildren: false, projectionState: "ready",
+  } satisfies WorkbenchNodeView;
+  const html = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    taskPackage: createElement("section", { "data-testid": "task-package-entry" }, "开始委托"),
+    onCollapse: () => {},
+  }));
+  const placement = html.indexOf("tn-focus-placement");
+  const taskPackage = html.indexOf("data-testid=\"task-package-entry\"");
+  const tabs = html.indexOf("aria-label=\"详情内容\"");
+  assert.ok(placement >= 0 && placement < taskPackage && taskPackage < tabs);
+  assert.equal(html.match(/data-testid="task-package-entry"/g)?.length, 1);
+});
+
 test("Focus reports source status while sync remains a single Canvas command", () => {
   const node = {
     nodeId: "cx-a",

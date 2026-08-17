@@ -43,6 +43,8 @@ export type InspectorPanelProps = {
   taskPackage?: ReactNode;
   collaboration?: CollaborationSurfaceView;
   collaborationActions?: CollaborationSurfaceActions;
+  tab?: "content" | "collaboration";
+  onTabChange?: (tab: "content" | "collaboration") => void;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   initialTab?: "content" | "collaboration";
@@ -63,13 +65,20 @@ export function InspectorPanel({
   taskPackage,
   collaboration,
   collaborationActions,
+  tab: controlledTab,
+  onTabChange,
   expanded = false,
   onExpandedChange,
   initialTab = "content",
   onCollapse,
 }: InspectorPanelProps) {
   const displayNode = node ?? localNode;
-  const [tab, setTab] = useState(initialTab);
+  const [localTab, setLocalTab] = useState(initialTab);
+  const tab = controlledTab ?? localTab;
+  const changeTab = (next: "content" | "collaboration") => {
+    if (controlledTab === undefined) setLocalTab(next);
+    onTabChange?.(next);
+  };
   const authoritativeNode =
     node && (!node.projectionState || node.projectionState === "ready")
       ? node
@@ -160,11 +169,13 @@ export function InspectorPanel({
             </Button>
           </section>
 
+          {taskPackage}
+
           {projectionReady ? (
             <Tabs
               aria-label="详情内容"
               value={tab}
-              onValueChange={(value) => setTab(value as "content" | "collaboration")}
+              onValueChange={(value) => changeTab(value as "content" | "collaboration")}
               items={[{ id: "content", label: "内容" }, { id: "collaboration", label: "协作" }]}
             />
           ) : null}
@@ -210,7 +221,6 @@ export function InspectorPanel({
               ) : null}
             </div>
           ) : null}
-          {taskPackage}
         </div>
       )}
     </aside>

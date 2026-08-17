@@ -1206,21 +1206,21 @@ async function exercisePackagedElectron() {
     );
 
     await dispatchBackgroundOutlineDrag(window, /E2E Root/, { x: 260, y: 220 });
-    // Production preserves the first-node seed placement. One explicit parent
-    // projection entry adds its root and direct child alongside that seed. The
-    // complete subtree is durable immediately; deeper descendants stay folded.
-    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged initial subtree cards");
+    // A fresh Canvas stays empty until this explicit parent projection entry.
+    // Root and direct child are visible; the complete three-member subtree is
+    // durable immediately while the grandchild remains folded.
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 2, "packaged initial subtree cards");
     assert.equal(await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count(), 1);
     let persisted = await waitFor(async () => {
       const snapshot = await persistedCanvas(window);
       // The visible direct child and folded grandchild remain persisted members
       // of the same projection instance.
-      return snapshot?.document?.placements?.length === 4 ? snapshot : null;
+      return snapshot?.document?.placements?.length === 3 ? snapshot : null;
     }, "packaged subtree persistence");
     const rootPlacement = persisted.document.placements.find(
       (placement) => placement.entityRef === rootNode.nodeId && subtreeMeta(placement)?.rootPlacementId === placement.placementId
     );
-    assert.ok(rootPlacement, "explicit projection entry must persist an instance root separate from the seed copy");
+    assert.ok(rootPlacement, "explicit projection entry must persist its exact instance root");
     const instanceId = subtreeMeta(rootPlacement)?.instanceId;
     assert.ok(instanceId);
     const childPlacement = persisted.document.placements.find(
@@ -1229,7 +1229,7 @@ async function exercisePackagedElectron() {
     assert.ok(childPlacement, "explicit projection instance must persist its exact direct child");
     await selectPlacement(window, childPlacement.placementId);
     await expandSubtree(window, childPlacement.placementId, "right", { force: true });
-    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 4, "packaged expanded subtree cards");
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged expanded subtree cards");
     await waitFor(
       async () => (await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count()) === 2,
       "packaged expanded subtree relationship",
@@ -1251,7 +1251,7 @@ async function exercisePackagedElectron() {
     await run.window.locator('[data-shell="renderer-next"][data-connection="online"]').waitFor({ timeout: 30_000 });
     const afterRestart = await waitFor(async () => {
       const snapshot = await persistedCanvas(run.window);
-      return snapshot?.document?.placements?.length === 4 ? snapshot : null;
+      return snapshot?.document?.placements?.length === 3 ? snapshot : null;
     }, "packaged restart persistence");
     assert.equal(subtreeMeta(afterRestart.document.placements.find((placement) => placement.placementId === rootPlacement.placementId))?.instanceId, instanceId);
     assert.deepEqual(

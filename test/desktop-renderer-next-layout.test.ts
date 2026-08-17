@@ -172,6 +172,21 @@ test("ordinary Canvas and Outline selection does not open either pane", async ()
   assert.doesNotMatch(outlineSelection, /layout\.(toggle|restore|collapse)\(/);
 });
 
+test("explicit Inbox Decision opens the right collaboration surface", async () => {
+  const shell = await fs.readFile(
+    path.join(process.cwd(), "src/desktop/renderer-next/shell/AppShell.tsx"),
+    "utf8"
+  );
+  const decisionActivation = shell.slice(
+    shell.indexOf("const openDecision"),
+    shell.indexOf("const toggleOutline")
+  );
+  assert.match(decisionActivation, /selectNodeFromOutline\(nodeId\)/);
+  assert.match(decisionActivation, /setInspectorTab\("collaboration"\)/);
+  assert.match(decisionActivation, /layout\.restore\("right"\)/);
+  assert.match(shell, /onOpenDecision=\{openDecision\}/);
+});
+
 test("Outline ordinary rows stay dense while selected rows retain type and full-title access", async () => {
   const outline = await fs.readFile(
     path.join(process.cwd(), "src/desktop/renderer-next/components/OutlinePanel.tsx"),
