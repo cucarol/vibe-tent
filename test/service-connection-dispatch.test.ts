@@ -352,7 +352,7 @@ test("role dispatch creates init + task-scoped manifest + role path", async () =
     );
     assert.match(result.taskPath, /^temp\/roles\/rl-executor\/tasks\//);
     assert.match(result.relayPrompt, /Role rl-executor/);
-    assert.match(result.relayPrompt, /Role init file/);
+    assert.match(result.relayPrompt, /complete Role init first/);
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskRecord(envFs, result.taskPath);
