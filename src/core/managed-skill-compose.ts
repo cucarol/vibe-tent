@@ -127,22 +127,12 @@ export const STABLE_SKILL_CONTRACTS_END_MARKER =
   "--- End of stable Tent skill contracts ---" as const;
 
 /**
- * Short invariant managed-session chrome (no taskId / taskPath / user prompt).
- * Prepended before skill contracts so the whole stable block is cache-friendly.
- */
-export const MANAGED_SESSION_BOOTSTRAP_BANNER =
-  "--- Tent managed session bootstrap ---" as const;
-
-/**
  * Compose stable managed bootstrap prefix (contracts + role context).
  * Order (frozen, all task-independent when Role/skills are fixed):
  * 1. tent-role body (when durable Role)
  * 2. Role prompt (when durable Role)
  * 3. tent-task body
  * 4. {@link STABLE_SKILL_CONTRACTS_END_MARKER}
- *
- * Callers must place any short invariant chrome (e.g. {@link MANAGED_SESSION_BOOTSTRAP_BANNER})
- * before this block, and every taskId/taskPath/Context-Card/user-prompt field after it.
  */
 export function composeManagedSkillBootstrapPrefix(input: {
   packageRoot: string;
@@ -167,57 +157,6 @@ export function composeManagedSkillBootstrapPrefix(input: {
 
   sections.push(STABLE_SKILL_CONTRACTS_END_MARKER);
   return sections.join("\n\n");
-}
-
-/**
- * Assemble full managed bootstrap with frozen order:
- * invariant banner → stable skill/role contracts → dynamic Context Card + Task tail.
- * Pure; no I/O. Used by Service and by cache-identity tests.
- */
-export function assembleManagedSessionBootstrap(input: {
-  /** Output of {@link composeManagedSkillBootstrapPrefix} (includes end marker). */
-  stableSkillPrefix: string;
-  /** Task-specific Context Card prompt text. */
-  contextCardPrompt: string;
-  /** Dynamic session steps / user prompt (task pointer, acceptance, …). */
-  dynamicTaskTail: string;
-}): string {
-  const stable = input.stableSkillPrefix.trimEnd();
-  const card = input.contextCardPrompt.trim();
-  const tail = input.dynamicTaskTail.trim();
-  return (
-    `${MANAGED_SESSION_BOOTSTRAP_BANNER}\n` +
-    (stable ? `${stable}\n\n` : "") +
-    `${card}\n\n` +
-    `${tail}\n`
-  );
-}
-
-/**
- * Split assembled bootstrap into stable prefix (through end of tent-task contracts)
- * and dynamic tail. Fail-loud if the end marker is missing.
- */
-export function splitManagedBootstrapStableAndDynamic(full: string): {
-  stablePrefix: string;
-  dynamicTail: string;
-} {
-  const marker = STABLE_SKILL_CONTRACTS_END_MARKER;
-  const idx = full.indexOf(marker);
-  if (idx === -1) {
-    throw new Error(
-      "Managed bootstrap missing stable skill end marker; cannot split cache prefix"
-    );
-  }
-  const end = idx + marker.length;
-  // Include trailing newlines that belong to the stable block separator.
-  let splitAt = end;
-  while (splitAt < full.length && (full[splitAt] === "\n" || full[splitAt] === "\r")) {
-    splitAt += 1;
-  }
-  return {
-    stablePrefix: full.slice(0, splitAt),
-    dynamicTail: full.slice(splitAt),
-  };
 }
 
 /**
