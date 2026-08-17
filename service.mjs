@@ -25440,7 +25440,7 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
       case "task.sendInput":
         return taskSendInputRpc(ctx, p);
       case "task.submit":
-        return taskSubmitRpc(ctx, p);
+        return taskSubmitRpc(ctx, p, callContext);
       case "task.accept":
         return taskAcceptRpc(ctx, p, callContext);
       case "task.reject":
@@ -29137,7 +29137,7 @@ async function resolveSubmitCommitsForExecutorLane(workspaceRoot, task, commits)
     throw err;
   }
 }
-async function taskSubmitRpc(ctx, p) {
+async function taskSubmitRpc(ctx, p, callContext) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
@@ -29147,6 +29147,8 @@ async function taskSubmitRpc(ctx, p) {
   const checks = Array.isArray(p.checks) ? p.checks : void 0;
   const artifactRefs = Array.isArray(p.artifactRefs) ? p.artifactRefs : void 0;
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const taskForCaller = await loadTaskRecord(mount.env.fs, taskPath);
+    await assertTaskSubmitCallerBinding(ctx, workspaceId, taskForCaller, callContext);
     let targetHead;
     let canonicalCommits = [];
     const prepared = await ctx.mutations.run(workspaceId, async () => {
@@ -29231,6 +29233,19 @@ async function taskSubmitRpc(ctx, p) {
     autoIntegrated: result.autoIntegrated,
     state: result.task.state
   };
+}
+async function assertTaskSubmitCallerBinding(ctx, workspaceId, task, callContext) {
+  const callerSessionId = callContext.callerSessionId?.trim();
+  if (!callerSessionId) return;
+  const session = await ctx.runtime.registry.read(callerSessionId);
+  if (!task.id || !session || task.executionSessionId !== callerSessionId || session.workspace !== workspaceId || session.currentTaskId !== task.id) {
+    throw new RpcError(-32001, "task.submit caller is not the exact Session bound to this Task", {
+      code: "TASK_SUBMIT_SESSION_MISMATCH",
+      taskId: task.id,
+      taskSessionId: task.executionSessionId,
+      callerSessionId
+    });
+  }
 }
 async function loadRecoverableTaskSubmitResult(fs21, task) {
   const resultId = task.currentResultId;
@@ -29638,14 +29653,6 @@ async function taskRejectRpc(ctx, p, callContext) {
         resultId: rejected.result.id,
         note: noteExact !== void 0 ? noteExact : rejected.result.review?.note || DEFAULT_TASK_REJECT_NOTE
       }) : void 0;
-      if (reviewInput2 && afterTaskRejectContinuationPersistForTests) {
-        await afterTaskRejectContinuationPersistForTests({
-          workspaceId,
-          taskPath,
-          resultId,
-          inputId: reviewInput2.id
-        });
-      }
       let externalRestoreError;
       if (resume && rejected.task.assigneeRoleId && rejected.task.executionSessionId) {
         try {
@@ -32852,7 +32859,6 @@ async function assertTaskExecutionSettledForWorktreeReclaim(ctx, workspaceId, ta
   return { ok: true };
 }
 var beforeTaskWorktreeReclaimRemoveForTests;
-var beforeTaskWorktreeReclaimReloadForTests;
 async function reconcileExactTaskWorktree(ctx, workspaceId, task, reason) {
   const mount = ctx.host.get(workspaceId);
   if (!mount) return void 0;
@@ -32866,7 +32872,6 @@ async function reconcileExactTaskWorktree(ctx, workspaceId, task, reason) {
     return await runTaskLifecycle(workspaceId, taskPath, async () => {
       let liveTask;
       try {
-        await beforeTaskWorktreeReclaimReloadForTests?.();
         liveTask = await loadTaskRecord(mount.env.fs, taskPath);
       } catch (error) {
         const blocked = {
@@ -34174,7 +34179,6 @@ async function stopManagedSessionAfterTaskResult(ctx, input) {
 var afterTargetHeadSnapshotForTests = null;
 var beforeTaskSubmitFinalizeForTests = null;
 var beforeTaskAcceptFinalizeForTests = null;
-var afterTaskRejectContinuationPersistForTests = null;
 var afterManagedSessionProviderStartForTests = null;
 var beforeTaskClaimCoreForTests = null;
 var beforeReplaceTaskInputRollbackForTests = null;
