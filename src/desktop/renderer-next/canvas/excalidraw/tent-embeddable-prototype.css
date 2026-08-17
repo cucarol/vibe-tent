@@ -281,9 +281,9 @@
 .tn-excal-node h3 {
   display: -webkit-box;
   margin: 0;
-  padding: 0 14px;
+  padding: 0 12px;
   overflow: hidden;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 580;
   line-height: 1.35;
   text-align: left;

@@ -21,13 +21,8 @@ export type Viewport = NonNullable<CanvasDocument["viewport"]>;
 export const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
 export const NODE_CARD = {
-  width: 190,
-  height: 56,
-  singleLineHeight: 40,
-  gapX: 34,
-  gapY: 14,
-  padX: 20,
-  padY: 20,
+  width: 176,
+  height: 52,
 } as const;
 
 export const VISIBLE_NODE_PLACEMENT = {

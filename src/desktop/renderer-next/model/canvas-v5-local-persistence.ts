@@ -93,19 +93,6 @@ export function commitCanvasV5DocumentSync(
     : { document: snapshot.document, status: result.status, committed: false };
 }
 
-/** Only a valid, genuinely empty record may receive first-run placements. */
-export function shouldSeedLocalCanvas(
-  loadKind: CanvasV5LoadResult["kind"],
-  placementCount: number,
-  authoritativeNodeCount: number
-): boolean {
-  return (
-    loadKind === "empty" &&
-    placementCount === 0 &&
-    authoritativeNodeCount > 0
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }

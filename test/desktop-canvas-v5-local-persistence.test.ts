@@ -4,7 +4,6 @@ import {
   CanvasV5LocalPersistence,
   commitCanvasV5DocumentSync,
   canvasV5LocalPersistenceKey,
-  shouldSeedLocalCanvas,
   type CanvasV5LocalSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import {
@@ -285,7 +284,6 @@ test("placement add and intentional empty removal both survive reload", () => {
   const reloadedEmpty = persistence.load();
   assert.equal(reloadedEmpty.kind, "loaded", "saved empty Canvas remains intentional state");
   assert.deepEqual(reloadedEmpty.snapshot.document.placements, []);
-  assert.equal(shouldSeedLocalCanvas(reloadedEmpty.kind, 0, 1), false);
 });
 
 test("malformed or wrong-workspace payload fails closed to an empty local scene", () => {

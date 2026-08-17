@@ -13,7 +13,6 @@ import { DesktopServiceHost } from "../src/desktop/main/service-host.js";
 import type { EventEnvelope } from "../src/service/types.js";
 import {
   CanvasV5LocalPersistence,
-  shouldSeedLocalCanvas,
   type CanvasV5LocalSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import { startWorkspaceProjectionBridge } from "../src/desktop/renderer-next/gateway/workspace-projection-bridge.js";
@@ -24,6 +23,7 @@ import { StatusBar } from "../src/desktop/renderer-next/components/StatusBar.js"
 import { projectionForConnection, workspaceProjectionStatus } from "../src/desktop/renderer-next/model/workspace-projection-view.js";
 import type { GraphProjection } from "../src/service/types.js";
 import { createEmptyCanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
+import { NODE_CARD } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   readFreshCanvasSubtreeAuthority,
   workbenchNodesFromResources,
@@ -31,7 +31,6 @@ import {
 import { ConnectionBanner } from "../src/desktop/renderer-next/components/ConnectionBanner.js";
 import {
   reconcileLoadedCanvasDocument,
-  seedCanvasDocumentFromGraph,
 } from "../src/desktop/renderer-next/model/canvas-seeding.js";
 import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/FocusDocumentPanel.js";
 import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
@@ -52,6 +51,7 @@ import { captureCanvasNodeSnapshot } from "../src/desktop/renderer-next/model/ca
 import { canvasAttentionPlacementIds } from "../src/desktop/renderer-next/model/canvas-attention.js";
 
 test("compact Canvas cards expose only a one-or-two-line title while sync, attention, and local relation focus remain composable", () => {
+  assert.deepEqual(NODE_CARD, { width: 176, height: 52 });
   const card = (
     title: string,
     relationFocus: "neutral" | "neighbor" | "background" = "neutral",
@@ -465,15 +465,6 @@ test("Canvas hover preview lazily reads the exact authoritative Node and rejects
   assert.match(host, /previewDocument\.status === "error"/);
 });
 
-test("first non-empty graph seeds only a truly absent local Canvas", () => {
-  assert.equal(shouldSeedLocalCanvas("empty", 0, 0), false);
-  assert.equal(shouldSeedLocalCanvas("empty", 0, 1), true);
-  assert.equal(shouldSeedLocalCanvas("loaded", 0, 1), false);
-  assert.equal(shouldSeedLocalCanvas("error", 0, 1), false);
-  assert.equal(shouldSeedLocalCanvas("unavailable", 0, 1), false);
-  assert.equal(shouldSeedLocalCanvas("empty", 1, 1), false);
-});
-
 test("Canvas persistence retry commits the latest local snapshot", async () => {
   let failWrite = true;
   let stored: string | null = null;
@@ -585,7 +576,7 @@ test("Canvas persistence retry commits the latest local snapshot", async () => {
   assert.doesNotMatch(commitBlock, /result\.retry\(\)|retried\.retry\(\)/);
 });
 
-test("initial Canvas seed materializes only the first authoritative Node", () => {
+test("fresh authority preserves an absent local Canvas as empty", () => {
   const graph = {
     workspaceId: "ws-a",
     nodes: [
@@ -594,9 +585,12 @@ test("initial Canvas seed materializes only the first authoritative Node", () =>
     ],
     edges: { parent: [], markdown: [], wiki: [], relation: [] },
   } as unknown as GraphProjection;
-  const seeded = seedCanvasDocumentFromGraph(graph);
-  assert.deepEqual(seeded.placements.map((placement) => placement.entityRef), ["cx-first"]);
-  assert.equal(seeded.focusedPlacementId, "pl-default-cx-first");
+  const empty = createEmptyCanvasDocument();
+  const reconciled = reconcileLoadedCanvasDocument(empty, graph);
+  assert.equal(reconciled.changed, false);
+  assert.equal(reconciled.document, empty);
+  assert.deepEqual(reconciled.document.placements, []);
+  assert.equal(reconciled.document.focusedPlacementId, null);
 });
 
 test("storage retry immediately materializes legacy snapshots from an already-ready graph", () => {
@@ -619,9 +613,8 @@ test("storage retry immediately materializes legacy snapshots from an already-re
       },
     ],
   };
-  const reconciled = reconcileLoadedCanvasDocument("loaded", legacy, graph);
+  const reconciled = reconcileLoadedCanvasDocument(legacy, graph);
   assert.equal(reconciled.changed, true);
-  assert.equal(reconciled.seeded, true);
   assert.deepEqual(
     (reconciled.document.placements[0]?.meta as Record<string, unknown>)
       ?.tentNodeSnapshot,
