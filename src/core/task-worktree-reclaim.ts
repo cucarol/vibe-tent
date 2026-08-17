@@ -426,7 +426,7 @@ export async function evaluateTaskWorktreeReclaim(
       targetBranch,
       taskId,
       taskBranch: expectedBranch,
-      roleBranchBase: task.roleBranchBase,
+      baseCommit: task.baseCommit,
       results,
     });
     if (!settle.ok) {
@@ -970,7 +970,7 @@ async function evaluateAcceptedSettle(input: {
   targetBranch: string;
   taskId: string;
   taskBranch: string;
-  roleBranchBase?: string;
+  baseCommit?: string;
   results: TaskResultRecord[];
 }): Promise<
   | { ok: true }
@@ -1031,16 +1031,19 @@ async function evaluateAcceptedSettle(input: {
     workspaceRoot: input.workspaceRoot,
     taskBranch: input.taskBranch,
     targetBranch: target,
-    roleBranchBase: input.roleBranchBase,
+    baseCommit: input.baseCommit,
   });
-  if (branchMissing.length > 0) {
+  if (!branchMissing.ok) {
+    return branchMissing;
+  }
+  if (branchMissing.missing.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Task branch ${input.taskBranch} still has ${branchMissing.length} commit(s) not integrated into ${target} (including TaskResult-omitted tips); refusing reclaim.`,
+      reason: `Task branch ${input.taskBranch} still has ${branchMissing.missing.length} commit(s) not integrated into ${target} (including TaskResult-omitted tips); refusing reclaim.`,
       details: {
-        missingCommits: branchMissing.slice(0, 12),
-        missingCount: branchMissing.length,
+        missingCommits: branchMissing.missing.slice(0, 12),
+        missingCount: branchMissing.missing.length,
         targetBranch: target,
         source: "task-branch",
       },
@@ -1052,54 +1055,101 @@ async function evaluateAcceptedSettle(input: {
 
 /**
  * Commits reachable from taskBranch that are not integrated into target
- * (ancestor or -x cherry-pick). When roleBranchBase is set and still an
- * ancestor of the task branch, only scan base..branch; otherwise scan
- * targetBranch..taskBranch (fail-closed on full exclusive tip set).
+ * (ancestor or -x cherry-pick). When the branch still exists, reclaim
+ * requires an exact resolvable baseCommit that remains an ancestor of the
+ * task branch; missing/invalid baselines fail loud instead of falling back.
  */
 async function listUnintegratedTaskBranchCommits(input: {
   workspaceRoot: string;
   taskBranch: string;
   targetBranch: string;
-  roleBranchBase?: string;
-}): Promise<string[]> {
+  baseCommit?: string;
+}): Promise<
+  | { ok: true; missing: string[] }
+  | {
+      ok: false;
+      code: TaskWorktreeReclaimCode;
+      reason: string;
+      details?: Record<string, unknown>;
+    }
+> {
   const root = nodePath.resolve(input.workspaceRoot);
   const branchRef = `refs/heads/${input.taskBranch}`;
   const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", branchRef]);
   if (!branchExists) {
     // No branch tip → nothing exclusive left on the lane.
-    return [];
+    return { ok: true, missing: [] };
   }
 
-  let range = `${input.targetBranch}..${branchRef}`;
-  const base = input.roleBranchBase?.trim();
-  if (base) {
-    try {
-      const fullBase = (await git(root, ["rev-parse", base])).trim();
-      if (
-        fullBase &&
-        (await gitOk(root, ["merge-base", "--is-ancestor", fullBase, branchRef]))
-      ) {
-        range = `${fullBase}..${branchRef}`;
-      }
-    } catch {
-      // Fall back to target..branch.
-    }
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task is missing baseCommit while ${input.taskBranch} still exists; cannot verify reclaim.`,
+      details: {
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch,
+      },
+    };
   }
 
+  let fullBase = "";
+  try {
+    fullBase = (await git(root, ["rev-parse", "--verify", `${base}^{commit}`])).trim();
+  } catch {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${base} is unreadable; cannot verify reclaim.`,
+      details: {
+        baseCommit: base,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch,
+      },
+    };
+  }
+  if (!fullBase) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${base} resolved empty; cannot verify reclaim.`,
+      details: {
+        baseCommit: base,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch,
+      },
+    };
+  }
+
+  if (!(await gitOk(root, ["merge-base", "--is-ancestor", fullBase, branchRef]))) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${fullBase} is not an ancestor of ${input.taskBranch}; cannot verify reclaim.`,
+      details: {
+        baseCommit: fullBase,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch,
+      },
+    };
+  }
+
+  const range = `${fullBase}..${branchRef}`;
   let output = "";
   try {
     output = await git(root, ["log", range, "--format=%H"]);
-  } catch {
-    // Ambiguous range → treat as unsettleable by returning a synthetic marker
-    // only when the branch tip itself is not integrated.
-    try {
-      const tip = (await git(root, ["rev-parse", branchRef])).trim();
-      if (!tip) return [];
-      const integrated = await findIntegratedCommit(root, tip, input.targetBranch);
-      return integrated ? [] : [tip];
-    } catch {
-      return ["<unreadable-task-branch>"];
-    }
+  } catch (err) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Accepted Task baseCommit ${fullBase} could not bound ${input.taskBranch}: ${err instanceof Error ? err.message : String(err)}`,
+      details: {
+        baseCommit: fullBase,
+        taskBranch: input.taskBranch,
+        targetBranch: input.targetBranch,
+      },
+    };
   }
 
   const shas = output
@@ -1111,7 +1161,7 @@ async function listUnintegratedTaskBranchCommits(input: {
     const integrated = await findIntegratedCommit(root, sha, input.targetBranch);
     if (!integrated) missing.push(sha);
   }
-  return missing;
+  return { ok: true, missing };
 }
 
 type WorktreeRegistration = {

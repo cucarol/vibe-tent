@@ -855,7 +855,7 @@ export function assertIntegrationAuthorityMatchesParent(
 
 /**
  * Derive executionLane projection from Task lane truth.
- * - baseCommit: exact workspaceLane.baseCommit only (never roleBranchBase substitution).
+ * - baseCommit: exact workspaceLane.baseCommit only.
  * - integrationAuthority: always re-derived from requester + service mutator.
  * Invalid requester fails loud — never silently drop authority.
  */

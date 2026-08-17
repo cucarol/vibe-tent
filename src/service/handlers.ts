@@ -2845,7 +2845,7 @@ async function taskDispatch(
   // Connection-launched Tasks receive their exact Task lane and reserved Session
   // before the envelope is written. Role handoff captures its Role lane at claim.
   // Role target (peer + downstream): ensure durable Role/parent worktrees for validation only;
-  // do NOT persist execution workspaceLane/baseCommit/roleBranchBase at queue — first claim
+  // do NOT persist execution workspaceLane/baseCommit at queue — first claim
   // captures the real Role tip in the same lifecycle + workspace mutation boundary.
   // When acceptMode is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
@@ -3920,9 +3920,6 @@ async function prepareRoleClaimWrite(
       : await readRoleBranchTip(real.workspace, real.branch);
   const fullTip = await resolveCommitSha(real.workspace, tip);
   patch.baseCommit = fullTip;
-  if (!task.roleBranchBase?.trim()) {
-    patch.roleBranchBase = fullTip;
-  }
   patch.baseCommitCapture = {
     source: "first-claim",
     baseCommit: fullTip,
@@ -5182,8 +5179,7 @@ async function assertTaskWorktreeCleanForSubmit(
  * No generic allowMerge; parent accept + Service integration only.
  *
  * - Docs-only / non-Git / no recorded executor branch → pass through.
- * - Ordinary code-task lane (branch recorded) without exact baseCommit → fail
- *   loud (never silently substitute roleBranchBase at TaskResult).
+ * - Ordinary code-task lane (branch recorded) without exact baseCommit → fail loud.
  */
 async function assertOrdinaryExecutorLaneHistoryForSubmit(
   workspaceRoot: string,
@@ -5198,14 +5194,13 @@ async function assertOrdinaryExecutorLaneHistoryForSubmit(
   if (!(await isGitWorkspace(workspaceRoot))) return;
 
   const base = task.baseCommit?.trim() || "";
-  // Exact baseCommit required for ordinary code-task TaskResult. No roleBranchBase
-  // silent substitution — legacy envelopes need explicit migration / re-bind.
+  // Exact baseCommit required for ordinary code-task TaskResult.
   if (!base) {
     throw new RpcError(
       RPC_LIFECYCLE,
       `task.submit refused: ordinary executor lane requires exact workspaceLane.baseCommit ` +
-        `(recorded at Task worktree creation); roleBranchBase is not a TaskResult substitute ` +
-        `(task remains ${task.state}, no ready TaskResult; lane/audit preserved)`,
+        `(recorded at Task worktree creation; task remains ${task.state}, ` +
+        `no ready TaskResult; lane/audit preserved)`,
       {
         code: "EXECUTOR_LANE_HISTORY",
         historyCode: "MISSING_BASE",
@@ -6906,7 +6901,7 @@ async function launchAndBindTaskStartSession(
     return withLane;
   });
 
-  // Capture lane + roleBranchBase only after the execution slot is acquired.
+  // Capture lane + baseCommit only after the execution slot is acquired.
   // Role: durable tent-role lane. Connection execution: task-scoped tent-task/<taskId> lane.
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
 
@@ -11638,8 +11633,8 @@ async function tryManagedAutoSubmitOwner(
       } else {
         const current = await loadTaskRecord(mount.env.fs, input.taskPath);
         if (current.executionSessionId !== sessionId || current.state !== "running") return;
-        // Outside the mutation bus: capture-once baseline for legacy Git-lane
-        // tasks missing roleBranchBase. Nested mutations.run would deadlock.
+        // Outside the mutation bus: capture-once baseline for Git-lane tasks.
+        // Nested mutations.run would deadlock.
         if (input.commits === undefined) {
           await ensureTaskWorkspaceLane(ctx, input.workspaceId, current);
         }
@@ -12045,7 +12040,7 @@ function stableTaskReturnCode(value: string | undefined, fallback: string): stri
 }
 
 /**
- * Collect full SHAs still pending on this task's role lane since roleBranchBase.
+ * Collect full SHAs still pending on this task's role lane since baseCommit.
  * - Non-Git / pure-docs (no recorded lane) → [] (legal zero-commit result).
  * - Recorded Git lane requires a baseline; never falls back to all pending role commits.
  * - Git / baseline / listing errors fail loud (caller keeps task/session retryable).
@@ -12062,10 +12057,10 @@ async function collectManagedTaskResultCommits(
     // Legitimate non-Git / pure-docs task: no lane, zero commits.
     return [];
   }
-  const base = task.roleBranchBase?.trim();
+  const base = task.baseCommit?.trim();
   if (!base) {
     throw new Error(
-      `Managed result collection requires roleBranchBase on task ${task.id || task.path}; ` +
+      `Managed result collection requires baseCommit on task ${task.id || task.path}; ` +
         `baseline must be captured at first Git lane bind (never fall back to all role commits).`
     );
   }
@@ -13099,7 +13094,6 @@ async function resolveIntegrationContract(
  *   this function never repairs a completed lane with missing provenance.
  * - Session-only Task: first create tent-task/<taskId> here (never a Role lane).
  * Persists exact workspaceLane.baseCommit at first bind (capture-once).
- * Also backfills roleBranchBase for managed collection once when missing.
  * integrationAuthority: only the on-disk bag counts as recorded truth; absence
  * triggers explicit persist of requester + service mutator.
  * Non-Git / pure docs → no fake Git fields (cwd falls back to workspace root);
@@ -13195,7 +13189,7 @@ async function ensureTaskWorkspaceLane(
     // Capture-once exact baseCommit only when first binding an incomplete lane
     // (e.g. Connection execution at startSession). Never rewrite an existing base.
     // A complete lane missing baseCommit is invalid in the fresh registry; never
-    // infer it from tip/roleBranchBase/cwd.
+    // infer it from tip/cwd.
     // Role-assignee first-claim capture happens in task.claim (captureRoleBaseCommitOnClaim).
     if (!currentHasBase && !currentLaneComplete) {
       const fromEnsure =
@@ -13204,9 +13198,6 @@ async function ensureTaskWorkspaceLane(
           : "";
       const tip = fromEnsure || (await readRoleBranchTip(lane.workspace, lane.branch));
       patch.baseCommit = tip;
-      if (!current.roleBranchBase?.trim()) {
-        patch.roleBranchBase = tip;
-      }
     }
     // integrationAuthority: always derived from requester + service mutator.
     if (!currentHasAuthority) {
@@ -13426,7 +13417,7 @@ function projectTask(task: import("../core/task.js").TaskRecord): TaskProjection
         worktree: task.worktree,
         branch: task.branch,
         targetBranch: task.targetBranch,
-        // Exact baseCommit only — never substitute roleBranchBase in the projection.
+        // Exact baseCommit only.
         ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
         ...(derivedAuthority ? { integrationAuthority: derivedAuthority } : {}),
       }

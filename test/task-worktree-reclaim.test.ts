@@ -118,6 +118,7 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
   const workspace = await makeGitWorkspace("tent-reclaim-ok-");
   const taskId = "tk-reclaim-ok";
   const lane = await ensureTaskWorkspace(workspace, taskId);
+  const base = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
   await fs.writeFile(path.join(lane.worktree, "feat.txt"), "ok\n");
   await git(lane.worktree, "add", "feat.txt");
   await git(lane.worktree, "commit", "-q", "-m", "feat");
@@ -133,6 +134,7 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
     worktree: lane.worktree,
     branch: lane.branch,
     targetBranch: lane.targetBranch,
+    baseCommit: base,
   });
   const results: TaskResultRecord[] = [
     {
@@ -228,6 +230,7 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-unint-");
   const taskId = "tk-reclaim-unint";
   const lane = await ensureTaskWorkspace(workspace, taskId);
+  const base = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
   await fs.writeFile(path.join(lane.worktree, "hanging.txt"), "no integrate\n");
   await git(lane.worktree, "add", "hanging.txt");
   await git(lane.worktree, "commit", "-q", "-m", "hanging");
@@ -241,6 +244,7 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
     worktree: lane.worktree,
     branch: lane.branch,
     targetBranch: lane.targetBranch,
+    baseCommit: base,
   });
   const results: TaskResultRecord[] = [
     {
@@ -352,7 +356,7 @@ test("P0: accepted TaskResult omits branch tip → UNINTEGRATED (task-branch set
     worktree: lane.worktree,
     branch: lane.branch,
     targetBranch: lane.targetBranch,
-    roleBranchBase: base,
+    baseCommit: base,
   });
   const results: TaskResultRecord[] = [
     {
@@ -381,6 +385,88 @@ test("P0: accepted TaskResult omits branch tip → UNINTEGRATED (task-branch set
       omitted
     )
   );
+  assert.equal(await pathExists(lane.worktree), true);
+});
+
+test("accepted branch reclaim requires exact baseCommit when task branch still exists", async () => {
+  const workspace = await makeGitWorkspace("tent-reclaim-missing-base-");
+  const taskId = "tk-reclaim-missing-base";
+  const lane = await ensureTaskWorkspace(workspace, taskId);
+  await fs.writeFile(path.join(lane.worktree, "done.txt"), "integrated\n");
+  await git(lane.worktree, "add", "done.txt");
+  await git(lane.worktree, "commit", "-q", "-m", "done");
+  const done = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
+  await git(workspace, "cherry-pick", "-x", done);
+
+  const task = sessionTask({
+    id: taskId,
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
+    state: "accepted",
+    workspace: lane.workspace,
+    worktree: lane.worktree,
+    branch: lane.branch,
+    targetBranch: lane.targetBranch,
+  });
+  const d = await evaluateTaskWorktreeReclaim({
+    workspaceRoot: workspace,
+    task,
+    results: [],
+  });
+  assert.equal(d.code, "AMBIGUOUS_OWNERSHIP");
+  assert.equal(d.eligible, false);
+  assert.match(d.reason, /missing baseCommit/i);
+  assert.equal(await pathExists(lane.worktree), true);
+});
+
+test("accepted branch reclaim rejects invalid or non-ancestor baseCommit", async () => {
+  const workspace = await makeGitWorkspace("tent-reclaim-bad-base-");
+  const taskId = "tk-reclaim-bad-base";
+  const lane = await ensureTaskWorkspace(workspace, taskId);
+  await fs.writeFile(path.join(lane.worktree, "done.txt"), "integrated\n");
+  await git(lane.worktree, "add", "done.txt");
+  await git(lane.worktree, "commit", "-q", "-m", "done");
+  const done = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
+  await git(workspace, "cherry-pick", "-x", done);
+
+  const invalidBase = sessionTask({
+    id: taskId,
+    path: "temp/sessions/ss-fakedefault/tasks/invalid.md",
+    state: "accepted",
+    workspace: lane.workspace,
+    worktree: lane.worktree,
+    branch: lane.branch,
+    targetBranch: lane.targetBranch,
+    baseCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  });
+  const invalid = await evaluateTaskWorktreeReclaim({
+    workspaceRoot: workspace,
+    task: invalidBase,
+    results: [],
+  });
+  assert.equal(invalid.code, "AMBIGUOUS_OWNERSHIP");
+  assert.match(invalid.reason, /baseCommit .* unreadable/i);
+
+  await fs.writeFile(path.join(workspace, "main-only.txt"), "later main commit\n");
+  await git(workspace, "add", "main-only.txt");
+  await git(workspace, "commit", "-q", "-m", "main-only");
+  const nonAncestorBase = (await git(workspace, "rev-parse", "HEAD")).trim();
+  const nonAncestorTask = sessionTask({
+    id: taskId,
+    path: "temp/sessions/ss-fakedefault/tasks/non-ancestor.md",
+    state: "accepted",
+    workspace: lane.workspace,
+    worktree: lane.worktree,
+    branch: lane.branch,
+    targetBranch: lane.targetBranch,
+    baseCommit: nonAncestorBase,
+  });
+  const nonAncestor = await evaluateTaskWorktreeReclaim({
+    workspaceRoot: workspace,
+    task: nonAncestorTask,
+    results: [],
+  });
+  assert.equal(nonAncestor.code, "AMBIGUOUS_OWNERSHIP");
+  assert.match(nonAncestor.reason, /not an ancestor/i);
   assert.equal(await pathExists(lane.worktree), true);
 });
 

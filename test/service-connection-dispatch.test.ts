@@ -357,7 +357,7 @@ test("Git Connection Task gets tent-task/<taskId> isolated lane before provider 
         task: {
           id?: string;
           workspaceLane?: { branch?: string; worktree?: string };
-          roleBranchBase?: string;
+          baseCommit?: string;
         };
         session: { cwd?: string; connectionId?: string };
       };
@@ -372,12 +372,12 @@ test("Git Connection Task gets tent-task/<taskId> isolated lane before provider 
     assert.doesNotMatch(task.workspaceLane!.branch!, /^tent-role\//);
     assert.ok(!task.workspaceLane!.worktree!.endsWith(`${path.sep}fake-default`));
 
-    // Commit only on the task lane; managed collection baseline is roleBranchBase.
+    // Commit only on the task lane; managed collection baseline is baseCommit.
     const envelope = await loadTaskRecord(
       new NodeFs(path.join(ws, ".tent")),
       taskPath
     );
-    assert.ok(envelope.roleBranchBase);
+    assert.ok(envelope.baseCommit);
     const contract = await ensureTaskWorkspace(ws, task.id!);
     assert.equal(contract.branch, `tent-task/${task.id}`);
     await fs.writeFile(path.join(contract.worktree, "from-task.txt"), "task-only\n");
@@ -394,7 +394,7 @@ test("Git Connection Task gets tent-task/<taskId> isolated lane before provider 
     const listed = await git(
       ws,
       "log",
-      `${envelope.roleBranchBase}..${contract.branch}`,
+      `${envelope.baseCommit}..${contract.branch}`,
       "--format=%H"
     );
     const shas = listed

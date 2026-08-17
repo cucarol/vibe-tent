@@ -640,7 +640,7 @@ export async function listRoleCommitsStrict(contract: RoleWorkspaceContract): Pr
 
 /**
  * Fail-loud commits exclusive to `base..branch` (newest-first).
- * Used by managed collection once a task-scoped roleBranchBase is known.
+ * Used by managed collection once a task-scoped baseCommit is known.
  */
 export async function listRoleCommitsSince(
   contract: RoleWorkspaceContract,
@@ -673,7 +673,7 @@ export async function listRoleCommitsSince(
 
 /**
  * Pending result candidates from an authoritative role lane for managed collection.
- * Requires task-scoped `base` (roleBranchBase full SHA); lists only `base..branch`,
+ * Requires task-scoped `base` (baseCommit full SHA); lists only `base..branch`,
  * minus already-integrated (ancestor or -x cherry-pick) commits.
  * Returns oldest-first so integrate can fast-forward complete intervals.
  *

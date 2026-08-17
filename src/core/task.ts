@@ -52,7 +52,7 @@ export interface RoleWorkspaceContract {
   targetBranch: string;
   /**
    * Exact branch tip (full SHA) at ensure/create time.
-   * Written as Task baseCommit + roleBranchBase when the execution lane is first bound
+   * Written as Task baseCommit when the execution lane is first bound
    * (first claim for Role responsibility or first execution binding).
    */
   baseCommit?: string;
@@ -116,14 +116,8 @@ export interface TaskRecord extends TaskNodeContext {
   branch?: string;
   targetBranch?: string;
   /**
-   * Immutable full SHA of the role branch tip at first Git-lane bind for this task.
-   * Optional; absent on non-Git records until captured once.
-   * Kept in sync with baseCommit for managed collection (same capture-once baseline).
-   */
-  roleBranchBase?: string;
-  /**
    * Exact full SHA of the Task worktree start (cx-5q6za6).
-   * Authoritative for the pre-submit history gate; capture-once with roleBranchBase.
+   * Authoritative for the pre-submit history gate, managed collection, and reclaim.
    */
   baseCommit?: string;
   /**
@@ -459,16 +453,13 @@ export async function loadTaskRecord(fs: FsAdapter, path: string): Promise<TaskR
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
-    task.roleBranchBase = data.roleBranchBase.trim();
-  }
-  // Exact workspaceLane.baseCommit only — never silently substitute roleBranchBase.
+  // Exact workspaceLane.baseCommit only.
   // Records without a Git lane legitimately have no base commit.
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
   // Compact first-claim baseCommit audit. Absence is fine before claim and for
-  // non-Git Tasks; never invent from roleBranchBase.
+  // non-Git Tasks.
   // When capture exists: baseCommit must exist and equal capture.baseCommit (fail loud).
   const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
   if (baseCommitCapture) {
@@ -791,7 +782,6 @@ export async function writeTaskRecord(
         : "";
     if (tip) {
       data.baseCommit = tip;
-      data.roleBranchBase = tip;
     }
   }
   const pointers = nodeContext.nodeSnapshots
@@ -835,17 +825,7 @@ export interface TaskRecordPatch {
   worktree?: string | null;
   branch?: string | null;
   targetBranch?: string | null;
-  /**
-   * Capture-once baseline for managed collection. Prefer omit once set;
-   * null clears (tests only). Never overwrite an existing non-empty value from
-   * normal bind/resume paths.
-   */
-  roleBranchBase?: string | null;
-  /**
-   * Capture-once Task lane start (cx-5q6za6 history gate). Prefer omit once set.
-   * When set, also mirrors roleBranchBase for collection compatibility unless
-   * roleBranchBase is already present.
-   */
+  /** Capture-once Task lane start (cx-5q6za6 history gate). Prefer omit once set. */
   baseCommit?: string | null;
   /**
    * Compact capture audit. Prefer omit once set; null clears (tests only).
@@ -931,14 +911,8 @@ export async function patchTaskRecord(
     else if (typeof value === "string") data[key] = value;
   }
 
-  if (patch.roleBranchBase === null) delete data.roleBranchBase;
-  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
-    data.roleBranchBase = patch.roleBranchBase.trim();
-  }
-
   if (patch.baseCommit === null) delete data.baseCommit;
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
-    // Exact workspaceLane.baseCommit only — do not auto-mirror into roleBranchBase.
     data.baseCommit = patch.baseCommit.trim();
   }
 

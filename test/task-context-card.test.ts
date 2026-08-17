@@ -535,7 +535,7 @@ test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority
   assert.equal(lane?.targetBranch, "tent-role/规划");
   assert.equal(lane?.integrationAuthority?.mutator, "service");
   assert.equal(lane?.integrationAuthority?.actor.id, "规划");
-  // roleBranchBase is not a baseCommit substitute — omitted baseCommit stays empty.
+  // Omitted baseCommit stays empty.
   const noBase = projectExecutionLaneFromTask({
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
