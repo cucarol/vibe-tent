@@ -5223,7 +5223,8 @@ Commands:
   tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
-      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/review authority from durable facts
+      # requires canonical TENT_ROLE_ID plus the current trusted Role Session capability
+      # Service derives requester/review authority from durable facts
   tent task submit <taskPath> --report <text>|- [--commits sha,sha] [--decision integrate|request-review] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
