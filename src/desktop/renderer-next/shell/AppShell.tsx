@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
 import {
   findPlacementsByEntity,
@@ -119,6 +119,10 @@ export function AppShell({
   const layout = useMainLayout();
   const outlineOpen = !layout.effective.leftCollapsed;
   const focusOpen = !layout.effective.rightCollapsed;
+  const layoutStyle = {
+    "--tn-layout-left-width": `${layout.effective.leftWidth}px`,
+    "--tn-layout-right-width": `${layout.effective.rightWidth}px`,
+  } as CSSProperties;
   const [focusExpanded, setFocusExpanded] = useState(initialFocusExpanded);
   const [immersive, setImmersive] = useState(false);
   const [outlineMode, setOutlineMode] = useState<"nodes" | "inbox">(
@@ -354,7 +358,7 @@ export function AppShell({
         <ConnectionBanner connection={connection} onRetry={onRetryConnection} />
       ) : null}
 
-      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
+      <div className="tn-workbench" style={layoutStyle} data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionPlacementIds={attentionPlacementIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel

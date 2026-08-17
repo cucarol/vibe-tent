@@ -31,7 +31,7 @@ export function createMainWindow(
     height: bounds?.height ?? 840,
     x: bounds?.x,
     y: bounds?.y,
-    minWidth: 900,
+    minWidth: 960,
     minHeight: 560,
     show: false,
     title: "帷幄 · Tent",

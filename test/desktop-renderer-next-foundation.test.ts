@@ -609,6 +609,7 @@ test("faint helper text token meets WCAG AA on white and panel surfaces", async 
 
 test("Desktop loads renderer-next without exposing Electron as the CLI package main", async () => {
   const windows = await read("src/desktop/main/windows.ts");
+  assert.match(windows, /minWidth: 960/);
   assert.match(
     windows,
     /mainHtml: path\.join\(appRoot, "desktop", "dist", "renderer-next", "index\.html"\)/
@@ -689,7 +690,9 @@ test("Outline chrome defaults collapsed with open/expand/locate interfaces", () 
 
 test("Outline and Focus are collapsible trays around one Canvas stage", async () => {
   const shellCss = await read("src/desktop/renderer-next/styles/shell.css");
-  assert.match(shellCss, /\.tn-workbench\s*\{[^}]*grid-template-columns:\s*252px minmax\(0, 1fr\) 320px/s);
+  assert.match(shellCss, /\.tn-workbench\s*\{[^}]*grid-template-columns:\s*var\(--tn-layout-left-width\) minmax\(0, 1fr\) var\(--tn-layout-right-width\)/s);
+  assert.match(shellCss, /-webkit-app-region:\s*drag/);
+  assert.match(shellCss, /\.tn-brand-group, \.tn-global-actions, \.tn-surface-nav\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
   assert.match(shellCss, /data-outline-open="false"/);
   assert.match(shellCss, /data-focus-open="false"/);
   assert.match(shellCss, /data-immersive="true"/);
@@ -698,6 +701,8 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
 
   const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
   const outlinePanel = await read("src/desktop/renderer-next/components/OutlinePanel.tsx");
+  assert.match(shell, /const layoutStyle = \{[\s\S]*--tn-layout-left-width[\s\S]*--tn-layout-right-width/);
+  assert.match(shell, /className="tn-workbench" style=\{layoutStyle\}/);
   assert.match(shell, /aria-expanded=\{outlineOpen\}/);
   assert.match(shell, /aria-expanded=\{focusOpen\}/);
   assert.match(shell, /aria-controls="tn-outline-panel"/);
