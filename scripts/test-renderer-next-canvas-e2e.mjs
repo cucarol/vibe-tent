@@ -179,7 +179,7 @@ async function dispatchBackgroundOutlineDrag(page, accessibleName, targetPositio
   const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
   await source.dispatchEvent("dragstart", { dataTransfer, ...point });
   const types = await dataTransfer.evaluate((value) => [...value.types]);
-  assert.ok(types.includes("application/x-tent-node-ref"), `Outline drag must populate Tent MIME: ${types.join(",")}`);
+  assert.ok(types.includes("application/x-tent-node-ids"), `Outline drag must populate Tent MIME: ${types.join(",")}`);
   await target.dispatchEvent("dragenter", { dataTransfer, ...point });
   await target.dispatchEvent("dragover", { dataTransfer, ...point });
   assert.equal(await target.getAttribute("data-drop-state"), "target", "Canvas must expose one active drop target");
@@ -1207,15 +1207,14 @@ async function exercisePackagedElectron() {
 
     await dispatchBackgroundOutlineDrag(window, /E2E Root/, { x: 260, y: 220 });
     // Production preserves the first-node seed placement. One explicit parent
-    // projection entry therefore adds one folded root alongside that seed. The
-    // complete subtree is durable immediately, but children remain hidden until
-    // the exact projection root is explicitly expanded.
-    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 2, "packaged folded subtree cards");
-    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count(), 0);
+    // projection entry adds its root and direct child alongside that seed. The
+    // complete subtree is durable immediately; deeper descendants stay folded.
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged initial subtree cards");
+    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count(), 1);
     let persisted = await waitFor(async () => {
       const snapshot = await persistedCanvas(window);
-      // Both the direct child and folded grandchild remain persisted members of
-      // the projection instance even though only its root is initially visible.
+      // The visible direct child and folded grandchild remain persisted members
+      // of the same projection instance.
       return snapshot?.document?.placements?.length === 4 ? snapshot : null;
     }, "packaged subtree persistence");
     const rootPlacement = persisted.document.placements.find(
@@ -1228,19 +1227,19 @@ async function exercisePackagedElectron() {
       (placement) => placement.entityRef === childNode.nodeId && subtreeMeta(placement)?.instanceId === instanceId
     );
     assert.ok(childPlacement, "explicit projection instance must persist its exact direct child");
-    await selectPlacement(window, rootPlacement.placementId);
-    await expandSubtree(window, rootPlacement.placementId, "right", { force: true });
-    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged expanded subtree cards");
+    await selectPlacement(window, childPlacement.placementId);
+    await expandSubtree(window, childPlacement.placementId, "right", { force: true });
+    await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 4, "packaged expanded subtree cards");
     await waitFor(
-      async () => (await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count()) === 1,
+      async () => (await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count()) === 2,
       "packaged expanded subtree relationship",
     );
     persisted = await waitFor(async () => {
       const snapshot = await persistedCanvas(window);
-      const root = snapshot?.document?.placements?.find(
-        (placement) => placement.placementId === rootPlacement.placementId,
+      const child = snapshot?.document?.placements?.find(
+        (placement) => placement.placementId === childPlacement.placementId,
       );
-      return subtreeMeta(root)?.expandedDirection === "right" ? snapshot : null;
+      return subtreeMeta(child)?.expandedDirection === "right" ? snapshot : null;
     }, "packaged expanded subtree persistence");
     const beforeRestartGeometry = persisted.document.placements
       .map((placement) => ({ placementId: placement.placementId, x: placement.x, y: placement.y }))
