@@ -190,11 +190,6 @@ async function collectTaskFiles(
   }
 }
 
-/** True when the Task carries durable Role responsibility. */
-export function taskHasRole(task: Pick<TaskRecord, "assigneeRoleId">): boolean {
-  return typeof task.assigneeRoleId === "string";
-}
-
 /** Compact diagnostic only; never parsed as an assignment wire. */
 export function taskExecutionLabel(
   task: Pick<TaskRecord, "assigneeRoleId" | "executionSessionId">
@@ -202,13 +197,6 @@ export function taskExecutionLabel(
   return [task.assigneeRoleId ? `assigneeRoleId=${task.assigneeRoleId}` : "", task.executionSessionId ? `executionSessionId=${task.executionSessionId}` : ""]
     .filter(Boolean)
     .join(" ");
-}
-
-/** Parent is a durable Role (Role-dispatched Task). */
-export function taskParentIsRole(
-  task: Pick<TaskRecord, "requester">
-): boolean {
-  return task.requester?.kind === "role";
 }
 
 /** Durable parent role id, or undefined when parent is user. */
@@ -698,35 +686,6 @@ export function extractTaskPrompt(task: TaskRecord): string {
   return body;
 }
 
-/**
- * Managed ACP startSession bootstrap body (service already claimed).
- * Dynamic task pointers + near-field user prompt only.
- * Path tutorial is owned by Context Card; no claim/get/submit CLI steps.
- * Final assistant response is captured by Local Service and submitted as a Result.
- *
- * `roots` is accepted for call-site compatibility but not repeated here —
- * managed bootstrap prefixes Context Card (which carries workspaceRoot/systemRoot).
- */
-export function sessionBootstrapPromptForTask(
-  task: TaskRecord,
-  _roots?: string | TaskPromptRoots
-): string {
-  const readyLine =
-    task.assigneeRoleId
-      ? `A Tent Session is executing a Task for Role ${task.assigneeRoleId}.\n`
-      : `A Tent managed ACP Session is executing this Task.\n`;
-  return (
-    readyLine +
-    `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: Local Service already claimed this task. A non-empty final report is submitted by default after turn settle. ` +
-    `Use \`outcome: blocked\` only as an explicit control signal; request user input through a Decision Request. Never self-accept.\n` +
-    (!task.assigneeRoleId
-      ? `Session-only Task: rely on Task/Node pointers only — no Role init or Role identity.\n`
-      : "") +
-    `\n${taskPackageForTask(task)}\n`
-  );
-}
-
 export async function ensureRoleInit(
   fs: FsAdapter,
   role: RoleDefinition,
@@ -1038,35 +997,6 @@ export async function patchTaskRecord(
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskRecord(fs, path);
-}
-
-export function workspaceLaneOf(task: TaskRecord): WorkspaceLane | undefined {
-  if (
-    !task.workspace &&
-    !task.worktree &&
-    !task.branch &&
-    !task.targetBranch &&
-    !task.baseCommit &&
-    !task.integrationAuthority
-  ) {
-    return undefined;
-  }
-  // baseCommit is exact only — never substitute roleBranchBase in the projection.
-  // integrationAuthority on the lane projection: prefer the recorded field;
-  // otherwise derive for Context projection only (does not invent record truth).
-  const integrationAuthority = task.integrationAuthority
-    ? task.integrationAuthority
-    : task.requester
-      ? deriveIntegrationAuthority({ requester: task.requester })
-      : undefined;
-  return {
-    workspace: task.workspace,
-    worktree: task.worktree,
-    branch: task.branch,
-    targetBranch: task.targetBranch,
-    ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
-    ...(integrationAuthority ? { integrationAuthority } : {}),
-  };
 }
 
 export function primaryNodeId(task: TaskRecord): string | undefined {

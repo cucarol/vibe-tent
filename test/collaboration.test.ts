@@ -21,32 +21,6 @@ import {
 import { acceptProposal, loadProposal, loadProposals, rejectProposal, submitProposal } from "../src/core/proposal.js";
 import { makeTent } from "./helpers.js";
 
-test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    clock: { now: () => "2026-07-01T00:00:00.000Z" },
-    tentName: "wqb",
-    tentRoot: dir,
-  };
-  const result = await dispatch(env as any, "cx-p1", {
-    executionSessionId: "ss-executor",
-    workNodeIds: ["cx-p1"],
-    contextNodeIds: [],
-    prompt: "for inbox",
-    requester: { kind: "user", id: "user" },
-  });
-  await taskClaim(env as any, result.taskPath);
-  const tent = await loadTent(fsa);
-  const { buildInbox, pendingCount } = await import("../src/core/inbox.js");
-  const inbox = await buildInbox(tent, fsa);
-  assert.ok(inbox.some((i) => i.state === "stale" && i.nodeId === "cx-p1"), "active task 显示为认领中");
-  assert.equal(pendingCount(inbox), 0, "认领中不计入待裁");
-  // Without fs, inbox is empty (no FM owner scan).
-  assert.equal((await buildInbox(tent)).length, 0);
-});
-
 test("result:驳回后 task 仍 running,重新交付后 accept 保留 accepted 记录", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);

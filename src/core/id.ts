@@ -17,16 +17,6 @@ export function isConnectionId(value: unknown): value is string {
   return typeof value === "string" && CONNECTION_ID_RE.test(value);
 }
 
-export function assertConnectionId(value: string): string {
-  const connectionId = value.trim();
-  if (!isConnectionId(connectionId)) {
-    throw new Error(
-      `Invalid connectionId: must match ${CONNECTION_ID_RE} (lowercase letter, then a-z0-9-, max 63).`
-    );
-  }
-  return connectionId;
-}
-
 /** Role 稳定身份前缀（合同冻结）。 */
 export const ROLE_ID_PREFIX = "rl-";
 /** Exact Session identity prefix shared by Task and runtime persistence. */
@@ -96,11 +86,6 @@ export function makeNodeId(rand: RandomSource = Math.random, len = 6): string {
 /** 确保不撞已有 id。 */
 export function makeUniqueNodeId(existing: Set<string>, rand: RandomSource = Math.random): string {
   return makeUniquePrefixedId(NODE_ID_PREFIX, existing, rand);
-}
-
-/** 新 role 写入用随机 rl- handle。 */
-export function makeRoleId(rand: RandomSource = Math.random, len = 6): string {
-  return makePrefixedId(ROLE_ID_PREFIX, rand, len);
 }
 
 /** 确保不撞已有 role id。 */

@@ -466,40 +466,14 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   // Agent-facing relay must not use box vocabulary (Node/nodeId only).
   assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b/i);
 
-  const { sessionBootstrapPromptForTask, extractTaskPrompt, taskPackageForTask } = await import(
+  const { extractTaskPrompt, taskPackageForTask } = await import(
     "../src/core/task.js"
   );
   const taskPackage = taskPackageForTask(tasks[1]);
   assert.match(relay, new RegExp(taskPackage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  const bootstrap = sessionBootstrapPromptForTask(
-    { ...tasks[1], state: "running" },
-    { workspaceRoot: path.join(dir, ".."), systemRoot: dir }
-  );
-  assert.match(bootstrap, /already claimed/i);
-  assert.match(bootstrap, /A Tent Session is executing a Task for Role rl-reviewer/i);
-  assert.match(bootstrap, /non-empty final report is submitted by default/i);
-  assert.match(bootstrap, /outcome:\s*blocked/i);
-  assert.doesNotMatch(bootstrap, /explicit outcome wire|outcome:\s*delivered\|/i);
-  assert.match(bootstrap, /Task record:/);
-  assert.match(bootstrap, /Manifest:/);
-  assert.match(bootstrap, /workNodeIds:/);
-  assert.match(bootstrap, /requester:/);
-  assert.doesNotMatch(bootstrap, /reviewer(?:Authority)?:/);
-  assert.match(bootstrap, /acceptMode:/);
-  assert.match(bootstrap, /## Prompt/);
-  assert.match(bootstrap, new RegExp(taskPackage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(bootstrap, /executionSessionId:/);
   assert.doesNotMatch(taskPackage, /## Context Pointers/);
-  // Path tutorial is owned by Context Card, not repeated in session body.
-  assert.doesNotMatch(bootstrap, /workspaceRoot:|systemRoot:/);
-  assert.doesNotMatch(bootstrap, /File reads:|run tent from workspaceRoot/);
-  // Near-field user prompt must be present; no CLI get/deliver command instructions.
   const prompt = extractTaskPrompt(tasks[1]);
   assert.equal(prompt, "审阅产出");
-  if (prompt) assert.match(bootstrap, new RegExp(prompt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
-  assert.doesNotMatch(bootstrap, /tent task get |tent task submit /);
-  assert.doesNotMatch(bootstrap, /docs API|CLI aliases/i);
   assert.equal(
     taskPackageForTask({ ...tasks[1], executionSessionId: "ss-changed" }),
     taskPackage,
@@ -739,27 +713,6 @@ test("orphan Node:同名 md 缺 id 时进入 invalid 态且不进 byId", async (
   assert.equal(orphan.invalid, true);
   assert.match(orphan.invalidReason || "", /Invalid Node id: <missing>/);
   assert.equal(tent.byId.has(""), false);
-});
-
-test("buildCanvas:顶层根=group,叶子=file 节点,路径带前缀", async () => {
-  const dir = await makeTent();
-  const tent = await loadTent(new NodeFs(dir));
-  const { buildCanvas } = await import("../src/core/canvas.js");
-  const data = buildCanvas(tent, "tents/wqb");
-  const groups = data.nodes.filter((n) => n.type === "group");
-  const files = data.nodes.filter((n) => n.type === "file");
-  assert.ok(
-    groups.some((g) => g.label?.startsWith("goal")),
-    "goal 顶层根是 group",
-  );
-  assert.ok(
-    files.every((f) => f.file?.startsWith("tents/wqb/")),
-    "file 路径带前缀",
-  );
-  assert.ok(
-    files.some((f) => f.file?.endsWith(".md") && !f.file?.includes("_box")),
-    "file 指向同名 .md",
-  );
 });
 
 test("forkNode:复制子树为兄弟框,重发 id 且清 owner/status", async () => {

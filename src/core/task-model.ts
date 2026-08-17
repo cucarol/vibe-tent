@@ -73,14 +73,6 @@ export class TaskLifecycleError extends Error {
   }
 }
 
-export const TASK_OUTCOMES: readonly TaskOutcome[] = [
-  "blocked",
-] as const;
-
-export function isTaskOutcome(value: unknown): value is TaskOutcome {
-  return value === "blocked";
-}
-
 export function isTaskActorKind(value: unknown): value is TaskActorKind {
   return value === "user" || value === "role";
 }
@@ -360,15 +352,6 @@ export function resolveSubmitRouting(
     };
   }
   return { autoIntegrate: false, integrationMode: null, enterSubmitted: true };
-}
-
-export function assertNotSelfAccept(actor: string, executorRoleId?: string): void {
-  if (executorRoleId && actor.trim() === executorRoleId.trim()) {
-    throw new TaskLifecycleError(
-      "SELF_ACCEPT_FORBIDDEN",
-      `task.accept actor must not equal executing Role (${executorRoleId}).`
-    );
-  }
 }
 
 /**

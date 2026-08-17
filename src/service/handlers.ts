@@ -6088,14 +6088,6 @@ async function taskRejectRpc(
                 : rejected.result.review?.note || DEFAULT_TASK_REJECT_NOTE,
           })
         : undefined;
-      if (reviewInput && afterTaskRejectContinuationPersistForTests) {
-        await afterTaskRejectContinuationPersistForTests({
-          workspaceId,
-          taskPath,
-          resultId,
-          inputId: reviewInput.id,
-        });
-      }
       // External Role continuity is a pure exact-binding validation and belongs
       // in the same Task lifecycle/mutation flight as reject. Capture failure so
       // the already-durable rejected TaskResult can be parked honestly afterward.
@@ -10246,22 +10238,12 @@ async function assertTaskExecutionSettledForWorktreeReclaim(
 let beforeTaskWorktreeReclaimRemoveForTests:
   | (() => void | Promise<void>)
   | undefined;
-let beforeTaskWorktreeReclaimReloadForTests:
-  | (() => void | Promise<void>)
-  | undefined;
 
 /** Install/clear the Service reclaim pre-remove TOCTOU hook (tests only). */
 export function setBeforeTaskWorktreeReclaimRemoveForTests(
   hook: (() => void | Promise<void>) | undefined
 ): void {
   beforeTaskWorktreeReclaimRemoveForTests = hook;
-}
-
-/** Test-only hook immediately before the exact envelope reload under lock. */
-export function setBeforeTaskWorktreeReclaimReloadForTests(
-  hook: (() => void | Promise<void>) | undefined
-): void {
-  beforeTaskWorktreeReclaimReloadForTests = hook;
 }
 
 /**
@@ -10296,7 +10278,6 @@ async function reconcileExactTaskWorktree(
       // Fresh envelope under the lock (rebind / resume may have mutated sessionId).
       let liveTask: TaskRecord;
       try {
-        await beforeTaskWorktreeReclaimReloadForTests?.();
         liveTask = await loadTaskRecord(mount.env.fs, taskPath);
       } catch (error) {
         const blocked: TaskWorktreeReclaimResult = {
@@ -12306,29 +12287,6 @@ export function setBeforeTaskAcceptFinalizeForTests(
   beforeTaskAcceptFinalizeForTests = fn;
 }
 
-/** Test-only crash boundary after reject WAL + deterministic feedback persistence, before restore. */
-let afterTaskRejectContinuationPersistForTests:
-  | ((input: {
-      workspaceId: string;
-      taskPath: string;
-      resultId: string;
-      inputId: string;
-    }) => Promise<void>)
-  | null = null;
-
-export function setAfterTaskRejectContinuationPersistForTests(
-  fn:
-    | ((input: {
-        workspaceId: string;
-        taskPath: string;
-        resultId: string;
-        inputId: string;
-      }) => Promise<void>)
-    | null
-): void {
-  afterTaskRejectContinuationPersistForTests = fn;
-}
-
 /** Test-only race boundary after provider start and before final exact-Task bind. */
 let afterManagedSessionProviderStartForTests:
   | ((input: {
@@ -12399,31 +12357,15 @@ export function setBeforeReplaceTaskInputRollbackForTests(
   beforeReplaceTaskInputRollbackForTests = fn;
 }
 
-/**
- * Test-only: inside backfill lifecycle flight + mutation, before re-read/write.
- * Production never sets this. Used to prove backfill cannot interleave with submit.
- */
-let beforeTaskBackfillWorkspaceLaneBaseForTests:
-  | ((input: { workspaceId: string; taskPath: string }) => Promise<void>)
-  | null = null;
-
-export function setBeforeTaskBackfillWorkspaceLaneBaseForTests(
-  fn: ((input: { workspaceId: string; taskPath: string }) => Promise<void>) | null
-): void {
-  beforeTaskBackfillWorkspaceLaneBaseForTests = fn;
-}
-
 /** Test helper: clear in-process managed result flights (does not touch disk). */
 export function resetManagedAutoSubmitFlightsForTests(): void {
   managedAutoSubmitFlights.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
-  afterTaskRejectContinuationPersistForTests = null;
   beforeTaskSubmitFinalizeForTests = null;
   afterManagedSessionProviderStartForTests = null;
   beforeTaskClaimCoreForTests = null;
   beforeReplaceTaskInputRollbackForTests = null;
-  beforeTaskBackfillWorkspaceLaneBaseForTests = null;
 }
 
 /** Test helper: clear per-task managed-session single-flight slots. */
