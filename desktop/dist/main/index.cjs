@@ -760,7 +760,7 @@ function createMainWindow(paths, prefs, isDev2) {
     height: bounds?.height ?? 840,
     x: bounds?.x,
     y: bounds?.y,
-    minWidth: 900,
+    minWidth: 960,
     minHeight: 560,
     show: false,
     title: "\u5E37\u5E44 \xB7 Tent",
