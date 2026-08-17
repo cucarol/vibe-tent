@@ -10,12 +10,18 @@ import { fixtureNodes } from "./fixtures.js";
 
 const E2E_WORKSPACE_ID = "ws-storybook-production-canvas-e2e";
 const AUTHORITY_STORAGE_KEY = "tent.storybook.canvasE2E.authority.v1";
+const E2E_NODE_IDS = new Set(["cx-product", "cx-workbench", "cx-research", "cx-result"]);
+const E2E_DRIFTED_NODE_IDS = new Set(["cx-product", "cx-workbench", "cx-result", "cx-evidence"]);
 
 type AuthorityMode = "base" | "drifted";
 
+function baseNodes(): WorkbenchNodeView[] {
+  return fixtureNodes("ready").filter((node) => E2E_NODE_IDS.has(node.nodeId));
+}
+
 function driftedNodes(): WorkbenchNodeView[] {
   const nodes = fixtureNodes("ready")
-    .filter((node) => node.nodeId !== "cx-research")
+    .filter((node) => E2E_DRIFTED_NODE_IDS.has(node.nodeId))
     .map((node) => {
       if (node.nodeId === "cx-product") {
         return {
@@ -37,7 +43,7 @@ function driftedNodes(): WorkbenchNodeView[] {
 }
 
 function nodesFor(mode: AuthorityMode, projection: ProjectionState): WorkbenchNodeView[] {
-  const nodes = mode === "drifted" ? driftedNodes() : fixtureNodes("ready");
+  const nodes = mode === "drifted" ? driftedNodes() : baseNodes();
   if (projection === "ready") return nodes;
   return nodes.map((node) => ({
     ...node,

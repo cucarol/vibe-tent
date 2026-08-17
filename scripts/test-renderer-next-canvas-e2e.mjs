@@ -74,6 +74,8 @@ async function startStorybook() {
     "dev",
     "-p",
     String(storyPort),
+    "-h",
+    "127.0.0.1",
     "--no-open",
     "--ci",
     "--exact-port",
@@ -93,8 +95,9 @@ async function startStorybook() {
     }, "isolated Storybook", 45_000);
     return child;
   } catch (error) {
-    child.kill();
-    throw error;
+    await stopChild(child);
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(log ? `${detail}\n${log}` : detail);
   }
 }
 
@@ -107,7 +110,7 @@ async function stopChild(child) {
   ]);
   if (child.exitCode === null && process.platform === "win32") {
     const info = await processInfo(child.pid);
-    assert.ok(info, `Storybook PID disappeared before cleanup: ${child.pid}`);
+    if (!info) return;
     assert.match(info.commandLine, /storybook[\\/]dist[\\/]bin[\\/]dispatcher\.js/i);
     assert.ok(info.commandLine.toLowerCase().includes(root.toLowerCase()));
     spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
@@ -204,8 +207,8 @@ async function dragPlacement(page, placementId, dx, dy, beforeUp) {
 }
 
 async function visibleBranchIds(page) {
-  return page.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").evaluateAll(
-    (groups) => groups.map((group) => group.getAttribute("data-branch-id"))
+  return page.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").evaluateAll(
+    (paths) => paths.map((path) => path.getAttribute("data-branch-id"))
   );
 }
 
@@ -217,9 +220,8 @@ async function assertPathsAvoidVisibleCards(page) {
         rect: element.getBoundingClientRect(),
       }));
     const result = [];
-    for (const group of document.querySelectorAll("[data-testid=canvas-subtree-lines] g[data-branch-id]")) {
-      const branchId = group.getAttribute("data-branch-id") ?? "";
-      const path = group.querySelector("path:not(.tn-canvas-subtree-lines__path--highlight)");
+    for (const path of document.querySelectorAll("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]")) {
+      const branchId = path.getAttribute("data-branch-id") ?? "";
       if (!(path instanceof SVGPathElement)) continue;
       const matrix = path.getScreenCTM();
       if (!matrix) continue;
@@ -273,17 +275,8 @@ async function collapseSubtree(page, placementId) {
   await controls.locator("button[data-role=toggle]").click();
 }
 
-async function openDirectionMenu(page, placementId, { force = false } = {}) {
-  const controls = await selectedControls(page, placementId);
-  const toggle = controls.locator("button[data-role=toggle]");
-  if (force) await toggle.click({ force: true });
-  else await toggle.click();
-  await controls.locator('[role=menu][aria-label="选择展开方向"]').waitFor({ state: "visible" });
-  return controls;
-}
-
 async function expandSubtree(page, placementId, direction, { force = false } = {}) {
-  const controls = await openDirectionMenu(page, placementId, { force });
+  const controls = await selectedControls(page, placementId);
   const choice = controls.locator(`button[data-role=direction][data-direction="${direction}"]`);
   if (force) await choice.click({ force: true });
   else await choice.click();
@@ -300,28 +293,10 @@ async function setCanvasZoom(page, percent) {
   await waitFor(async () => (await reset.textContent())?.trim() === `${percent}%`, `Canvas zoom ${percent}%`);
 }
 
-async function assertSyncAffordanceSeparated(page, placementId) {
-  const card = page.locator(`[data-tent-placement-id="${placementId}"]`);
-  const sync = page.locator(`[data-sync-placement-id="${placementId}"] .tn-ui-icon-btn`);
-  const controls = await selectedControls(page, placementId);
-  const fold = controls.locator("button[data-role=toggle]");
-  const [cardRect, syncRect, foldRect] = await Promise.all([
-    card.boundingBox(),
-    sync.boundingBox(),
-    fold.boundingBox(),
-  ]);
-  assert.ok(cardRect && syncRect && foldRect, "Pending card, sync, and fold affordances must all be visible");
-  assert.ok(
-    syncRect.x + syncRect.width / 2 <= cardRect.x + 1 &&
-      syncRect.y + syncRect.height / 2 >= cardRect.y + cardRect.height - 1,
-    "Sync must stay at the card lower-left, away from the accepted upper-right internal link"
-  );
-  const separated =
-    syncRect.x + syncRect.width <= foldRect.x ||
-    foldRect.x + foldRect.width <= syncRect.x ||
-    syncRect.y + syncRect.height <= foldRect.y ||
-    foldRect.y + foldRect.height <= syncRect.y;
-  assert.equal(separated, true, "Sync and the single fold entry must not overlap");
+async function assertCanvasSyncAvailable(page) {
+  const sync = page.getByTestId("canvas-projection-sync");
+  assert.ok(await sync.boundingBox(), "Global Canvas sync must remain visible");
+  assert.equal(await sync.isEnabled(), true, "Pending Canvas sync must be enabled");
 }
 
 async function selectPlacement(page, placementId) {
@@ -330,27 +305,6 @@ async function selectPlacement(page, placementId) {
   assert.ok(rect, `Placement must be visible: ${placementId}`);
   await page.mouse.click(rect.x + rect.width / 2, rect.y + rect.height / 2);
   await page.locator(`[data-tent-placement-id="${placementId}"][data-selected=true]`).waitFor();
-}
-
-async function syncButtonForPlacement(page, placementId) {
-  const cardRect = await page.locator(`[data-tent-placement-id="${placementId}"]`).boundingBox();
-  assert.ok(cardRect, `Sync placement must be visible: ${placementId}`);
-  const containers = page.locator(".tn-canvas-projection-sync");
-  const boxes = await containers.evaluateAll((elements) => elements.map((element) => {
-    const rect = element.getBoundingClientRect();
-    return { left: rect.left, top: rect.top };
-  }));
-  assert.ok(boxes.length > 0, "Projection sync controls must exist");
-  let index = 0;
-  let distance = Number.POSITIVE_INFINITY;
-  boxes.forEach((box, candidate) => {
-    const next = Math.abs(box.left - cardRect.x) + Math.abs(box.top - cardRect.y);
-    if (next < distance) {
-      distance = next;
-      index = candidate;
-    }
-  });
-  return containers.nth(index).getByRole("button", { name: /^同步投影/ });
 }
 
 async function exerciseBrowser() {
@@ -431,7 +385,7 @@ async function exerciseBrowser() {
     const firstMembers = instanceMembers(state.presentation.document, firstInstanceId);
     const workbench = firstMembers.find((placement) => placement.entityRef === "cx-workbench");
     assert.ok(workbench, "workbench child must exist");
-    const branchSelector = `[data-branch-id$="${firstRoot.placementId}->${workbench.placementId}"] path:not(.tn-canvas-subtree-lines__path--highlight)`;
+    const branchSelector = `[data-line-layer=base] path[data-branch-id$="${firstRoot.placementId}->${workbench.placementId}"]`;
     const originalPath = await page.locator(branchSelector).getAttribute("d");
     const beforeChild = placementMap(state.presentation.document).get(workbench.placementId);
     await dragPlacement(page, workbench.placementId, 52, -34, async () => {
@@ -500,8 +454,8 @@ async function exerciseBrowser() {
     }
     await expandSubtree(page, firstRoot.placementId, lastDirection);
 
-    // Authority drift marks both instances. Sync reconciles exactly one and
-    // preserves survivor coordinates; the other remains pending.
+    // Authority drift marks both instances. One Canvas-level sync reconciles
+    // every local projection while preserving survivor coordinates.
     await page.getByTestId("e2e-drift").click();
     await page.locator(`[data-tent-placement-id="${firstRoot.placementId}"][data-projection-sync="pending-sync"]`).waitFor();
     const secondRoot = roots.find((placement) => placement.placementId !== firstRoot.placementId);
@@ -510,10 +464,9 @@ async function exerciseBrowser() {
     state = await readState(page);
     const beforeSyncMembers = instanceMembers(state.presentation.document, firstInstanceId);
     const survivorCoords = new Map(beforeSyncMembers.map((placement) => [placement.entityRef, { x: placement.x, y: placement.y }]));
-    await selectPlacement(page, firstRoot.placementId);
-    await (await syncButtonForPlacement(page, firstRoot.placementId)).click();
+    await page.getByTestId("canvas-projection-sync").click();
     await page.locator(`[data-tent-placement-id="${firstRoot.placementId}"][data-projection-sync="current"]`).waitFor();
-    await page.locator(`[data-tent-placement-id="${secondRoot.placementId}"][data-projection-sync="pending-sync"]`).waitFor();
+    await page.locator(`[data-tent-placement-id="${secondRoot.placementId}"][data-projection-sync="current"]`).waitFor();
     state = await readState(page);
     const afterSyncMembers = instanceMembers(state.presentation.document, firstInstanceId);
     assert.equal(afterSyncMembers.some((placement) => placement.entityRef === "cx-research"), false);
@@ -552,8 +505,9 @@ async function exerciseBrowser() {
     let firstCurrentMembers = instanceMembers(state.presentation.document, firstInstanceId);
     let currentRoot = firstCurrentMembers.find((placement) => placement.entityRef === "cx-product");
     let currentWorkbench = firstCurrentMembers.find((placement) => placement.entityRef === "cx-workbench");
-    let artifact = firstCurrentMembers.find((placement) => placement.entityRef === "cx-artifact");
-    assert.ok(currentRoot && currentWorkbench && artifact);
+    let currentResult = firstCurrentMembers.find((placement) => placement.entityRef === "cx-result");
+    let evidenceNode = firstCurrentMembers.find((placement) => placement.entityRef === "cx-evidence");
+    assert.ok(currentRoot && currentWorkbench && currentResult && evidenceNode);
     await selectPlacement(page, currentRoot.placementId);
     controls = await selectedControls(page, currentRoot.placementId);
     let currentDirection = await controls.getAttribute("data-expanded");
@@ -564,25 +518,31 @@ async function exerciseBrowser() {
     state = await readState(page);
     firstCurrentMembers = instanceMembers(state.presentation.document, firstInstanceId);
     currentWorkbench = firstCurrentMembers.find((placement) => placement.entityRef === "cx-workbench");
-    artifact = firstCurrentMembers.find((placement) => placement.entityRef === "cx-artifact");
-    assert.ok(currentWorkbench && artifact);
+    currentResult = firstCurrentMembers.find((placement) => placement.entityRef === "cx-result");
+    evidenceNode = firstCurrentMembers.find((placement) => placement.entityRef === "cx-evidence");
+    assert.ok(currentWorkbench && currentResult && evidenceNode);
     await selectPlacement(page, currentWorkbench.placementId);
     controls = await selectedControls(page, currentWorkbench.placementId);
     if ((await controls.getAttribute("data-expanded")) === "collapsed") {
       await expandSubtree(page, currentWorkbench.placementId, "down");
     }
-    await page.locator(`[data-tent-placement-id="${artifact.placementId}"]`).waitFor();
+    await selectPlacement(page, currentResult.placementId);
+    controls = await selectedControls(page, currentResult.placementId);
+    if ((await controls.getAttribute("data-expanded")) === "collapsed") {
+      await expandSubtree(page, currentResult.placementId, "down");
+    }
+    await page.locator(`[data-tent-placement-id="${evidenceNode.placementId}"]`).waitFor();
     const workbenchTree = page.getByRole("treeitem", { name: /主界面：Canvas、节点与焦点/ });
     const disclosure = workbenchTree.locator(".tn-outline-disclosure");
     if ((await workbenchTree.getAttribute("aria-expanded")) === "true") await disclosure.click();
     await page.getByRole("treeitem", { name: /主界面视觉与交互证据/ }).waitFor({ state: "hidden" });
     const cameraBefore = await page.locator("[data-testid=canvas-subtree-lines] > g").getAttribute("transform");
-    await selectPlacement(page, artifact.placementId);
-    const artifactTree = page.getByRole("treeitem", { name: /主界面视觉与交互证据/ });
-    await artifactTree.waitFor({ state: "visible" });
-    assert.equal(await artifactTree.getAttribute("aria-selected"), "true");
-    assert.equal(await artifactTree.evaluate((element) => document.activeElement === element), true);
-    assert.match(await page.locator("#tn-focus-panel").innerText(), /主界面视觉与交互证据/);
+    await selectPlacement(page, evidenceNode.placementId);
+    const evidenceTree = page.getByRole("treeitem", { name: /真实交互、持久化与恢复证据/ });
+    await evidenceTree.waitFor({ state: "visible" });
+    assert.equal(await evidenceTree.getAttribute("aria-selected"), "true");
+    assert.equal(await evidenceTree.evaluate((element) => document.activeElement === element), true);
+    assert.match(await page.locator("#tn-focus-panel").innerText(), /真实交互、持久化与恢复证据/);
     const cameraAfter = await page.locator("[data-testid=canvas-subtree-lines] > g").getAttribute("transform");
     assert.equal(cameraAfter, cameraBefore, "Canvas selection must not move the camera");
 
@@ -602,7 +562,7 @@ async function exerciseBrowser() {
     await fsp.mkdir(outputDir, { recursive: true });
     for (const percent of [50, 100, 200]) {
       await setCanvasZoom(page, percent);
-      await assertSyncAffordanceSeparated(page, visualRoot.placementId);
+      await assertCanvasSyncAvailable(page);
       await page.screenshot({ path: path.join(outputDir, `canvas-sync-zoom-${percent}-1440x900.png`) });
     }
     await setCanvasZoom(page, 100);
@@ -614,37 +574,33 @@ async function exerciseBrowser() {
     await page.screenshot({ path: path.join(outputDir, "canvas-connector-after-1440x900.png") });
     await selectPlacement(page, visualRoot.placementId);
     await collapseSubtree(page, visualRoot.placementId);
-    let visualControls = await openDirectionMenu(page, visualRoot.placementId);
-    await page.screenshot({ path: path.join(outputDir, "canvas-direction-menu-1440x900.png") });
-    await page.keyboard.press("Escape");
-    await waitFor(async () => (await visualControls.getAttribute("data-menu-open")) === "false", "Escape direction-menu dismissal");
-    assert.equal(await visualControls.locator("button[data-role=toggle]").evaluate((element) => document.activeElement === element), true);
-    visualControls = await openDirectionMenu(page, visualRoot.placementId);
-    await page.locator("body").dispatchEvent("pointerdown");
-    await waitFor(async () => (await visualControls.getAttribute("data-menu-open")) === "false", "outside direction-menu dismissal");
-    visualControls = await openDirectionMenu(page, visualRoot.placementId);
+    let visualControls = await selectedControls(page, visualRoot.placementId);
+    assert.equal(await visualControls.locator("button[data-role=direction]").count(), 4);
+    await page.screenshot({ path: path.join(outputDir, "canvas-direction-controls-1440x900.png") });
     await page.getByTestId("e2e-stale").click();
-    await visualControls.waitFor({ state: "detached" });
-    assert.equal(await page.locator('[role=menu][aria-label="选择展开方向"]').count(), 0, "authority removal must close the menu");
+    visualControls = await selectedControls(page, visualRoot.placementId);
+    assert.equal(await visualControls.locator("button[data-role=direction]").count(), 4, "stale authority keeps local projection controls");
+    assert.equal(await page.getByTestId("canvas-projection-sync").isEnabled(), false, "stale authority disables Canvas sync");
     await page.getByTestId("e2e-online").click();
     await selectPlacement(page, visualRoot.placementId);
     await expandSubtree(page, visualRoot.placementId, "right");
 
     await page.setViewportSize({ width: 1280, height: 840 });
     await selectPlacement(page, visualRoot.placementId);
-    await assertSyncAffordanceSeparated(page, visualRoot.placementId);
+    await assertCanvasSyncAvailable(page);
     await page.screenshot({ path: path.join(outputDir, "canvas-production-e2e-1280x840.png") });
     await dragPlacement(page, visualChild.placementId, -30, 18, async () => {
       await page.screenshot({ path: path.join(outputDir, "canvas-connector-live-1280x840.png") });
       await assertPathsAvoidVisibleCards(page);
     });
     await page.screenshot({ path: path.join(outputDir, "canvas-connector-after-1280x840.png") });
-    const cleanBranchCount = await page.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count();
+    const cleanBranchCount = await page.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count();
     assert.ok(cleanBranchCount > 0, "clean expanded subtree must retain a visible direct-child branch");
     await selectPlacement(page, visualRoot.placementId);
     await collapseSubtree(page, visualRoot.placementId);
-    await openDirectionMenu(page, visualRoot.placementId);
-    await page.screenshot({ path: path.join(outputDir, "canvas-direction-menu-1280x840.png") });
+    visualControls = await selectedControls(page, visualRoot.placementId);
+    assert.equal(await visualControls.locator("button[data-role=direction]").count(), 4);
+    await page.screenshot({ path: path.join(outputDir, "canvas-direction-controls-1280x840.png") });
     assert.equal(consoleProblems.length, 0, `Browser console must stay clean:\n${consoleProblems.join("\n")}`);
     return {
       placements: state.presentation.document.placements.length,
@@ -1255,7 +1211,7 @@ async function exercisePackagedElectron() {
     // complete subtree is durable immediately, but children remain hidden until
     // the exact projection root is explicitly expanded.
     await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 2, "packaged folded subtree cards");
-    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count(), 0);
+    assert.equal(await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count(), 0);
     let persisted = await waitFor(async () => {
       const snapshot = await persistedCanvas(window);
       // Both the direct child and folded grandchild remain persisted members of
@@ -1276,7 +1232,7 @@ async function exercisePackagedElectron() {
     await expandSubtree(window, rootPlacement.placementId, "right", { force: true });
     await waitFor(async () => (await window.locator("[data-tent-placement-id]").count()) === 3, "packaged expanded subtree cards");
     await waitFor(
-      async () => (await window.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count()) === 1,
+      async () => (await window.locator("[data-testid=canvas-subtree-lines] [data-line-layer=base] path[data-branch-id]").count()) === 1,
       "packaged expanded subtree relationship",
     );
     persisted = await waitFor(async () => {

@@ -33,3 +33,5 @@ jobs:
       - run: npm ci
       - run: npm run security:audit
       - run: npm run check
+      - if: runner.os == 'Windows' && matrix.node == 22
+        run: npm run test:renderer-next:e2e
