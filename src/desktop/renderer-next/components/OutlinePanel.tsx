@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { Button, IconButton, PaneHeader } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import { nodeTitle, nodeTypeLabel, projectionLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
-import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
+import {
+  TENT_NODE_IDS_DRAG_TYPE,
+  encodeNodeIdsDrag,
+} from "../../task-package-draft.js";
 import {
   firstOutlineChild,
   updateOutlineExpansion,
@@ -21,8 +24,9 @@ export type OutlinePanelProps = {
   onModeChange?: (mode: "nodes" | "inbox") => void;
   nodes: readonly WorkbenchNodeView[];
   projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
-  selectedNodeId: string | null;
-  onSelectNode: (nodeId: string) => void;
+  focusedNodeId: string | null;
+  selectedNodeIds?: readonly string[];
+  onSelectNode: (nodeId: string, toggle?: boolean) => void;
   onOpenNodeActions?: (nodeId: string) => void;
   canDragToCanvas?: boolean;
   canvasPresence?: ReadonlyMap<string, { count: number; pendingSync: boolean }>;
@@ -62,7 +66,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, collaboration = { workspaceId: null, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false } }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, focusedNodeId, selectedNodeIds = focusedNodeId ? [focusedNodeId] : [], onSelectNode, onOpenNodeActions, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, collaboration = { workspaceId: null, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false } }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -195,8 +199,8 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
       return [node.nodeId, { position: group.indexOf(node) + 1, size: group.length }] as const;
     }));
   }, [nodes]);
-  const rovingNodeId = visibleNodes.some((node) => node.nodeId === selectedNodeId)
-    ? selectedNodeId
+  const rovingNodeId = visibleNodes.some((node) => node.nodeId === focusedNodeId)
+    ? focusedNodeId
     : visibleNodes[0]?.nodeId ?? null;
 
   const focusItem = (node: WorkbenchNodeView | undefined | null) => {
@@ -212,10 +216,10 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
       expandedNodeIds,
       nodeId: node.nodeId,
       expanded,
-      selectedNodeId,
+      selectedNodeId: focusedNodeId,
     });
     setExpandedNodeIds(next.expandedNodeIds);
-    if (next.selectedNodeId !== selectedNodeId && next.selectedNodeId) {
+    if (next.selectedNodeId !== focusedNodeId && next.selectedNodeId) {
       onSelectNode(next.selectedNodeId);
       requestAnimationFrame(() => itemRefs.current.get(node.nodeId)?.focus());
     }
@@ -286,7 +290,8 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
             可将权威状态正常的节点拖到画布，创建独立的本地快照位置。
           </span>
           {visibleNodes.map((node, index) => {
-            const selected = node.nodeId === selectedNodeId;
+            const selected = selectedNodeIds.includes(node.nodeId);
+            const focused = node.nodeId === focusedNodeId;
             const projectionCopy = projectionLabel(node.projectionState);
             const projectionReady = !node.projectionState || node.projectionState === "ready";
             const expanded = node.hasChildren ? expandedNodeIds.has(node.nodeId) : undefined;
@@ -310,9 +315,10 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                 className="tn-outline-node"
                 style={{ "--tn-tree-depth": node.depth ?? 0 } as CSSProperties}
                 data-selected={selected || undefined}
+                data-focused={focused || undefined}
                 data-drag-active={draggingNodeId === node.nodeId || undefined}
                 data-projection={node.projectionState ?? "ready"}
-                onClick={() => onSelectNode(node.nodeId)}
+                onClick={(event) => onSelectNode(node.nodeId, event.ctrlKey || event.metaKey)}
                 onKeyDown={(event) => onTreeKeyDown(event, index)}
                 draggable={canDragToCanvas && projection === "fresh" && projectionReady}
                 onDragStart={(event) => {
@@ -321,7 +327,11 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                     return;
                   }
                   event.dataTransfer.effectAllowed = "copy";
-                  event.dataTransfer.setData(OUTLINE_NODE_DRAG_TYPE, node.nodeId);
+                  const carried = selectedNodeIds.includes(node.nodeId)
+                    ? selectedNodeIds
+                    : [node.nodeId];
+                  if (!selectedNodeIds.includes(node.nodeId)) onSelectNode(node.nodeId, false);
+                  event.dataTransfer.setData(TENT_NODE_IDS_DRAG_TYPE, encodeNodeIdsDrag(carried));
                   event.dataTransfer.setData("text/plain", nodeTitle(node));
                   setDraggingNodeId(node.nodeId);
                 }}

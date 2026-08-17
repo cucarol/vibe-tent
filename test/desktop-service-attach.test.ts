@@ -23,7 +23,6 @@ import {
   serviceChildEnv,
 } from "../src/desktop/client/service-attach.js";
 import { ServiceDocsClient } from "../src/desktop/client/service-docs-client.js";
-import { ContextCardStore } from "../src/desktop/workbench/context-card-store.js";
 import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
 import { loadDesktopPrefs, rememberWorkspace, saveDesktopPrefs } from "../src/desktop/prefs.js";
@@ -107,21 +106,13 @@ test("CLIENT_METHODS includes docs.search/backlinks/importAttachment for desktop
   assert.ok(CLIENT_METHODS.includes("docs.importAttachment"));
 });
 
-test("ContextCardStore + drag text/plain payload is stable pointer prompt", () => {
-  const store = new ContextCardStore(3);
+test("canonical Context Card text remains a stable pointer prompt", () => {
   const card = nodeContextCard("cx-demo", "inbox", { label: "inbox" });
   const text = contextCardToDragText(card);
   assert.match(text, /Tent contextCard v1/);
   assert.match(text, /contextRef: node\/cx-demo/);
   assert.equal(parseContextCardText(text)?.id, "cx-demo");
 
-  store.pushFromCard(card);
-  store.pushNode("cx-2", "other");
-  store.pushNode("cx-demo", "inbox", "inbox again");
-  const list = store.list();
-  assert.equal(list.length, 2);
-  assert.equal(list[0].refId, "cx-demo");
-  assert.match(list[0].text, /text\/plain|contextRef|Tent contextCard/);
 });
 
 test("ServiceDocsClient over real Local Service: list/open/write/search", async () => {
@@ -175,13 +166,8 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
     assert.equal(model.getSnapshot().health.status, "ok");
     await model.refreshWorkspaces();
     await model.bindForeground(mounted.workspaceId);
-    // Float Context Cards are explicit; the main bootstrap no longer carries
-    // the retired WorkspaceController/Task collaboration state.
-    model.cards.pushNode(created.nodeId, created.path, "from-desk");
     const floating = model.floatingStatus();
     assert.equal(floating.health.status, "ok");
-    assert.ok(floating.recentCards.length >= 1);
-    assert.match(floating.recentCards[0].text, /Tent contextCard v1/);
   } finally {
     await svc.stop();
   }

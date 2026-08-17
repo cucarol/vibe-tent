@@ -1,4 +1,4 @@
-import { useState, type Ref } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import { Button, IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import {
@@ -40,7 +40,7 @@ export type InspectorPanelProps = {
   placementActionRef?: Ref<HTMLButtonElement>;
   document?: FocusDocumentView;
   documentActions?: FocusDocumentActions;
-  allNodes?: readonly WorkbenchNodeView[];
+  taskPackage?: ReactNode;
   collaboration?: CollaborationSurfaceView;
   collaborationActions?: CollaborationSurfaceActions;
   expanded?: boolean;
@@ -60,7 +60,7 @@ export function InspectorPanel({
   placementActionRef,
   document,
   documentActions,
-  allNodes = [],
+  taskPackage,
   collaboration,
   collaborationActions,
   expanded = false,
@@ -99,9 +99,12 @@ export function InspectorPanel({
         actions={<IconButton size="compact" aria-label="收起详情面板" tooltip="收起详情面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
       />
       {!displayNode ? (
-        <div className="tn-pane-empty" role="status">
-          <strong>选择一个节点</strong>
-          <p>正文、属性、派活与审阅会在这里打开。</p>
+        <div className="tn-inspector-content">
+          <div className="tn-pane-empty" role="status">
+            <strong>选择一个节点</strong>
+            <p>正文、属性、派活与审阅会在这里打开；也可直接提交仅含说明的任务。</p>
+          </div>
+          {taskPackage}
         </div>
       ) : (
         <div className="tn-inspector-content">
@@ -170,7 +173,6 @@ export function InspectorPanel({
             <CollaborationPanel
               key={collaborationPanelIdentity(collaboration)}
               node={authoritativeNode}
-              allNodes={allNodes}
               view={collaboration}
               actions={collaborationActions}
             />
@@ -208,6 +210,7 @@ export function InspectorPanel({
               ) : null}
             </div>
           ) : null}
+          {taskPackage}
         </div>
       )}
     </aside>

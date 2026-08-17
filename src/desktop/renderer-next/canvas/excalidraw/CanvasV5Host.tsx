@@ -111,7 +111,8 @@ export type CanvasV5HostProps = {
   onDocumentChange: (document: CanvasDocument) => void;
   onSelectPlacement: (
     placementId: string | null,
-    entityRef: string | null
+    entityRef: string | null,
+    toggle?: boolean
   ) => void;
   resolvers?: CanvasNodeResolvers;
   graph?: GraphEdgeSource | null;
@@ -474,7 +475,12 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   }, []);
 
   const selectTentPlacement = useCallback(
-    (placementId: string | null, nodeId: string | null) => {
+    (
+      placementId: string | null,
+      nodeId: string | null,
+      toggle = false,
+      notify = true
+    ) => {
       const nextOwnership = reduceV5Ownership(ownershipRef.current, {
         type: "select-placement",
         placementId,
@@ -485,7 +491,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       if (nextDocument.focusedPlacementId !== documentRef.current.focusedPlacementId) {
         publishDocument(nextDocument);
       }
-      onSelectPlacementRef.current(placementId, nodeId);
+      if (notify) onSelectPlacementRef.current(placementId, nodeId, toggle);
     },
     [publishDocument]
   );
@@ -1231,7 +1237,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     const custom = readTentNodeCustomData(hit ?? undefined);
     if (custom) {
       pointerGestureActiveRef.current = true;
-      selectTentPlacement(custom.placementId, custom.nodeId);
+      selectTentPlacement(custom.placementId, custom.nodeId, false, false);
       return;
     }
     if (!pointerDownState.withCmdOrCtrl) {
@@ -1431,7 +1437,11 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         card.parentElement?.parentElement instanceof HTMLElement
           ? card.parentElement.parentElement
           : card;
-      selectTentPlacement(placementId, custom.nodeId);
+      selectTentPlacement(
+        placementId,
+        custom.nodeId,
+        event.ctrlKey || event.metaKey
+      );
       focusExcalidrawKeyboardOwner(host);
       api.updateScene({
         appState: {

@@ -14,6 +14,10 @@ import type {
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
 import type { CollaborationActiveTask } from "../model/workspace-collaboration-view.js";
+import {
+  emptyTaskPackageDraft,
+  updateTransientNodeSelection,
+} from "../../task-package-draft.js";
 
 type MainWindowPreviewProps = {
   state: ProjectionState;
@@ -127,13 +131,20 @@ function previewDocument(
 function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", outlineMode = "nodes", snapshotSourceState = "current" }: MainWindowPreviewProps) {
   const [presentation, setPresentation] = useState(() => ({
     document: previewDocument(selectedNodeId, selectedPlacement, snapshotSourceState),
-    selectedNodeId,
+    focusedNodeId: selectedNodeId,
   }));
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(() =>
+    selectedNodeId ? [selectedNodeId] : []
+  );
+  const [taskPackageDraft, setTaskPackageDraft] = useState(() =>
+    emptyTaskPackageDraft()
+  );
   useEffect(() => {
     setPresentation({
       document: previewDocument(selectedNodeId, selectedPlacement, snapshotSourceState),
-      selectedNodeId,
+      focusedNodeId: selectedNodeId,
     });
+    setSelectedNodeIds(selectedNodeId ? [selectedNodeId] : []);
   }, [selectedNodeId, selectedPlacement, snapshotSourceState, state]);
   const previewNodes = useMemo(() => {
     const nodes = fixtureNodesForCollaboration(state, collaborationState);
@@ -220,7 +231,11 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         workspaceLabel="产品工作区"
         initialNodes={previewNodes}
         document={presentation.document}
-        selectedNodeId={presentation.selectedNodeId}
+        focusedNodeId={presentation.focusedNodeId}
+        selectedNodeIds={selectedNodeIds}
+        onNodeSelectionChange={(nodeId, toggle) => setSelectedNodeIds((current) =>
+          updateTransientNodeSelection(current, nodeId, toggle)
+        )}
         onPresentationChange={(update) => setPresentation((current) => update(current))}
         connection={connection}
         onRetryConnection={connection === "online" ? undefined : () => {}}
@@ -236,6 +251,8 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         focusDocumentActions={documentActions}
         collaboration={fixtureCollaboration(collaborationState)}
         collaborationActions={collaborationState === "none" ? undefined : collaborationActions}
+        taskPackageDraft={taskPackageDraft}
+        onTaskPackageDraftChange={setTaskPackageDraft}
         initialInspectorTab={collaborationState === "none" ? "content" : "collaboration"}
         initialFocusExpanded={expanded}
         initialOutlineMode={outlineMode}

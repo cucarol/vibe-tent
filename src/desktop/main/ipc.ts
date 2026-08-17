@@ -9,7 +9,6 @@ import {
   saveDesktopPrefs,
 } from "../prefs.js";
 import { DESKTOP_IPC, type DesktopPreferences } from "../types.js";
-import { contextCardToDragText } from "../../core/context-card.js";
 import type { DesktopDocumentResponse } from "../document-ipc.js";
 import { handleDesktopDocumentRequest } from "./document-ipc-handler.js";
 import type { DesktopCollaborationResponse } from "../collaboration-ipc.js";
@@ -122,45 +121,10 @@ export function registerDesktopIpc(ctx: IpcContext): void {
     ctx.hideFloat();
   });
 
-  ipcMain.handle(
-    DESKTOP_IPC.pushContextCard,
-    async (
-      _e: unknown,
-      payload: {
-        kind: string;
-        id: string;
-        path?: string;
-        label?: string;
-      }
-    ) => {
-      const entry = ctx.model.cards.pushRef(
-        {
-          kind: payload.kind as
-            | "node"
-            | "task"
-            | "result"
-            | "handoff"
-            | "selection"
-            | "role",
-          id: payload.id,
-          path: payload.path,
-        },
-        { label: payload.label }
-      );
-      ctx.broadcastState();
-      return entry;
-    }
-  );
-
   ipcMain.handle(DESKTOP_IPC.getFloatingStatus, async () => {
     await ctx.model.refreshHealth();
     await ctx.model.refreshFloatingTasks();
     return ctx.model.floatingStatus();
   });
 
-  // Context Card cross-app drag is renderer HTML5 text/plain (Chromium OLE on
-  // Windows). Electron webContents.startDrag is file-path only — do not expose
-  // a clipboard-write IPC as if it were native text drag.
 }
-
-export { contextCardToDragText };

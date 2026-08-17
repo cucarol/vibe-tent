@@ -216,7 +216,7 @@ test("wide sibling sets wrap into bounded directional bands instead of an unboun
 
 test("right-pane placement repeats the same leaf-or-subtree materialization as drag", () => {
   const first = placePresentationSubtreeOrLeaf(
-    { document: emptyDocument(), selectedNodeId: "root" },
+    { document: emptyDocument(), focusedNodeId: "root" },
     "root",
     TREE
   );
@@ -1040,7 +1040,7 @@ test("dropping a nested parent creates a complete instance and a leaf stays stan
   const created = createInstance();
   const parentTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-1")!;
   const nested = dropPresentationSubtreeOrLeaf(
-    { document: created.document, selectedNodeId: null },
+    { document: created.document, focusedNodeId: null },
     "child-a",
     [source("child-a", "root"), source("grandchild", "child-a")],
     { x: (parentTarget.x ?? 0) + 20, y: (parentTarget.y ?? 0) + 20 }
@@ -1057,7 +1057,7 @@ test("dropping a nested parent creates a complete instance and a leaf stays stan
 
   const rootTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-0")!;
   const standaloneLeaf = dropPresentationSubtreeOrLeaf(
-    { document: created.document, selectedNodeId: null },
+    { document: created.document, focusedNodeId: null },
     "leaf",
     [source("leaf", "root")],
     { x: (rootTarget.x ?? 0) + 20, y: (rootTarget.y ?? 0) + 20 }

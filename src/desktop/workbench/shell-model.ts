@@ -8,7 +8,6 @@ import type {
   ServiceHealthView,
   WorkspaceSummary,
 } from "../types.js";
-import { ContextCardStore } from "./context-card-store.js";
 
 type FloatingTaskState = Pick<TaskProjection, "state">;
 
@@ -23,7 +22,6 @@ export class DesktopShellModel {
   private foregroundWorkspaceId: string | null = null;
   private floatingTasks: FloatingTaskState[] = [];
   private listeners = new Set<() => void>();
-  readonly cards = new ContextCardStore();
 
   constructor(private rpc: ServiceRpcClient | null = null) {}
 
@@ -157,7 +155,6 @@ export class DesktopShellModel {
       takenTasks: this.floatingTasks.filter((task) =>
         task.state === "running" || task.state === "waiting" || task.state === "submitted"
       ).length,
-      recentCards: this.cards.list(),
       foregroundRoot: foreground?.workspaceRoot ?? null,
     };
   }

@@ -37,12 +37,6 @@ export type TentDesktopApi = {
   hideMain: () => Promise<void>;
   showFloat: () => Promise<void>;
   hideFloat: () => Promise<void>;
-  pushContextCard: (payload: {
-    kind: string;
-    id: string;
-    path?: string;
-    label?: string;
-  }) => Promise<unknown>;
   getFloatingStatus: () => Promise<unknown>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
   /** Service SSE type fan-out — renderer must re-fetch projections, not trust payload. */
@@ -77,7 +71,6 @@ const api: TentDesktopApi = {
   hideMain: () => ipcRenderer.invoke(DESKTOP_IPC.hideMain),
   showFloat: () => ipcRenderer.invoke(DESKTOP_IPC.showFloat),
   hideFloat: () => ipcRenderer.invoke(DESKTOP_IPC.hideFloat),
-  pushContextCard: (payload) => ipcRenderer.invoke(DESKTOP_IPC.pushContextCard, payload),
   getFloatingStatus: () => ipcRenderer.invoke(DESKTOP_IPC.getFloatingStatus),
   onStateChanged: (handler) => {
     const listener = (_event: unknown, state: unknown) => handler(state);

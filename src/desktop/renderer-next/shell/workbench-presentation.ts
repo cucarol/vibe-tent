@@ -22,7 +22,7 @@ import type { WorkbenchNodeView } from "./workbench-types.js";
 
 export type WorkbenchPresentationState = {
   document: CanvasDocument;
-  selectedNodeId: string | null;
+  focusedNodeId: string | null;
 };
 
 export type WorkbenchPresentationUpdate = (
@@ -127,7 +127,7 @@ export function withPresentationDocument(
   current: WorkbenchPresentationState,
   document: CanvasDocument
 ): WorkbenchPresentationState {
-  return { document, selectedNodeId: current.selectedNodeId };
+  return { document, focusedNodeId: current.focusedNodeId };
 }
 
 export function selectPresentationNode(
@@ -136,7 +136,7 @@ export function selectPresentationNode(
   placementId?: string | null
 ): WorkbenchPresentationState {
   return {
-    selectedNodeId: nodeId,
+    focusedNodeId: nodeId,
     document: focusWorkbenchNode(current.document, nodeId, placementId),
   };
 }
@@ -150,9 +150,9 @@ export function selectPresentationNodeFromOutline(
   current: WorkbenchPresentationState,
   nodeId: string
 ): WorkbenchPresentationState {
-  return current.selectedNodeId === nodeId
+  return current.focusedNodeId === nodeId
     ? current
-    : { ...current, selectedNodeId: nodeId };
+    : { ...current, focusedNodeId: nodeId };
 }
 
 export function placePresentationNode(
@@ -161,7 +161,7 @@ export function placePresentationNode(
   snapshot?: CanvasNodeSnapshot
 ): WorkbenchPresentationState {
   return {
-    selectedNodeId: nodeId,
+    focusedNodeId: nodeId,
     document: placeEntityInVisibleViewport(
       current.document,
       nodeId,
@@ -178,7 +178,7 @@ export function dropPresentationNode(
   point: { x: number; y: number }
 ): WorkbenchPresentationState {
   return {
-    selectedNodeId: nodeId,
+    focusedNodeId: nodeId,
     document: dropNodeSnapshotAt(current.document, nodeId, snapshot, point).document,
   };
 }
@@ -198,7 +198,7 @@ export function dropPresentationSubtree(
     direction
   );
   return {
-    selectedNodeId: rootNodeId,
+    focusedNodeId: rootNodeId,
     document: dropped.document,
   };
 }
@@ -217,21 +217,50 @@ export function dropPresentationSubtreeOrLeaf(
   return dropPresentationNode(current, rootNodeId, root.snapshot, point);
 }
 
-/**
- * Keyboard/right-pane placement uses the same duplicate-preserving leaf versus
- * subtree materialization as Outline drag, choosing only a free visible origin.
- */
-export function placePresentationSubtreeOrLeaf(
+export function canonicalPresentationRootNodeIds(
+  nodes: readonly WorkbenchNodeView[],
+  nodeIds: readonly string[]
+): string[] {
+  const known = new Map(nodes.map((node) => [node.nodeId, node] as const));
+  const requested = [...new Set(nodeIds)];
+  if (requested.some((nodeId) => !known.has(nodeId))) return [];
+  const selected = new Set(requested);
+  return requested.filter((nodeId) => {
+    const seen = new Set<string>();
+    let parentId = known.get(nodeId)?.parentNodeId ?? null;
+    while (parentId) {
+      if (selected.has(parentId)) return false;
+      if (seen.has(parentId)) break;
+      seen.add(parentId);
+      parentId = known.get(parentId)?.parentNodeId ?? null;
+    }
+    return true;
+  });
+}
+
+export type PresentationRoot = {
+  nodeId: string;
+  sources: readonly CanvasSubtreeNodeSource[];
+};
+
+export function collectReadyPresentationRoots(
+  nodes: readonly WorkbenchNodeView[],
+  nodeIds: readonly string[]
+): PresentationRoot[] | null {
+  const rootNodeIds = canonicalPresentationRootNodeIds(nodes, nodeIds);
+  if (nodeIds.length > 0 && rootNodeIds.length === 0) return null;
+  const roots = rootNodeIds.flatMap((nodeId) => {
+    const sources = collectReadyPresentationSubtreeSources(nodes, nodeId);
+    return sources ? [{ nodeId, sources }] : [];
+  });
+  return roots.length === rootNodeIds.length ? roots : null;
+}
+
+function placePresentationRootAtFreePoint(
   current: WorkbenchPresentationState,
-  rootNodeId: string,
-  sources: readonly CanvasSubtreeNodeSource[]
+  root: PresentationRoot,
+  base: { x: number; y: number }
 ): WorkbenchPresentationState {
-  const viewport = current.document.viewport ?? DEFAULT_VIEWPORT;
-  const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
-  const base = {
-    x: (VISIBLE_NODE_PLACEMENT.insetX - viewport.x) / zoom,
-    y: (VISIBLE_NODE_PLACEMENT.insetY - viewport.y) / zoom,
-  };
   const overlaps = (candidate: WorkbenchPresentationState) => {
     const margin = 20;
     const added = candidate.document.placements.slice(current.document.placements.length);
@@ -255,7 +284,45 @@ export function placePresentationSubtreeOrLeaf(
       x: base.x + (slot % 2) * (NODE_CARD.width + 32),
       y: base.y + Math.floor(slot / 2) * (NODE_CARD.height + 32),
     };
-    const candidate = dropPresentationSubtreeOrLeaf(current, rootNodeId, sources, point);
+    const candidate = dropPresentationSubtreeOrLeaf(
+      current,
+      root.nodeId,
+      root.sources,
+      point
+    );
     if (!overlaps(candidate)) return candidate;
   }
+}
+
+export function dropPresentationRootSet(
+  current: WorkbenchPresentationState,
+  roots: readonly PresentationRoot[],
+  point: { x: number; y: number }
+): WorkbenchPresentationState {
+  return roots.reduce(
+    (next, root) => placePresentationRootAtFreePoint(next, root, point),
+    current
+  );
+}
+
+/**
+ * Keyboard/right-pane placement uses the same duplicate-preserving leaf versus
+ * subtree materialization as Outline drag, choosing only a free visible origin.
+ */
+export function placePresentationSubtreeOrLeaf(
+  current: WorkbenchPresentationState,
+  rootNodeId: string,
+  sources: readonly CanvasSubtreeNodeSource[]
+): WorkbenchPresentationState {
+  const viewport = current.document.viewport ?? DEFAULT_VIEWPORT;
+  const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
+  const base = {
+    x: (VISIBLE_NODE_PLACEMENT.insetX - viewport.x) / zoom,
+    y: (VISIBLE_NODE_PLACEMENT.insetY - viewport.y) / zoom,
+  };
+  return placePresentationRootAtFreePoint(
+    current,
+    { nodeId: rootNodeId, sources },
+    base
+  );
 }

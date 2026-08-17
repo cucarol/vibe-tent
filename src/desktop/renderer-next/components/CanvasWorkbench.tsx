@@ -6,10 +6,11 @@ import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 import { clientPointToCanvasNodeOrigin } from "../model/canvas-session-store.js";
+import { captureCanvasNodeSnapshot } from "../model/canvas-node-snapshot.js";
 import {
-  OUTLINE_NODE_DRAG_TYPE,
-  captureCanvasNodeSnapshot,
-} from "../model/canvas-node-snapshot.js";
+  TENT_NODE_IDS_DRAG_TYPE,
+  decodeNodeIdsDrag,
+} from "../../task-package-draft.js";
 import {
   deriveCanvasSubtreeProjection,
   reconcileCanvasDocumentSync,
@@ -32,12 +33,12 @@ export type CanvasWorkbenchProps = {
   immersive: boolean;
   onImmersiveChange: (immersive: boolean) => void;
   onDocumentChange: (document: CanvasDocument) => void;
-  onSelectNode: (nodeId: string | null, placementId?: string | null) => void;
+  onSelectNode: (nodeId: string | null, placementId?: string | null, toggle?: boolean) => void;
   initialScene?: ExcalidrawSceneSnapshot | null;
   persistenceStatus?: DrawingPersistenceStatus;
   onRetryPersistence?: () => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
-  onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
+  onDropNodes?: (nodeIds: readonly string[], point: { x: number; y: number }) => boolean;
   previewDocument?: {
     nodeId: string;
     status?: "loading" | "ready" | "error";
@@ -51,7 +52,7 @@ export type CanvasWorkbenchProps = {
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, onPreviewNode, attentionPlacementIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNodes, previewDocument = null, onPreviewNode, attentionPlacementIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
@@ -136,7 +137,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
   };
 
   const hasNodeDrag = (event: DragEvent) =>
-    Array.from(event.dataTransfer.types).includes(OUTLINE_NODE_DRAG_TYPE);
+    Array.from(event.dataTransfer.types).includes(TENT_NODE_IDS_DRAG_TYPE);
 
   const cancelSuccessTimer = () => {
     if (successTimerRef.current !== null) {
@@ -148,17 +149,17 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
   useEffect(() => () => cancelSuccessTimer(), []);
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    if (!onDropNode || !hasNodeDrag(event)) return;
-    const nodeId = event.dataTransfer.getData(OUTLINE_NODE_DRAG_TYPE);
+    if (!onDropNodes || !hasNodeDrag(event)) return;
+    const nodeIds = decodeNodeIdsDrag(event.dataTransfer.getData(TENT_NODE_IDS_DRAG_TYPE));
     const rect = hostRef.current?.getBoundingClientRect();
-    if (!nodeId || !rect) return;
+    if (!nodeIds.length || !rect) return;
     event.preventDefault();
     const point = clientPointToCanvasNodeOrigin(
       { x: event.clientX, y: event.clientY },
       rect,
       document.viewport
     );
-    const accepted = onDropNode(nodeId, point);
+    const accepted = onDropNodes(nodeIds, point);
     setDropFeedback(completeCanvasDrop(accepted));
     cancelSuccessTimer();
     if (accepted) {
@@ -176,13 +177,13 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
         className="tn-canvas-host"
         data-drop-state={dropFeedback.phase}
         onDragEnter={(event) => {
-          if (!onDropNode || !hasNodeDrag(event)) return;
+          if (!onDropNodes || !hasNodeDrag(event)) return;
           event.preventDefault();
           cancelSuccessTimer();
           setDropFeedback(enterCanvasDropTarget);
         }}
         onDragOver={(event) => {
-          if (!onDropNode || !hasNodeDrag(event)) return;
+          if (!onDropNodes || !hasNodeDrag(event)) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
           const rect = hostRef.current?.getBoundingClientRect();
@@ -193,7 +194,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
           }
         }}
         onDragLeave={(event) => {
-          if (!onDropNode || !hasNodeDrag(event)) return;
+          if (!onDropNodes || !hasNodeDrag(event)) return;
           setDropFeedback(leaveCanvasDropTarget);
         }}
         onDrop={handleDrop}
@@ -202,7 +203,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
           <CanvasV5Host
             document={document}
             onDocumentChange={onDocumentChange}
-            onSelectPlacement={(placementId, entityRef) => onSelectNode(entityRef, placementId)}
+            onSelectPlacement={(placementId, entityRef, toggle) => onSelectNode(entityRef, placementId, toggle)}
             resolvers={resolvers}
             graph={null}
             subtreeProjection={subtreeProjection}

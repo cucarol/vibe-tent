@@ -118,7 +118,6 @@ test("same-workspace retained Inbox does not render a surrogate selected-Node wo
   const node = { nodeId: "cx-b", etag: "etag-b", path: "B", name: "B", type: "prompt", tags: [], mode: "editable" as const, archived: false, invalid: false, parentNodeId: null, hasChildren: false, projectionState: "ready" as const };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view: guarded,
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
@@ -142,7 +141,6 @@ test("Role-responsible return stays readable without exposing user review mutati
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: roleSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view,
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
@@ -167,7 +165,6 @@ test("selected exact Task Result renders its complete multiline Markdown report"
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view: { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: resultSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true },
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
@@ -194,7 +191,6 @@ test("stale Result keeps only the exact last-known report visible and disables r
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view: { workspaceId: "ws-a", nodeId: "cx-a", status: "stale", snapshot: staleSnapshot, targets: [], targetsReady: false, busyKey: null, canMutate: false, issue: { kind: "transport", message: "连接中断" } },
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
@@ -216,7 +212,6 @@ test("missing selected current Result renders no report body even when Inbox has
   };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view: { workspaceId: "ws-a", nodeId: "cx-a", status: "ready", snapshot: missingSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true },
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));
@@ -239,7 +234,6 @@ test("selected pending Decision remains actionable because workspace projection 
   const view = { workspaceId: "ws-a", nodeId: "cx-a", status: "ready" as const, snapshot: decisionSnapshot, targets: [], targetsReady: true, busyKey: null, canMutate: true };
   const html = renderToStaticMarkup(createElement(CollaborationPanel, {
     node,
-    allNodes: [node],
     view,
     actions: { retry: async () => {}, dispatch: async () => false, acceptTaskResult: async () => false, rejectTaskResult: async () => false, respondDecision: async () => false },
   }));

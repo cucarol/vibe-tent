@@ -664,7 +664,7 @@ test("Outline keeps every authoritative Node even when Canvas has no placement",
   const outline = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [{ ...nodes[1]!, depth: 2 }],
     projection: "fresh",
-    selectedNodeId: "cx-unplaced",
+    focusedNodeId: "cx-unplaced",
     onSelectNode: () => {},
     onCollapse: () => {},
   }));
@@ -701,7 +701,7 @@ test("Outline tree collapse hides descendants and atomically selects the collaps
   const markup = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes,
     projection: "fresh",
-    selectedNodeId: "leaf",
+    focusedNodeId: "leaf",
     onSelectNode: () => {},
     onCollapse: () => {},
   }));
@@ -729,7 +729,7 @@ test("Outline drag is enabled only when its Canvas owner and Node are ready", ()
   const readOnly = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [node],
     projection: "fresh",
-    selectedNodeId: node.nodeId,
+    focusedNodeId: node.nodeId,
     onSelectNode: () => {},
     canDragToCanvas: false,
     onCollapse: () => {},
@@ -740,7 +740,7 @@ test("Outline drag is enabled only when its Canvas owner and Node are ready", ()
   const writable = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [node],
     projection: "fresh",
-    selectedNodeId: node.nodeId,
+    focusedNodeId: node.nodeId,
     onSelectNode: () => {},
     canDragToCanvas: true,
     onCollapse: () => {},
@@ -750,7 +750,7 @@ test("Outline drag is enabled only when its Canvas owner and Node are ready", ()
   const stale = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [{ ...node, projectionState: "stale" }],
     projection: "fresh",
-    selectedNodeId: node.nodeId,
+    focusedNodeId: node.nodeId,
     onSelectNode: () => {},
     canDragToCanvas: true,
     onCollapse: () => {},
@@ -776,7 +776,7 @@ test("Outline uses one projection-presence indicator for count and pending sync"
   const markup = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [node],
     projection: "fresh",
-    selectedNodeId: node.nodeId,
+    focusedNodeId: node.nodeId,
     onSelectNode: () => {},
     onCollapse: () => {},
     canvasPresence: new Map([[node.nodeId, { count: 2, pendingSync: true }]]),
@@ -1111,7 +1111,7 @@ test("initial projection loading/error stays distinct from authoritative ready-e
 
   const outlineProps = {
     nodes: [],
-    selectedNodeId: null,
+    focusedNodeId: null,
     onSelectNode: () => {},
     onCollapse: () => {},
   };

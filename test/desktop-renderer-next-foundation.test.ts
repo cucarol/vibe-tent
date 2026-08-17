@@ -41,7 +41,10 @@ import type { EventEnvelope } from "../src/service/types.js";
 import {
   canCreateNodePlacement,
   canDropNodeIntoPresentation,
+  canonicalPresentationRootNodeIds,
+  collectReadyPresentationRoots,
   collectReadyPresentationSubtreeSources,
+  dropPresentationRootSet,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
   withPresentationDocument,
@@ -59,6 +62,15 @@ import {
   readCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
+import {
+  addTaskPackageNodes,
+  decodeNodeIdsDrag,
+  emptyTaskPackageDraft,
+  encodeNodeIdsDrag,
+  removeTaskPackageNode,
+  updateTransientNodeSelection,
+} from "../src/desktop/task-package-draft.js";
+import { resolveTaskPackageNodes } from "../src/desktop/renderer-next/components/TaskPackageComposer.js";
 
 const root = process.cwd();
 const nextRoot = path.join(root, "src/desktop/renderer-next");
@@ -77,6 +89,40 @@ function ev(type: string): EventEnvelope {
     payload: { shouldNotBecomeTruth: true },
   };
 }
+
+test("task package keeps canonical node roots and supports prompt-only", () => {
+  const empty = emptyTaskPackageDraft();
+  assert.deepEqual(empty.nodeIds, []);
+  const added = addTaskPackageNodes(empty, [
+    { nodeId: "cx-a", label: "A" },
+    { nodeId: "cx-a", label: "A renamed" },
+    { nodeId: "cx-b" },
+  ]);
+  assert.deepEqual(added.nodeIds, ["cx-a", "cx-b"]);
+  assert.equal(added.nodeLabels["cx-a"], "A renamed");
+  assert.deepEqual(removeTaskPackageNode(added, "cx-a").nodeIds, ["cx-b"]);
+  assert.deepEqual(decodeNodeIdsDrag(encodeNodeIdsDrag(["cx-a", "cx-a", "cx-b"])), ["cx-a", "cx-b"]);
+});
+
+test("task package selection stays transient", () => {
+  assert.deepEqual(updateTransientNodeSelection(["cx-a"], "cx-b", false), ["cx-b"]);
+  assert.deepEqual(updateTransientNodeSelection(["cx-a"], "cx-b", true), ["cx-a", "cx-b"]);
+  assert.deepEqual(updateTransientNodeSelection(["cx-a", "cx-b"], "cx-a", true), ["cx-b"]);
+  assert.deepEqual(updateTransientNodeSelection(["cx-a"], null, false), []);
+});
+
+test("production has one embedded Task Package composer and the float stays notification-only", async () => {
+  const [appShell, collaboration, float, desktopTypes] = await Promise.all([
+    read("src/desktop/renderer-next/shell/AppShell.tsx"),
+    read("src/desktop/renderer-next/components/CollaborationPanel.tsx"),
+    read("src/desktop/renderer/float-ui.ts"),
+    read("src/desktop/types.ts"),
+  ]);
+  assert.match(appShell, /<TaskPackageComposer/);
+  assert.doesNotMatch(collaboration, /DispatchSection|additionalNodeIds|workNodeIds|contextNodeIds/);
+  assert.doesNotMatch(float, /dispatchTask|TaskPackageDraft|taskPackageDraft|taskPackageDetached/);
+  assert.doesNotMatch(desktopTypes, /pushContextCard|taskPackageDraft|taskPackageDetached/);
+});
 
 function cssHexToken(css: string, token: string): string {
   const match = css.match(new RegExp(`${token}:\\s*(#[0-9a-f]{6})`, "i"));
@@ -143,7 +189,7 @@ test("initial workbench selection cannot split shell and Canvas focus", () => {
 
 test("Outline selection changes identity without moving the Canvas camera or focused placement", () => {
   const state: WorkbenchPresentationState = {
-    selectedNodeId: "cx-prompt",
+    focusedNodeId: "cx-prompt",
     document: {
       ...createEmptyCanvasDocument(),
       viewport: { x: 128, y: -32, zoom: 1.25 },
@@ -155,10 +201,58 @@ test("Outline selection changes identity without moving the Canvas camera or foc
     },
   };
   const next = selectPresentationNodeFromOutline(state, "cx-output");
-  assert.equal(next.selectedNodeId, "cx-output");
+  assert.equal(next.focusedNodeId, "cx-output");
   assert.equal(next.document, state.document);
   assert.equal(next.document.focusedPlacementId, "pl-prompt");
   assert.deepEqual(next.document.viewport, state.document.viewport);
+});
+
+test("selected root sets dedupe descendants and materialize independent Canvas projections", () => {
+  const base = {
+    etag: "etag",
+    path: "node",
+    name: "Node",
+    type: "prompt",
+    tags: [] as string[],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+    projectionState: "ready" as const,
+    hasChildren: false,
+  };
+  const nodes = [
+    { ...base, nodeId: "root", parentNodeId: null, hasChildren: true },
+    { ...base, nodeId: "child", parentNodeId: "root" },
+    { ...base, nodeId: "other", parentNodeId: null },
+  ];
+  const rootIds = canonicalPresentationRootNodeIds(nodes, ["child", "root", "other", "root"]);
+  assert.deepEqual(rootIds, ["root", "other"]);
+  const roots = rootIds.map((nodeId) => ({
+    nodeId,
+    sources: collectReadyPresentationSubtreeSources(nodes, nodeId)!,
+  }));
+  const result = dropPresentationRootSet(
+    { document: createEmptyCanvasDocument(), focusedNodeId: null },
+    roots,
+    { x: 120, y: 80 }
+  );
+  assert.deepEqual(
+    new Set(result.document.placements.map((placement) => placement.entityRef)),
+    new Set(["root", "child", "other"])
+  );
+  assert.equal(result.focusedNodeId, "other");
+
+  const unavailable = {
+    ...base,
+    nodeId: "stale",
+    parentNodeId: null,
+    projectionState: "stale" as const,
+  };
+  assert.equal(collectReadyPresentationRoots([...nodes, unavailable], ["root", "stale"]), null);
+  assert.equal(resolveTaskPackageNodes([...nodes, unavailable], ["root", "stale"]), null);
+  assert.deepEqual(resolveTaskPackageNodes(nodes, ["child", "root"]), [
+    { nodeId: "root", label: "Node" },
+  ]);
 });
 
 test("placement add is visible, focused, idempotent, and local removal preserves Node identity", () => {
@@ -194,7 +288,7 @@ test("placement add is visible, focused, idempotent, and local removal preserves
 
 test("controlled presentation sequences Canvas removal before selection without reviving stale placements", () => {
   let state: WorkbenchPresentationState = {
-    selectedNodeId: "cx-a",
+    focusedNodeId: "cx-a",
     document: {
       ...createEmptyCanvasDocument(),
       focusedPlacementId: "pl-a",
@@ -212,7 +306,7 @@ test("controlled presentation sequences Canvas removal before selection without 
   publish((current) => selectPresentationNode(current, null, null));
   assert.deepEqual(state.document.placements, []);
   assert.equal(state.document.focusedPlacementId, null);
-  assert.equal(state.selectedNodeId, null);
+  assert.equal(state.focusedNodeId, null);
 });
 
 test("placement creation is permitted only by fresh authoritative graph identity", () => {
@@ -656,7 +750,7 @@ test("production invalidation is immediate and provenance is selected-output onl
 
   const production = await read("src/desktop/renderer-next/ProductionApp.tsx");
   assert.match(production, /selected\?\.type !== "output"/);
-  assert.match(production, /gateway\.outputProvenance\(workspace\.workspaceId, selectedNodeId\)/);
+  assert.match(production, /gateway\.outputProvenance\(workspace\.workspaceId, focusedNodeId\)/);
   assert.doesNotMatch(production, /outputs\.map|provenanceRows|Promise\.all\([\s\S]*outputProvenance/);
 });
 

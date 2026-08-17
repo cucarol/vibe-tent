@@ -1,8 +1,6 @@
 import type { CanvasDocument, CanvasPlacement } from "../types/identity.js";
 
 export const CANVAS_NODE_SNAPSHOT_META_KEY = "tentNodeSnapshot" as const;
-export const OUTLINE_NODE_DRAG_TYPE = "application/x-tent-node-ref" as const;
-
 /**
  * Frozen, machine-local presentation captured when a Node is placed.
  * It intentionally contains only fields available in graph.projection. Body,

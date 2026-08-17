@@ -70,7 +70,7 @@ function CanvasProductionInteractionsPreview() {
   const loaded = useMemo(() => persistence.load().snapshot, [persistence]);
   const [presentation, setPresentation] = useState<WorkbenchPresentationState>(() => ({
     document: loaded.document,
-    selectedNodeId: loaded.document.focusedPlacementId
+    focusedNodeId: loaded.document.focusedPlacementId
       ? loaded.document.placements.find(
           (placement) => placement.placementId === loaded.document.focusedPlacementId
         )?.entityRef ?? null
@@ -111,7 +111,7 @@ function CanvasProductionInteractionsPreview() {
     window.localStorage.removeItem(
       `tent.desktop.canvasV5Local.v1:${E2E_WORKSPACE_ID}`
     );
-    const next = { document: createEmptyCanvasDocument(), selectedNodeId: null };
+    const next = { document: createEmptyCanvasDocument(), focusedNodeId: null };
     sceneRef.current = null;
     presentationRef.current = next;
     setScene(null);
@@ -168,7 +168,7 @@ function CanvasProductionInteractionsPreview() {
         workspaceLabel="E2E 隔离工作区"
         initialNodes={nodes}
         document={presentation.document}
-        selectedNodeId={presentation.selectedNodeId}
+        focusedNodeId={presentation.focusedNodeId}
         onPresentationChange={updatePresentation}
         connection={projection === "ready" ? "online" : "reconnecting"}
         projectionState={projection === "ready" ? "fresh" : projection}

@@ -47,6 +47,11 @@ import { useFocusDocument } from "./model/use-focus-document.js";
 import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
 import { materializeMissingCanvasNodeSnapshots } from "./model/canvas-node-snapshot.js";
 import { createCanvasSyncCommand } from "./gateway/canvas-sync-command.js";
+import {
+  emptyTaskPackageDraft,
+  updateTransientNodeSelection,
+  type TaskPackageDraft,
+} from "../task-package-draft.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -95,12 +100,18 @@ function MountedWorkspace(props: {
   const mountedWorkspaceIdRef = useRef<string | null>(workspace.workspaceId);
   const [graphResource, setGraphResource] = useState(graphRef.current);
   const [provenance, setProvenance] = useState<ReadonlyMap<string, ProvenanceView>>(new Map());
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() =>
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(() =>
     snapshot.document.focusedPlacementId
       ? snapshot.document.placements.find(
           (placement) => placement.placementId === snapshot.document.focusedPlacementId
         )?.entityRef ?? null
       : null
+  );
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(() =>
+    focusedNodeId ? [focusedNodeId] : []
+  );
+  const [taskPackageDraft, setTaskPackageDraft] = useState<TaskPackageDraft>(
+    emptyTaskPackageDraft
   );
   const previewReadGeneration = useRef(0);
   const [canvasPreviewDocument, setCanvasPreviewDocument] = useState<{
@@ -108,14 +119,17 @@ function MountedWorkspace(props: {
     status: "loading" | "ready" | "error";
     body?: string;
   } | null>(null);
-  const selectedNodeRef = useRef(selectedNodeId);
+  const focusedNodeRef = useRef(focusedNodeId);
   const lastAuthoritativeDocumentNode = useRef<{
     nodeId: string;
     archived: boolean;
   } | null>(null);
-  const publishSelectedNode = useCallback((nodeId: string | null) => {
-    selectedNodeRef.current = nodeId;
-    setSelectedNodeId(nodeId);
+  const publishFocusedNode = useCallback((nodeId: string | null) => {
+    focusedNodeRef.current = nodeId;
+    setFocusedNodeId(nodeId);
+  }, []);
+  const updateNodeSelection = useCallback((nodeId: string | null, toggle: boolean) => {
+    setSelectedNodeIds((current) => updateTransientNodeSelection(current, nodeId, toggle));
   }, []);
   const provenanceGeneration = useRef(0);
   const seenRecoveryGeneration = useRef(recoveryGeneration);
@@ -135,7 +149,7 @@ function MountedWorkspace(props: {
         document: reconciled.document,
       };
       setSnapshot(snapshotRef.current);
-      publishSelectedNode(
+      publishFocusedNode(
         reconciled.document.focusedPlacementId
           ? reconciled.document.placements.find(
               (placement) =>
@@ -225,23 +239,24 @@ function MountedWorkspace(props: {
       const document = seedCanvasDocumentFromGraph(graphRead.value);
       snapshotRef.current = { ...snapshotRef.current, document };
       setSnapshot(snapshotRef.current);
-      publishSelectedNode(document.placements[0]?.entityRef ?? null);
+      publishFocusedNode(document.placements[0]?.entityRef ?? null);
+      setSelectedNodeIds(document.placements[0]?.entityRef ? [document.placements[0].entityRef] : []);
       scheduleSnapshot({ document });
     }
 
-  }, [gateway, onConnectionChange, publishSelectedNode, scheduleSnapshot, workspace.workspaceId]);
+  }, [gateway, onConnectionChange, publishFocusedNode, scheduleSnapshot, workspace.workspaceId]);
 
   useEffect(() => {
     const current = ++provenanceGeneration.current;
     const graph =
       graphResource.state === "ready" ? graphResource.value : null;
-    const selected = graph?.nodes.find((node) => node.nodeId === selectedNodeId);
-    if (!selectedNodeId || selected?.type !== "output") {
+    const selected = graph?.nodes.find((node) => node.nodeId === focusedNodeId);
+    if (!focusedNodeId || selected?.type !== "output") {
       setProvenance(new Map());
       return;
     }
     setProvenance(new Map());
-    void gateway.outputProvenance(workspace.workspaceId, selectedNodeId).then((read) => {
+    void gateway.outputProvenance(workspace.workspaceId, focusedNodeId).then((read) => {
       if (current !== provenanceGeneration.current) return;
       const view: ProvenanceView = !read.ok
         ? { state: "error", label: "来源状态未知" }
@@ -253,12 +268,12 @@ function MountedWorkspace(props: {
                 : "已绑定交付来源"
               : "未绑定交付来源",
           };
-      setProvenance(new Map([[selectedNodeId, view]]));
+      setProvenance(new Map([[focusedNodeId, view]]));
     });
     return () => {
       provenanceGeneration.current += 1;
     };
-  }, [gateway, graphResource, selectedNodeId, workspace.workspaceId]);
+  }, [gateway, graphResource, focusedNodeId, workspace.workspaceId]);
 
   useEffect(() => {
     const stopProjectionBridge = startWorkspaceProjectionBridge(
@@ -294,15 +309,15 @@ function MountedWorkspace(props: {
   );
   const graph = presentedGraphResource.state === "ready" ? presentedGraphResource.value : null;
   const projectionState = workspaceProjectionStatus(presentedGraphResource, nodes);
-  const selectedAuthoritativeNode = graph?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
-  if (!selectedNodeId) {
+  const selectedAuthoritativeNode = graph?.nodes.find((node) => node.nodeId === focusedNodeId) ?? null;
+  if (!focusedNodeId) {
     lastAuthoritativeDocumentNode.current = null;
   } else if (selectedAuthoritativeNode) {
     lastAuthoritativeDocumentNode.current = {
       nodeId: selectedAuthoritativeNode.nodeId,
       archived: selectedAuthoritativeNode.archived,
     };
-  } else if (lastAuthoritativeDocumentNode.current?.nodeId !== selectedNodeId) {
+  } else if (lastAuthoritativeDocumentNode.current?.nodeId !== focusedNodeId) {
     // A newly selected local placement is not enough authority to read a Node.
     lastAuthoritativeDocumentNode.current = null;
   }
@@ -411,7 +426,9 @@ function MountedWorkspace(props: {
       initialNodes={nodes}
       document={snapshot.document}
       initialScene={snapshot.scene}
-      selectedNodeId={selectedNodeId}
+      focusedNodeId={focusedNodeId}
+      selectedNodeIds={selectedNodeIds}
+      onNodeSelectionChange={updateNodeSelection}
       connection={connection}
       projectionState={projectionState}
       onRetryConnection={connection === "offline" || connection === "reconnecting" ? onRetryConnection : undefined}
@@ -422,14 +439,16 @@ function MountedWorkspace(props: {
       focusDocumentActions={focusedDocument.actions}
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}
+      taskPackageDraft={taskPackageDraft}
+      onTaskPackageDraftChange={setTaskPackageDraft}
       onCanvasSync={commitCanvasSync}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({
           document: snapshotRef.current.document,
-          selectedNodeId: selectedNodeRef.current,
+          focusedNodeId: focusedNodeRef.current,
         });
-        publishSelectedNode(next.selectedNodeId);
+        publishFocusedNode(next.focusedNodeId);
         scheduleSnapshot({ document: next.document });
       }}
       onScenePersist={(scene: ExcalidrawSceneSnapshot) => scheduleSnapshot({ scene })}

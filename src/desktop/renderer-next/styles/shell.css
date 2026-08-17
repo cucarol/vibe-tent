@@ -315,6 +315,7 @@ button, input, select, textarea { font: inherit; }
 
 .tn-outline-node:hover { background: var(--tn-color-hover); }
 .tn-outline-node[data-selected="true"] { background: var(--tn-color-selected); }
+.tn-outline-node[data-focused="true"] { border-color: var(--tn-color-border-strong); }
 .tn-outline-node[data-drag-active="true"] {
   border-color: var(--tn-color-border-strong);
   background: var(--tn-color-selected);
@@ -425,6 +426,13 @@ button, input, select, textarea { font: inherit; }
 .tn-dispatch-entry > div { min-width: 0; }
 .tn-dispatch-entry p { margin: 4px 0 0; color: var(--tn-color-text-secondary); font-size: 11px; line-height: 1.45; }
 .tn-dispatch { display: grid; gap: 11px; }
+.tn-task-package-nodes { display: flex; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 7px; border: 1px dashed var(--tn-color-border); border-radius: var(--tn-radius-md); }
+.tn-task-package-nodes[data-empty="true"] { align-items: center; }
+.tn-task-package-nodes p { margin: 0; color: var(--tn-color-text-faint); font-size: 11px; }
+.tn-task-package-nodes > span { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 4px; padding: 3px 4px 3px 7px; border: 1px solid var(--tn-color-border); border-radius: 999px; background: var(--tn-color-elevated-bg); color: var(--tn-color-text-secondary); font-size: 10px; }
+.tn-task-package-nodes > span > button { display: grid; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; place-items: center; background: transparent; color: var(--tn-color-text-faint); cursor: pointer; }
+.tn-task-package-nodes > span > button:hover { background: var(--tn-color-hover); color: var(--tn-color-text-primary); }
+.tn-task-package-nodes > span > button:focus-visible { outline: var(--tn-focus-ring); }
 .tn-control-pair { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 8px; }
 .tn-context-picker { color: var(--tn-color-text-secondary); font-size: 11px; }
 .tn-context-picker summary { cursor: pointer; }

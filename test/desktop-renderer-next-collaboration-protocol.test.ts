@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleDesktopCollaborationRequest } from "../src/desktop/main/collaboration-ipc-handler.js";
-import { acceptTaskResult, readDispatchTargets, rejectTaskResult, respondDecision } from "../src/desktop/renderer-next/gateway/collaboration-protocol.js";
+import { acceptTaskResult, dispatchTask, readDispatchTargets, rejectTaskResult, respondDecision } from "../src/desktop/renderer-next/gateway/collaboration-protocol.js";
 import { normalizeWorkspaceCollaboration } from "../src/desktop/renderer-next/model/workspace-collaboration-view.js";
 
 test("workspace collaboration strips Task identity and accepts workspace-level null selection", () => {
@@ -88,9 +88,24 @@ test("renderer target and mutation transport emits no Task identity", async () =
   const requests: unknown[] = [];
   const transport = async (request: unknown) => { requests.push(request); return { ok: true, value: (request as { operation: string }).operation === "targets" ? { workspaceId: "ws-a", targets: [] } : { workspaceId: "ws-a" } }; };
   assert.equal((await readDispatchTargets(transport as never, "ws-a")).ok, true);
+  assert.equal((await dispatchTask(transport as never, {
+    workspaceId: "ws-a",
+    nodeIds: [],
+    prompt: "prompt-only",
+    acceptMode: "review-required",
+    target: { kind: "role", id: "rl-ui" },
+  })).ok, true);
   assert.equal((await acceptTaskResult(transport as never, "ws-a", "rs-a")).ok, true);
   assert.equal((await rejectTaskResult(transport as never, "ws-a", "rs-a", "补充")).ok, true);
   assert.equal((await respondDecision(transport as never, "ws-a", "dr-a", { kind: "deny" })).ok, true);
   const serialized = JSON.stringify(requests);
   assert.equal(serialized.includes("taskPath"), false); assert.equal(serialized.includes("taskId"), false);
+  assert.deepEqual(requests[1], {
+    operation: "dispatch",
+    workspaceId: "ws-a",
+    nodeIds: [],
+    prompt: "prompt-only",
+    acceptMode: "review-required",
+    target: { kind: "role", id: "rl-ui" },
+  });
 });

@@ -10,6 +10,7 @@ import {
   type InspectorLocalNodeView,
 } from "../components/InspectorPanel.js";
 import { OutlinePanel } from "../components/OutlinePanel.js";
+import { TaskPackageComposer } from "../components/TaskPackageComposer.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { ConnectionBanner } from "../components/ConnectionBanner.js";
 import { ShellIcon } from "./icons.js";
@@ -20,8 +21,9 @@ import {
   canDropNodeIntoPresentation,
   canvasSnapshotSourceFromWorkbenchNode as snapshotSource,
   canvasPlacementSourceAuthority,
+  collectReadyPresentationRoots,
   collectReadyPresentationSubtreeSources,
-  dropPresentationSubtreeOrLeaf,
+  dropPresentationRootSet,
   placePresentationSubtreeOrLeaf,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
@@ -50,13 +52,16 @@ import {
   type CanvasSubtreeNodeSource,
 } from "../model/canvas-subtree-projection.js";
 import { canvasAttentionPlacementIds } from "../model/canvas-attention.js";
+import type { TaskPackageDraft } from "../../task-package-draft.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
   workspaceLabel?: string;
   initialNodes?: readonly WorkbenchNodeView[];
   document?: CanvasDocument;
-  selectedNodeId?: string | null;
+  focusedNodeId?: string | null;
+  selectedNodeIds?: readonly string[];
+  onNodeSelectionChange?: (nodeId: string | null, toggle: boolean) => void;
   connection?: "connecting" | "online" | "offline" | "reconnecting";
   projectionState?: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   onRetryConnection?: () => void;
@@ -75,6 +80,8 @@ export type AppShellProps = {
   focusDocumentActions?: FocusDocumentActions;
   collaboration?: CollaborationSurfaceView;
   collaborationActions?: CollaborationSurfaceActions;
+  taskPackageDraft?: TaskPackageDraft;
+  onTaskPackageDraftChange?: (draft: TaskPackageDraft) => void;
   initialFocusExpanded?: boolean;
   initialInspectorTab?: "content" | "collaboration";
   initialOutlineMode?: "nodes" | "inbox";
@@ -95,7 +102,9 @@ export function AppShell({
   workspaceLabel = "未挂载工作区",
   initialNodes = [],
   document = createEmptyCanvasDocument(),
-  selectedNodeId = null,
+  focusedNodeId = null,
+  selectedNodeIds = focusedNodeId ? [focusedNodeId] : [],
+  onNodeSelectionChange,
   connection = "offline",
   projectionState,
   onRetryConnection,
@@ -110,6 +119,8 @@ export function AppShell({
   focusDocumentActions,
   collaboration,
   collaborationActions,
+  taskPackageDraft,
+  onTaskPackageDraftChange,
   initialFocusExpanded = false,
   initialInspectorTab = "content",
   initialOutlineMode = "nodes",
@@ -131,7 +142,7 @@ export function AppShell({
   const [outlineReveal, setOutlineReveal] = useState({ nodeId: "", revision: 0 });
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
-  const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === focusedNodeId) ?? null, [nodes, focusedNodeId]);
   const attentionNodeIds = useMemo(() => {
     if (collaboration?.status !== "ready" || !collaboration.snapshot) return new Set<string>();
     const ids = new Set<string>();
@@ -194,14 +205,14 @@ export function AppShell({
   }, [canvasSubtreeProjection.placementStates, document]);
   const focusedPlacement = useMemo(
     () =>
-      selectedNodeId
+      focusedNodeId
         ? document.placements.find(
             (placement) =>
               placement.placementId === document.focusedPlacementId &&
-              placement.entityRef === selectedNodeId
+              placement.entityRef === focusedNodeId
           ) ?? null
         : null,
-    [document, selectedNodeId]
+    [document, focusedNodeId]
   );
   const focusedSnapshot = focusedPlacement
     ? readCanvasNodeSnapshot(focusedPlacement)
@@ -220,7 +231,7 @@ export function AppShell({
     : null;
   const localInspectorNode: InspectorLocalNodeView | null = !selectedNode && focusedPlacement
     ? {
-        nodeId: selectedNodeId ?? focusedPlacement.entityRef ?? focusedPlacement.placementId,
+        nodeId: focusedNodeId ?? focusedPlacement.entityRef ?? focusedPlacement.placementId,
         etag: focusedSnapshot?.etag,
         path: focusedSnapshot?.path ?? "本地画布位置",
         name: focusedSnapshot?.name ?? "未解析的本地快照",
@@ -240,27 +251,29 @@ export function AppShell({
       }
     : null;
 
-  const selectNodeFromCanvas = (nodeId: string | null, placementId?: string | null) => {
+  const selectNodeFromCanvas = (nodeId: string | null, placementId?: string | null, toggle = false) => {
     onPresentationChange?.((current) =>
       selectPresentationNode(current, nodeId, placementId)
     );
+    onNodeSelectionChange?.(nodeId, toggle);
     if (nodeId) {
       setOutlineReveal((current) => ({ nodeId, revision: current.revision + 1 }));
     }
   };
 
-  const selectNodeFromOutline = (nodeId: string) => {
+  const selectNodeFromOutline = (nodeId: string, toggle = false) => {
     onPresentationChange?.((current) =>
       selectPresentationNodeFromOutline(current, nodeId)
     );
+    onNodeSelectionChange?.(nodeId, toggle);
   };
 
   const updateDocument = (next: CanvasDocument) => {
     onPresentationChange?.((current) => withPresentationDocument(current, next));
   };
 
-  const selectedPlacements = selectedNodeId
-    ? findPlacementsByEntity(document, selectedNodeId)
+  const selectedPlacements = focusedNodeId
+    ? findPlacementsByEntity(document, focusedNodeId)
     : [];
   const canCreatePlacement =
     Boolean(currentSource) &&
@@ -275,29 +288,12 @@ export function AppShell({
     );
   };
 
-  const dropNode = (nodeId: string, point: { x: number; y: number }) => {
+  const dropNodes = (nodeIds: readonly string[], point: { x: number; y: number }) => {
     if (!onPresentationChange) return false;
-    const node = nodes.find((candidate) => candidate.nodeId === nodeId);
-    const source = snapshotSource(node);
-    if (
-      !node ||
-      !source ||
-      !canDropNodeIntoPresentation(
-        Boolean(onPresentationChange),
-        projection,
-        node.projectionState
-      )
-    ) return false;
-    const subtreeSources = collectReadyPresentationSubtreeSources(nodes, nodeId);
-    if (!subtreeSources) return false;
-    onPresentationChange((current) => {
-      return dropPresentationSubtreeOrLeaf(
-        current,
-        nodeId,
-        subtreeSources,
-        point
-      );
-    });
+    if (!canDropNodeIntoPresentation(true, projection, "ready")) return false;
+    const roots = collectReadyPresentationRoots(nodes, nodeIds);
+    if (!roots?.length) return false;
+    onPresentationChange((current) => dropPresentationRootSet(current, roots, point));
     return true;
   };
 
@@ -359,8 +355,8 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" style={layoutStyle} data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
-        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionPlacementIds={attentionPlacementIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={(mode) => { setOutlineMode(mode); if (mode === "inbox") onNodeSelectionChange?.(null, false); }} nodes={nodes} projection={projection} focusedNodeId={focusedNodeId} selectedNodeIds={selectedNodeIds} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} collaboration={collaboration ?? { workspaceId, nodeId: null, status: "idle", snapshot: null, targets: [], targetsReady: false, busyKey: null, canMutate: false }} />
+        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNodes={onPresentationChange ? dropNodes : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionPlacementIds={attentionPlacementIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}
@@ -372,7 +368,16 @@ export function AppShell({
           placementActionRef={placementActionRef}
           document={focusDocument}
           documentActions={focusDocumentActions}
-          allNodes={nodes}
+          taskPackage={taskPackageDraft && collaboration && collaborationActions && onTaskPackageDraftChange ? (
+            <TaskPackageComposer
+              draft={taskPackageDraft}
+              nodes={nodes}
+              selectedNodeIds={selectedNodeIds}
+              view={collaboration}
+              actions={collaborationActions}
+              onChange={onTaskPackageDraftChange}
+            />
+          ) : null}
           collaboration={collaboration}
           collaborationActions={collaborationActions}
           expanded={focusExpanded}

@@ -133,17 +133,18 @@ test("floating control has an honest, draggable, recoverable surface", async () 
 
   assert.match(html, /href="\.\/float\.css"/);
   assert.match(html, /id="btn-hide-float"[^>]*aria-label="隐藏浮动控件"/);
-  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /aria-label="浮动通知"/);
+  assert.match(html, /任务包在主界面/);
+  assert.doesNotMatch(html, /<form|<textarea|package-submit/);
   assert.doesNotMatch(html, /style=/);
   assert.match(css, /\.float-head\s*\{[^}]*-webkit-app-region:\s*drag/s);
   assert.match(css, /\.float-head-actions\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
-  assert.match(css, /\.float-cards\s*\{[^}]*overflow:\s*auto/s);
-  assert.match(css, /\.card-item:focus-visible/);
+  assert.match(css, /\.float-context\s*\{[^}]*overflow:\s*auto/s);
   assert.match(ui, /refreshInFlight/);
-  assert.match(ui, /暂时无法读取，稍后自动重试/);
-  assert.match(ui, /复制失败/);
+  assert.match(ui, /状态不可用/);
+  assert.match(ui, /window\.tentDesktop\.openMain\(\)/);
   assert.match(ui, /event\.key !== "Escape"/);
-  assert.doesNotMatch(ui, /\.refId/);
+  assert.doesNotMatch(ui, /dispatchTask|taskPackageDraft|taskPackageDetached/);
   assert.doesNotMatch(ui, /await window\.tentDesktop\.hideFloat/);
   assert.match(
     main,

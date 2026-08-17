@@ -73,8 +73,7 @@ button { font: inherit; }
 #btn-open-main:hover,
 #btn-hide-float:hover { background: #e9e9eb; }
 #btn-open-main:focus-visible,
-#btn-hide-float:focus-visible,
-.card-item:focus-visible {
+#btn-hide-float:focus-visible {
   outline: 2px solid #4e5055;
   outline-offset: 2px;
 }
@@ -146,48 +145,16 @@ button { font: inherit; }
 
 .float-context {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  align-content: start;
+  gap: 7px;
   min-width: 0;
   min-height: 0;
   padding: 10px 12px 12px;
+  overflow: auto;
 }
 
-.float-section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  min-width: 0;
-  gap: 8px;
-  margin-bottom: 7px;
-}
-
-.float-section-head h2 { margin: 0; font-size: 11px; }
-.panel-head {
-  overflow: hidden;
-  color: #66686e;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.float-cards { min-height: 0; overflow: auto; }
-.card-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-
-.card-item {
-  min-width: 0;
-  padding: 8px 9px;
-  border: 1px solid #dedfe1;
-  border-radius: 6px;
-  background: #fff;
-  cursor: grab;
-}
-
-.card-item:hover { border-color: #b9bbc0; }
-.card-item:active { cursor: grabbing; }
-.card-item.is-dragging { opacity: 0.55; }
-.card-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-meta { margin-top: 2px; color: #66686e; font-size: 10px; }
-.card-hint { margin-top: 4px; color: #66686e; font-size: 10px; text-align: right; }
+.float-context strong { font-size: 11px; }
+.float-context p { margin: 0; color: #66686e; font-size: 10px; line-height: 1.45; }
 .float-state { padding: 14px 8px; color: #66686e; font-size: 10px; text-align: center; }
 .float-state.error { color: #8c3434; }
 

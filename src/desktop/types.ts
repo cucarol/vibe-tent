@@ -18,21 +18,10 @@ export type WorkspaceSummary = {
   foreground: boolean;
 };
 
-export type RecentContextCard = {
-  id: string;
-  label: string;
-  kind: string;
-  refId: string;
-  path?: string;
-  text: string;
-  createdAt: string;
-};
-
 export type FloatingStatusSnapshot = {
   health: ServiceHealthView;
   pendingTasks: number;
   takenTasks: number;
-  recentCards: RecentContextCard[];
   foregroundRoot?: string | null;
 };
 
@@ -70,7 +59,6 @@ export const DESKTOP_IPC = {
   hideMain: "tent:hide-main",
   showFloat: "tent:show-float",
   hideFloat: "tent:hide-float",
-  pushContextCard: "tent:push-context-card",
   getFloatingStatus: "tent:get-floating-status",
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
