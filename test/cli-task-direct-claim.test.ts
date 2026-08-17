@@ -152,5 +152,7 @@ test("task help separates direct Role claim from downstream dispatch", () => {
   assert.match(help, /task claim --work-node <nodeId>/);
   assert.match(help, /create \+ claim atomically/);
   assert.match(help, /no --target and no downstream dispatch/);
-  assert.match(help, /Service derives parent\/review authority from durable facts/);
+  assert.match(help, /requires canonical TENT_ROLE_ID plus the current trusted Role Session capability/);
+  assert.match(help, /Service derives requester\/review authority from durable facts/);
+  assert.doesNotMatch(help, /TENT_ROLE_NAME\/TENT_ROLE/);
 });
