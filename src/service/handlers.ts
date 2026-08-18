@@ -1854,7 +1854,7 @@ async function registryRoleCreate(ctx: HandlerContext, p: Record<string, unknown
       "registry.role.create does not accept client-supplied id/roleId; server assigns rl- handles"
     );
   }
-  const definition = parseRoleDefinitionParams(p, { requireName: true });
+  const { id: _parsedId, ...definition } = parseRoleDefinitionParams(p, { requireName: true });
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);

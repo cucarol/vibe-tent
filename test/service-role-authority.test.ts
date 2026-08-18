@@ -282,10 +282,10 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
     });
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    await client.registryRoleCreate(workspaceId, {
+    const createdTemp = (await client.registryRoleCreate(workspaceId, {
       name: "temp-role",
       prompt: "temp",
-    });
+    })) as { role: { roleId: string } };
     assert.equal(events.length, 1);
 
     // confirmation mismatch
@@ -353,6 +353,12 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
     const listed = await rpc(svc, "registry.roles", { workspaceId });
     const roles = (listed.result as { roles: { name: string }[] }).roles;
     assert.ok(!roles.some((r) => r.name === "temp-role"));
+
+    const recreatedTemp = (await client.registryRoleCreate(workspaceId, {
+      name: "temp-role",
+      prompt: "replacement",
+    })) as { role: { roleId: string } };
+    assert.notEqual(recreatedTemp.role.roleId, createdTemp.role.roleId);
 
     unsub();
   });

@@ -13,6 +13,7 @@ import { dispatch } from "../src/core/ops.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { loadTaskRecord, patchTaskRecord } from "../src/core/task.js";
 import { taskClaim, taskSubmit } from "../src/core/task-lifecycle.js";
+import { nodeNotePath } from "../src/core/tree.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { makeSessionId } from "../src/runtime/index.js";
 import { deriveSessionToken } from "../src/runtime/session-token.js";
@@ -305,6 +306,65 @@ test("review RPC authority: only the exact external Role Session may accept or r
       resume: false,
     });
     assert.equal(rejected.ok, true, JSON.stringify(rejected));
+  });
+});
+
+test("recreated Role cannot bind Outputs to the deleted Role's accepted Result", async () => {
+  await withService(async (svc, workspace) => {
+    const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const { workspaceId } = (await root.mount(workspace)) as { workspaceId: string };
+    const created = (await root.registryRoleCreate(workspaceId, {
+      name: "generation-reviewer",
+    })) as { role: { roleId: string } };
+    const oldRoleId = created.role.roleId;
+    const oldRole = await enterRoleClient(svc, workspaceId, workspace, oldRoleId);
+    const fixture = await makeReadyFixture(
+      svc,
+      workspaceId,
+      { kind: "role", id: oldRoleId },
+      "deleted-role"
+    );
+    const accepted = await oldRole.tryCall("task.accept", {
+      workspaceId,
+      resultId: fixture.resultId,
+      actor: oldRoleId,
+    });
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
+    await root.sessionLeave({ workspaceId, externalKey: `review:${oldRoleId}` });
+    await root.registryRoleDelete(workspaceId, "generation-reviewer", "generation-reviewer");
+
+    const recreated = (await root.registryRoleCreate(workspaceId, {
+      name: "generation-reviewer",
+    })) as { role: { roleId: string } };
+    assert.notEqual(recreated.role.roleId, oldRoleId);
+    const newRole = await enterRoleClient(
+      svc,
+      workspaceId,
+      workspace,
+      recreated.role.roleId
+    );
+    const output = (await root.call("docs.createNote", {
+      workspaceId,
+      name: "generation-output",
+      type: "output",
+    })) as { nodeId: string; path: string };
+    const mount = svc.hostApi.require(workspaceId);
+    const before = await mount.env.fs.readFile(nodeNotePath(output.path));
+
+    const denied = await newRole.tryCall("task.bindOutput", {
+      workspaceId,
+      resultId: fixture.resultId,
+      outputNodeIds: [output.nodeId],
+      actor: recreated.role.roleId,
+    });
+    assert.equal(denied.ok, false);
+    if (!denied.ok) {
+      assert.equal(
+        (denied.error.data as { code?: string } | undefined)?.code,
+        "OUTPUT_BIND_CALLER_FORBIDDEN"
+      );
+    }
+    assert.equal(await mount.env.fs.readFile(nodeNotePath(output.path)), before);
   });
 });
 

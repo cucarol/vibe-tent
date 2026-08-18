@@ -26392,7 +26392,7 @@ async function registryRoleCreate(ctx, p) {
       "registry.role.create does not accept client-supplied id/roleId; server assigns rl- handles"
     );
   }
-  const definition2 = parseRoleDefinitionParams(p, { requireName: true });
+  const { id: _parsedId, ...definition2 } = parseRoleDefinitionParams(p, { requireName: true });
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     try {
